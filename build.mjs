@@ -14,12 +14,42 @@
  */
 import { build } from 'esbuild'
 import { mkdirSync } from 'node:fs'
+import { readFile, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const PACKAGE_ID = 'dsh-knowledge'
 
 mkdirSync('lib', { recursive: true })
+
+/**
+ * esbuild stamps inlined module file markers with the source file's path. For
+ * files inside this package the path stays relative, but code pulled in from a
+ * sibling DSH checkout (schemastery → cosmokit) carries the build machine's
+ * absolute path — both in the bundle comments and the sourcemap `sources`.
+ * Scrub those to a neutral `dsh/` form so no machine path ships in the tarball
+ * (line counts are unchanged, so the maps stay aligned).
+ */
+async function scrubMachinePaths(outfile) {
+  const js = await readFile(outfile, 'utf8')
+  const scrubbedJs = js.replace(/^(\s*\/\/\s*)[A-Za-z]:[\\/][^\\/\r\n]*[\\/][^\\/\r\n]*[\\/]/gm, '$1dsh/')
+  if (scrubbedJs !== js) await writeFile(outfile, scrubbedJs)
+  try {
+    const map = JSON.parse(await readFile(`${outfile}.map`, 'utf8'))
+    if (Array.isArray(map.sources)) {
+      const next = map.sources.map(source =>
+        source.startsWith('file:///')
+          ? source.replace(/^file:\/\/\/[A-Za-z]:[\\/][^\\/]+[\\/][^\\/]+[\\/]/, 'dsh/')
+          : source)
+      if (next.some((source, index) => source !== map.sources[index])) {
+        map.sources = next
+        await writeFile(`${outfile}.map`, JSON.stringify(map))
+      }
+    }
+  } catch {
+    // no sourcemap — nothing to scrub
+  }
+}
 
 // Host: DSH/cordis/zod packages are peer-provided; document parsers are
 // runtime dependencies resolved from node_modules. Everything else bundles.
@@ -54,6 +84,7 @@ for (const [entry, outfile] of hostEntries) {
     external: hostExternal,
     logLevel: 'info',
   })
+  await scrubMachinePaths(outfile)
 }
 
 // Client: the platform modules the shell shares into the frozen module table.
