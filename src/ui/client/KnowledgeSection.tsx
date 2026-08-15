@@ -26,14 +26,12 @@ import {
   IconCheck,
   IconEye,
   IconFlask,
-  IconLink,
   IconMore,
   IconPlus,
   IconRefresh,
   IconSearch,
   IconSliders,
   IconTrash,
-  IconUpload,
   docIconStyle,
   fileVisual,
 } from './icons.js'
@@ -130,6 +128,7 @@ type DialogState =
   | { kind: 'createGroup'; forBaseId?: string }
   | { kind: 'renameGroup'; group: string }
   | { kind: 'confirmDeleteGroup'; group: string }
+  | { kind: 'addUrl' }
   | null
 
 interface RecallEntry {
@@ -429,18 +428,22 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
   const promptForUrl = useCallback((): void => {
     if (selectedBaseId === null) return
-    const value = window.prompt(t('urlDesc'), '')
-    const url = (value ?? '').trim()
-    if (url === '') return
+    setDialog({ kind: 'addUrl' })
+  }, [selectedBaseId])
+
+  const addUrl = useCallback((url: string): void => {
+    if (selectedBaseId === null) return
+    const trimmed = url.trim()
+    if (trimmed === '') return
     void run(async () => {
       try {
-        await api.addUrlDocument(selectedBaseId, url)
-        onImported(url)
+        await api.addUrlDocument(selectedBaseId, trimmed)
+        onImported(trimmed)
       } catch (err) {
         notify('error', err instanceof Error ? err.message : String(err))
       }
     })
-  }, [api, run, onImported, notify, selectedBaseId, t])
+  }, [api, run, onImported, notify, selectedBaseId])
 
   // Background import: no progress modal — files are uploaded one at a time and
   // the document list refreshes as each lands (row status shows embedding %).
@@ -957,10 +960,14 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                           ) : documents.length === 0 ? (
                             <div style={{ ...style.empty, padding: '28px 12px' }}>
                               <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 14 }}>{t('firstUploadTitle')}</div>
-                              <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
-                                <EmptyShortcut icon={<IconUpload size={16} />} label={t('tabFile')} onClick={() => fileInputRef.current?.click()} />
-                                <EmptyShortcut icon={<IconBook size={16} />} label={t('tabDir')} onClick={() => dirInputRef.current?.click()} />
-                                <EmptyShortcut icon={<IconLink size={16} />} label={t('tabUrl')} onClick={() => promptForUrl()} />
+                              {/* Same add-source dropdown as the table header, so
+                                  the entry point is identical everywhere. */}
+                              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                                <PopoverMenu
+                                  align="start"
+                                  trigger={<button style={style.primary} disabled={busy}><IconPlus />{t('addSource')}</button>}
+                                  entries={addSourceMenu}
+                                />
                               </div>
                             </div>
                           ) : (
@@ -1210,6 +1217,15 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
           onClose={() => setDialog(null)}
         />
       )}
+      {dialog?.kind === 'addUrl' && (
+        <PromptDialog
+          title={t('tabUrl')}
+          label={t('urlDesc')}
+          initial=""
+          onOk={(value) => { setDialog(null); addUrl(value) }}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === 'renameDoc' && (
         <PromptDialog
           title={t('renameDoc')}
@@ -1410,23 +1426,6 @@ function StatChip(props: { value: string | number; label: string }): JSX.Element
       <span style={style.statValue}>{props.value}</span>
       <span style={style.statLabel}>{props.label}</span>
     </span>
-  )
-}
-
-function EmptyShortcut(props: { icon: JSX.Element; label: string; onClick: () => void }): JSX.Element {
-  return (
-    <button
-      className="kb-row"
-      onClick={props.onClick}
-      style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
-        border: `1px solid ${C.border}`, borderRadius: 10, background: C.surface,
-        padding: '16px 20px', cursor: 'pointer', minWidth: 92, color: C.text,
-      }}
-    >
-      <span style={{ color: C.muted }}>{props.icon}</span>
-      <span style={{ fontSize: 12, fontWeight: 600 }}>{props.label}</span>
-    </button>
   )
 }
 
