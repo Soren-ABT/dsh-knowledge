@@ -110,4 +110,4 @@ pnpm run build    # esbuild → lib/ (host entries + factory-form client bundle)
 
 ## License
 
-[MIT](LICENSE). With thanks to [dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness), [dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor), and [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin).
+[MIT](LICENSE). Special thanks to [Cherry Studio](https://github.com/CherryHQ/cherry-studio): this project's UI and feature design draws its inspiration from Cherry Studio (AGPL-3.0), while the code is an independent implementation that contains none of its source. Also thanks to [dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness), [dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor), and [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin).
