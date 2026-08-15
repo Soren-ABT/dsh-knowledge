@@ -62,7 +62,9 @@ const PREVIEW_CHUNK_LIMIT = 500
 
 // ── sidebar action ───────────────────────────────────────────────────────────
 
-/** The sidebar-foot entry beside Settings: opens the knowledge panel. */
+/** The sidebar-foot entry beside Settings: opens the knowledge panel.
+ *  Styled to match the shell's Settings trigger (same 34px row / 36px rail
+ *  geometry and tokens) so the footer reads as one unit. */
 export function SidebarKnowledgeAction(props: {
   store: KnowledgePanelStore
   t: Translate
@@ -71,12 +73,17 @@ export function SidebarKnowledgeAction(props: {
   const open = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot)
   return (
     <button
-      style={{ ...style.sidebarAction, ...(open ? style.sidebarActionActive : {}) }}
+      className="kb-sidebar-action"
+      style={{
+        ...style.sidebarAction,
+        ...(props.wide ? {} : style.sidebarActionRail),
+        ...(open ? style.sidebarActionActive : {}),
+      }}
       onClick={() => props.store.toggle()}
       title={props.t('nav')}
       aria-label={props.t('nav')}
     >
-      <IconBook size={18} />
+      <IconBook size={props.wide ? 16 : 18} />
       {props.wide ? <span>{props.t('nav')}</span> : null}
     </button>
   )

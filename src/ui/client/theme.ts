@@ -35,6 +35,7 @@ export const PANEL_CSS = `
 .kb-card:hover { border-color: var(--dsw-alias-border-l2, #c7ccd4) }
 .kb-iconbtn { transition: color 0.15s ease, background 0.15s ease }
 .kb-iconbtn:hover { color: var(--dsw-alias-brand-primary, #3b6ef6); background: ${accentSoft} }
+.kb-sidebar-action:hover { background: var(--dsw-alias-interactive-bg-hover) }
 .kb-dangerbtn:hover { color: var(--dsw-alias-state-error-primary, #e5484d); background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 10%, transparent) }
 .kb-scroll::-webkit-scrollbar { width: 8px; height: 8px }
 .kb-scroll::-webkit-scrollbar-thumb { background: var(--dsw-alias-border-l2, #c7ccd4); border-radius: 999px }
@@ -164,8 +165,19 @@ export const style = {
   } as CSSProperties,
   modalHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 } as CSSProperties,
   sidebarAction: {
-    display: 'flex', alignItems: 'center', gap: 8, border: 'none', borderRadius: 8,
-    background: 'transparent', color: C.muted, cursor: 'pointer', padding: '8px 10px', fontSize: 13,
+    // Geometry mirrors the shell's Settings trigger (ui-settings-general
+    // SettingsRoot.module.css) so the two footer rows read as one.
+    flex: 'none', display: 'flex', alignItems: 'center', gap: 8,
+    width: 'calc(100% + 8px)', height: 34,
+    margin: '4px -4px 4px', padding: '6px 2px 6px 10px',
+    boxSizing: 'border-box', border: 'none', borderRadius: 12,
+    background: 'transparent', cursor: 'pointer', overflow: 'hidden',
+    color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit',
+    fontSize: 14, lineHeight: 22,
+  } as CSSProperties,
+  sidebarActionRail: {
+    width: 36, height: 36, margin: '8px 0 10px',
+    justifyContent: 'center', gap: 0, padding: 0, borderRadius: '50%',
   } as CSSProperties,
   sidebarActionActive: { color: C.accent, background: accentSoft } as CSSProperties,
   tabs: { display: 'flex', gap: 4, borderBottom: `1px solid ${C.border}`, marginBottom: 14 } as CSSProperties,
