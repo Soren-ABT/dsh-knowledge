@@ -1,0 +1,106 @@
+{
+  "name": "dsh-knowledge",
+  "description": "Cherry Studio-style knowledge base system for DeepSeek Harness (DSH): bases, documents, chunking, embeddings (OpenAI-compatible / Ollama / local / lexical fallback), retrieval, model-facing tools, and a browser management panel",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./knowledge": {
+      "types": "./lib/types/knowledge/index.d.ts",
+      "default": "./lib/knowledge/index.js"
+    },
+    "./tool-knowledge": {
+      "types": "./lib/types/tool-knowledge/index.d.ts",
+      "default": "./lib/tool-knowledge/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/ui/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "dsh.plugin.json",
+    "README.md",
+    "README.zh.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "prepack": "node build.mjs",
+    "prepare": "node build.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "deepseek-harness",
+    "knowledge-base",
+    "rag",
+    "embedding",
+    "vector-search",
+    "cherry-studio"
+  ],
+  "dependencies": {
+    "@firecrawl/anydoc": "^0.1.9",
+    "@huggingface/transformers": "^3.7.0",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.8.0",
+    "pdf-parse": "^1.1.1",
+    "word-extractor": "^1.0.4"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-host-webserver": "*",
+    "@deepseek-ai/dsh-storage": "*",
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*",
+    "react": "^18.2.0",
+    "zod": "*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "link:../dsh/vendor/cordis",
+    "@deepseek-ai/dsh-host-webserver": "link:../dsh/packages/host/webserver",
+    "@deepseek-ai/dsh-storage": "link:../dsh/packages/storage/storage",
+    "@deepseek-ai/dsh-storage-domain": "link:../dsh/packages/storage/storage-domain",
+    "@deepseek-ai/dsh-tools": "link:../dsh/packages/core/tools",
+    "@deepseek-ai/schemastery": "link:../dsh/vendor/schemastery",
+    "@types/node": "^24.0.0",
+    "@types/react": "~18.3.1",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.8",
+    "zod": "^4.4.3"
+  }
+}

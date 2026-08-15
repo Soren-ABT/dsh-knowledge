@@ -1,0 +1,35 @@
+# dsh-knowledge bundle patch: mount the host knowledge service, the
+# model-facing tools, and the client panel's node half (which the client
+# module system scans into window.__DSH_BOOT__ via the package's dsh.client
+# declaration). Install with `dsh plugin --profile <name> add dsh-knowledge`,
+# or insert these rows through a user patch layer:
+#
+#   - insert:
+#       - id: knowledge
+#         name: 'dsh-knowledge/knowledge'
+#
+# The `name` is the npm package plus subpath; the loader resolves it from the
+# profile's node_modules. Upper patch layers may override any row by id.
+
+- insert:
+    - id: knowledge
+      name: dsh-knowledge/knowledge
+      config:
+        # Deployment defaults; the browser panel can override these at runtime
+        # (persisted in the knowledge storage domain).
+        embeddingProvider: none
+        embeddingBaseUrl: ''
+        embeddingModel: ''
+        embeddingApiKey: ''
+        chunkSize: 800
+        chunkOverlap: 100
+        topK: 4
+        # Local-model cache root; empty = <DSH_HOME>/cache/dsh-knowledge/local-models
+        # (e.g. set to D:\models\dsh-knowledge to put weights on another drive).
+        localModelCacheDir: ''
+
+    - id: tool-knowledge
+      name: dsh-knowledge/tool-knowledge
+
+    - id: ui-knowledge
+      name: dsh-knowledge

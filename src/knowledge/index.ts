@@ -1,0 +1,1452 @@
+/**
+ * The host knowledge service (`ctx.knowledge`): durable bases/documents/chunks
+ * over `ctx.storageDomain`, heading-aware chunking with context injection,
+ * batched embeddings, hybrid retrieval (BM25 + vector + MMR), deduplication,
+ * reindexing, URL import, and statistics — plus a JSON HTTP surface.
+ * @module dsh-knowledge/knowledge
+ */
+
+import { Context, Service } from '@deepseek-ai/cordis'
+import { createHash } from 'node:crypto'
+import { readdir, readFile } from 'node:fs/promises'
+import { basename, extname, join } from 'node:path'
+import { chunkText } from './chunk.js'
+import type { ChunkPiece } from './chunk.js'
+import { Config, resolveConfig, resolveConfigFor } from './config.js'
+import type { ConfigOverrides } from './domain.js'
+import { DEFAULT_LOCAL_MODEL, embedTexts, getLocalModelStatus, setLocalModelCacheDir } from './embed.js'
+import type { LocalModelStatus } from './embed.js'
+import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, listLocalModels } from './localModels.js'
+import type { LocalModelSummary } from './localModels.js'
+import { knowledgeRoute } from './http.js'
+import { extractFromHtml, parseDocumentBuffer } from './parse.js'
+import { rank } from './retrieval.js'
+import { maximalMarginalRelevance, reciprocalRankFusion, RRF_K } from './retrieval.js'
+import type { RankedHit } from './retrieval.js'
+import { rerankCandidates } from './rerank.js'
+import { openStore } from './store.js'
+import type { StorageDomainFacility, Store } from './store.js'
+import type {
+  AddFileDocumentRequest,
+  AddTextDocumentRequest,
+  BaseConfig,
+  BaseStats,
+  BaseSummary,
+  CreateBaseRequest,
+  DocumentDetail,
+  DocumentSourceType,
+  DocumentSummary,
+  ImportDirectoryRequest,
+  ImportUrlRequest,
+  KnowledgeBase,
+  KnowledgeChunk,
+  KnowledgeConfig,
+  KnowledgeDocument,
+  SearchHit,
+  SearchMode,
+  SearchRequest,
+  SearchResult,
+  UpdateBaseRequest,
+} from './types.js'
+
+export type * from './types.js'
+export { Config } from './config.js'
+export { knowledgeDomainSpec } from './domain.js'
+export { chunkText } from './chunk.js'
+export { embedTexts, getLocalModelStatus, DEFAULT_LOCAL_MODEL } from './embed.js'
+export { tokenize, cosineSimilarity, rank } from './retrieval.js'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    knowledge: KnowledgeService
+  }
+}
+
+/** Curated model-id suggestions for the settings comboboxes (DSH exposes chat models, not embedding models). */
+export const MODEL_SUGGESTIONS = {
+  embedding: [
+    'text-embedding-3-small',
+    'text-embedding-3-large',
+    'text-embedding-ada-002',
+    'bge-m3',
+    'bge-large-zh-v1.5',
+    'bge-small-zh-v1.5',
+    'nomic-embed-text',
+    'mxbai-embed-large',
+    'snowflake-arctic-embed2',
+  ],
+  local: [
+    'onnx-community/Qwen3-Embedding-0.6B-ONNX',
+    'BAAI/bge-m3',
+    'BAAI/bge-small-zh-v1.5',
+    'thenlper/gte-small',
+  ],
+  rerank: [
+    'jina-reranker-v2-base-multilingual',
+    'BAAI/bge-reranker-v2-m3',
+    'bge-reranker-base',
+    'bce-reranker-base_v1',
+  ],
+} as const
+
+/** Candidate-pool cap for SQL retrieval lanes, bounding FTS + brute-force vector scans. */
+const LANE_CANDIDATE_CAP = 200
+
+interface BackgroundJob {
+  readonly baseId: string
+  /** Human label for the unit of work (file name or document title). */
+  kind: 'directory' | 'reindex'
+  cancelled: boolean
+  imported: number
+  skipped: number
+  total: number
+  current: string
+  errors: Array<{ file: string; error: string }>
+  done: boolean
+}
+
+export class KnowledgeService extends Service {
+  static inject = ['webServer']
+  static Config = Config
+
+  private readonly baseConfig: Config
+  private store: Store | undefined
+  private readonly storeReady: Promise<void>
+  private resolveStore: () => void = () => {}
+  private readonly jobs = new Map<string, BackgroundJob>()
+  private readonly indexing = new Map<string, { baseId: string; title: string; phase: 'parsing' | 'embedding'; total: number; progress: number }>()
+
+  constructor(ctx: Context, config: Config) {
+    super(ctx, 'knowledge')
+    this.baseConfig = config
+    this.storeReady = new Promise<void>(resolve => { this.resolveStore = resolve })
+    ctx.effect(() => ctx.webServer.register(knowledgeRoute(this)), 'knowledge: /knowledge route')
+  }
+
+  protected async [Service.init](): Promise<void> {
+    setLocalModelCacheDir(this.baseConfig.localModelCacheDir)
+    const facility = this.ctx.get('storageDomain') as StorageDomainFacility | undefined
+    this.store = await openStore(facility, { chunkStorePath: this.baseConfig.chunkStorePath })
+    this.resolveStore()
+    const store = this.store
+    this.ctx.effect(() => async () => { await store.close() }, 'knowledge: close store')
+  }
+
+  /** Wait until the durable store is ready; the HTTP route awaits this. */
+  async whenReady(): Promise<void> {
+    await this.storeReady
+  }
+
+  // ── configuration ─────────────────────────────────────────────────────────
+
+  getConfig(): KnowledgeConfig {
+    return resolveConfig(this.baseConfig, this.requireStore().getConfigOverrides())
+  }
+
+  /** Static model-id suggestions for the settings comboboxes. */
+  modelSuggestions(): typeof MODEL_SUGGESTIONS {
+    return MODEL_SUGGESTIONS
+  }
+
+  /** Resolve one base's effective config (global + that base's overrides). */
+  getConfigFor(baseId?: string): KnowledgeConfig {
+    const store = this.requireStore()
+    if (baseId !== undefined) {
+      const base = store.getBase(baseId)
+      if (base !== undefined) {
+        return resolveConfigFor(this.baseConfig, store.getConfigOverrides(), base.config)
+      }
+    }
+    return this.getConfig()
+  }
+
+  async setConfig(overrides: ConfigOverrides): Promise<KnowledgeConfig> {
+    await this.requireStore().setConfigOverrides(overrides)
+    return this.getConfig()
+  }
+
+  // ── invocation toggle ─────────────────────────────────────────────────────
+
+  isEnabled(): boolean {
+    return this.requireStore().getEnabled()
+  }
+
+  async setEnabled(enabled: boolean): Promise<void> {
+    await this.requireStore().setEnabled(enabled)
+  }
+
+  getEnabledBaseIds(): string[] {
+    return this.requireStore().getEnabledBaseIds()
+  }
+
+  async setEnabledBaseIds(ids: readonly string[]): Promise<void> {
+    await this.requireStore().setEnabledBaseIds([...new Set(ids)])
+  }
+
+  /**
+   * Resolve the effective search scope for a model call: the enabled base ids,
+   * or `undefined` when none are pinned (meaning "every base", Cherry's no-binding case).
+   */
+  enabledScope(): string[] | undefined {
+    const store = this.requireStore()
+    const ids = store.getEnabledBaseIds()
+    if (ids.length === 0) return undefined
+    const existing = new Set(store.listBases().map(base => base.id))
+    const valid = ids.filter(id => existing.has(id))
+    return valid.length > 0 ? valid : undefined
+  }
+
+  // ── bases ─────────────────────────────────────────────────────────────────
+
+  async createBase(request: CreateBaseRequest): Promise<KnowledgeBase> {
+    const name = request.name.trim()
+    if (name.length === 0) throw new Error('base name is required')
+    const now = Date.now()
+    const store = this.requireStore()
+    const group = request.group?.trim()
+    if (group !== undefined && group.length > 0 && !store.getGroups().includes(group)) {
+      await store.setGroups([...store.getGroups(), group])
+    }
+    const base: KnowledgeBase = {
+      id: crypto.randomUUID(),
+      name,
+      description: request.description?.trim() ?? '',
+      ...(group !== undefined && group.length > 0 ? { group } : {}),
+      ...(request.config !== undefined ? { config: compactBaseConfig(request.config) } : {}),
+      createdAt: now,
+      updatedAt: now,
+    }
+    await store.putBase(base)
+    return base
+  }
+
+  /** Cherry-style restore: re-embed every source document into a fresh base
+   *  (with the source's current config), returning the new base. */
+  async restoreBase(sourceBaseId: string, name: string): Promise<KnowledgeBase> {
+    const store = this.requireStore()
+    const source = store.getBase(sourceBaseId)
+    if (source === undefined) throw new Error(`knowledge base not found: ${sourceBaseId}`)
+    const base = await this.createBase({
+      name: name.trim() || `${source.name} (恢复)`,
+      description: source.description,
+      group: source.group,
+      config: source.config,
+    })
+    for (const doc of store.listDocuments(sourceBaseId)) {
+      if (doc.sourceType === 'directory') continue
+      const text = doc.rawText ?? reconstructFromChunks(store.listChunksByDoc(doc.id))
+      if (text.trim().length === 0) continue
+      await this.ingestDocument({
+        baseId: base.id,
+        title: doc.title,
+        sourceType: doc.sourceType,
+        ...(doc.fileName !== undefined ? { fileName: doc.fileName } : {}),
+        ...(doc.mimeType !== undefined ? { mimeType: doc.mimeType } : {}),
+        ...(doc.url !== undefined ? { url: doc.url } : {}),
+        text,
+      })
+    }
+    return base
+  }
+
+  async deleteBase(id: string): Promise<void> {
+    const store = this.requireStore()
+    if (store.getBase(id) === undefined) throw new Error(`knowledge base not found: ${id}`)
+    // Two statements: the base record plus one chunk sweep by base id.
+    await store.deleteChunksByBase(id)
+    await store.deleteBase(id)
+    // Keep the invocation scope clean: a deleted base id must not silently
+    // narrow future searches to a base that no longer exists.
+    const enabled = store.getEnabledBaseIds()
+    if (enabled.includes(id)) await store.setEnabledBaseIds(enabled.filter(x => x !== id))
+  }
+
+  async renameBase(id: string, request: UpdateBaseRequest): Promise<KnowledgeBase> {
+    const store = this.requireStore()
+    const existing = store.getBase(id)
+    if (existing === undefined) throw new Error(`knowledge base not found: ${id}`)
+    const next: KnowledgeBase = {
+      ...existing,
+      name: request.name?.trim() || existing.name,
+      description: request.description?.trim() ?? existing.description,
+      ...(request.group !== undefined
+        ? { group: request.group.trim().length > 0 ? request.group.trim() : undefined }
+        : {}),
+      ...(request.config !== undefined
+        ? { config: mergeBaseConfig(existing.config, request.config) }
+        : {}),
+      updatedAt: Date.now(),
+    }
+    await store.putBase(next)
+    return next
+  }
+
+  listBases(): BaseSummary[] {
+    const store = this.requireStore()
+    return store.listBases().map(base => {
+      const documents = store.listDocuments(base.id)
+      const chunkCount = documents.reduce((sum, doc) => sum + doc.chunkCount, 0)
+      const charCount = documents.reduce((sum, doc) => sum + doc.charCount, 0)
+      const tokenCount = documents.reduce((sum, doc) => sum + (doc.tokenCount ?? 0), 0)
+      return {
+        id: base.id,
+        name: base.name,
+        description: base.description,
+        ...(base.group !== undefined ? { group: base.group } : {}),
+        documentCount: documents.length,
+        chunkCount,
+        charCount,
+        tokenCount,
+        ...(base.config !== undefined ? { config: base.config } : {}),
+        createdAt: base.createdAt,
+        updatedAt: base.updatedAt,
+      }
+    })
+  }
+
+  // ── groups ────────────────────────────────────────────────────────────────
+
+  listGroups(): string[] {
+    return [...this.requireStore().getGroups()].sort((a, b) => a.localeCompare(b))
+  }
+
+  async createGroup(name: string): Promise<string[]> {
+    const store = this.requireStore()
+    const trimmed = name.trim()
+    if (trimmed.length === 0) throw new Error('group name is required')
+    const groups = new Set(store.getGroups())
+    if (groups.has(trimmed)) throw new Error(`group "${trimmed}" already exists`)
+    groups.add(trimmed)
+    await store.setGroups([...groups])
+    return [...groups].sort((a, b) => a.localeCompare(b))
+  }
+
+  async renameGroup(from: string, to: string): Promise<string[]> {
+    const store = this.requireStore()
+    const trimmed = to.trim()
+    if (trimmed.length === 0) throw new Error('group name is required')
+    const groups = new Set(store.getGroups())
+    if (!groups.has(from)) throw new Error(`group "${from}" does not exist`)
+    if (groups.has(trimmed) && from !== trimmed) throw new Error(`group "${trimmed}" already exists`)
+    groups.delete(from)
+    groups.add(trimmed)
+    for (const base of store.listBases()) {
+      if (base.group === from) await store.putBase({ ...base, group: trimmed, updatedAt: Date.now() })
+    }
+    await store.setGroups([...groups])
+    return [...groups].sort((a, b) => a.localeCompare(b))
+  }
+
+  async deleteGroup(name: string): Promise<void> {
+    const store = this.requireStore()
+    const groups = store.getGroups().filter(group => group !== name)
+    await store.setGroups(groups)
+    for (const base of store.listBases()) {
+      if (base.group === name) await store.putBase({ ...base, group: undefined, updatedAt: Date.now() })
+    }
+  }
+
+  // ── documents ─────────────────────────────────────────────────────────────
+
+  async addTextDocument(request: AddTextDocumentRequest): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
+    if (store.getBase(request.baseId) === undefined) throw new Error(`knowledge base not found: ${request.baseId}`)
+    if (request.content.trim().length === 0) throw new Error('document content is empty')
+    return this.ingestDocument({
+      baseId: request.baseId,
+      title: request.title.trim(),
+      sourceType: 'text',
+      text: request.content,
+    })
+  }
+
+  async addFileDocument(request: AddFileDocumentRequest): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
+    if (store.getBase(request.baseId) === undefined) throw new Error(`knowledge base not found: ${request.baseId}`)
+    // Same-name conflict handling, Cherry Studio style: replace the existing entry first.
+    if (request.conflict === 'replace') {
+      const existing = store.listDocuments(request.baseId).find(doc => doc.fileName === request.fileName)
+      if (existing !== undefined) {
+        await store.deleteChunks(existing.id)
+        await store.deleteDocument(existing.id)
+      }
+    }
+    // Publish a placeholder first so the row appears (with "parsing" status)
+    // while the buffer is decoded and parsed, then hand the doc id to ingest.
+    const title = request.title?.trim() || request.fileName
+    const docId = crypto.randomUUID()
+    const placeholder: KnowledgeDocument = {
+      id: docId,
+      baseId: request.baseId,
+      title,
+      sourceType: 'file',
+      fileName: request.fileName,
+      ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
+      ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
+      charCount: 0,
+      chunkCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    await store.putDocument(placeholder)
+    this.indexing.set(docId, { baseId: request.baseId, title, phase: 'parsing', total: 0, progress: 0 })
+    try {
+      const bytes = decodeBase64(request.contentBase64)
+      const text = await parseDocumentBuffer(bytes, request.fileName, request.mimeType)
+      if (text.trim().length === 0) throw new Error('parsed document is empty')
+      return await this.ingestDocument({
+        baseId: request.baseId,
+        title,
+        sourceType: 'file',
+        fileName: request.fileName,
+        ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
+        ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
+        placeholderId: docId,
+        text,
+      })
+    } catch (error) {
+      // A parse or duplicate failure removes the placeholder so an empty/broken
+      // file does not linger in the list.
+      await store.deleteDocument(docId)
+      this.indexing.delete(docId)
+      throw error
+    }
+  }
+
+  /** Start importing a local directory as a cancellable background job. */
+  async importDirectory(request: ImportDirectoryRequest): Promise<{ jobId: string; total: number }> {
+    const store = this.requireStore()
+    if (store.getBase(request.baseId) === undefined) throw new Error(`knowledge base not found: ${request.baseId}`)
+    const files = await scanDirectory(request.path)
+    const jobId = crypto.randomUUID()
+    this.pruneJobs()
+    this.jobs.set(jobId, {
+      baseId: request.baseId,
+      kind: 'directory',
+      cancelled: false,
+      imported: 0,
+      skipped: 0,
+      total: files.length,
+      current: '',
+      errors: [],
+      done: false,
+    })
+    void this.runDirectoryImport(jobId, files)
+    return { jobId, total: files.length }
+  }
+
+  /** Progress snapshot of an active (or just-finished) directory import. */
+  directoryImportStatus(jobId: string): BackgroundJob | undefined {
+    return this.jobs.get(jobId)
+  }
+
+  cancelDirectoryImport(jobId: string): void {
+    const job = this.jobs.get(jobId)
+    if (job !== undefined && !job.done) job.cancelled = true
+  }
+
+  private async runDirectoryImport(jobId: string, files: readonly string[]): Promise<void> {
+    const job = this.jobs.get(jobId)
+    if (job === undefined) return
+    for (const file of files) {
+      if (job.cancelled) break
+      job.current = file
+      try {
+        const buffer = await readFile(file)
+        const text = await parseDocumentBuffer(buffer, basename(file))
+        if (text.trim().length === 0) {
+          job.skipped += 1
+          continue
+        }
+        await this.ingestDocument({
+          baseId: job.baseId,
+          title: basename(file),
+          sourceType: 'file',
+          fileName: basename(file),
+          text,
+        })
+        job.imported += 1
+      } catch (error) {
+        job.errors.push({ file, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    job.done = true
+    job.current = ''
+  }
+
+  private pruneJobs(): void {
+    if (this.jobs.size < 50) return
+    for (const [id, job] of this.jobs) {
+      if (job.done) this.jobs.delete(id)
+    }
+  }
+
+  /** Create a directory container item (no chunks) under an optional parent. */
+  async createDirectory(baseId: string, title: string, parentDirectoryId?: string): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
+    const document: KnowledgeDocument = {
+      id: crypto.randomUUID(),
+      baseId,
+      title: title.trim() || 'directory',
+      sourceType: 'directory',
+      ...(parentDirectoryId !== undefined ? { parentDirectoryId } : {}),
+      charCount: 0,
+      chunkCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    await store.putDocument(document)
+    await this.touchBase(baseId)
+    return document
+  }
+
+  /** Import a local directory as a nested tree of directory containers + file items. */
+  async importDirectoryTree(
+    baseId: string,
+    path: string,
+    parentDirectoryId?: string,
+  ): Promise<{ imported: number; directories: number; errors: Array<{ file: string; error: string }> }> {
+    const rootName = basename(path)
+    const rootId = parentDirectoryId ?? (await this.createDirectory(baseId, rootName)).id
+    let imported = 0
+    let directories = 1
+    const errors: Array<{ file: string; error: string }> = []
+
+    const walk = async (dir: string, parentId: string, depth: number): Promise<void> => {
+      if (depth > DIRECTORY_MAX_DEPTH) return
+      let entries
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch (error) {
+        errors.push({ file: dir, error: error instanceof Error ? error.message : String(error) })
+        return
+      }
+      for (const entry of entries) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          const child = await this.createDirectory(baseId, entry.name, parentId)
+          directories += 1
+          await walk(full, child.id, depth + 1)
+        } else if (entry.isFile() && DIRECTORY_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+          try {
+            const buffer = await readFile(full)
+            const text = await parseDocumentBuffer(buffer, basename(full))
+            if (text.trim().length === 0) continue
+            await this.ingestDocument({
+              baseId,
+              title: basename(full),
+              sourceType: 'file',
+              fileName: basename(full),
+              parentDirectoryId: parentId,
+              text,
+            })
+            imported += 1
+          } catch (error) {
+            errors.push({ file: full, error: error instanceof Error ? error.message : String(error) })
+          }
+        }
+      }
+    }
+
+    await walk(path, rootId, 0)
+    return { imported, directories, errors }
+  }
+
+  async addUrlDocument(request: ImportUrlRequest): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
+    if (store.getBase(request.baseId) === undefined) throw new Error(`knowledge base not found: ${request.baseId}`)
+    const html = await fetchHtml(request.url)
+    const extracted = extractFromHtml(html)
+    if (extracted.text.trim().length === 0) throw new Error('URL returned no extractable text')
+    return this.ingestDocument({
+      baseId: request.baseId,
+      title: request.title?.trim() || extracted.title || request.url,
+      sourceType: 'url',
+      url: request.url,
+      text: extracted.text,
+    })
+  }
+
+  async deleteDocument(id: string): Promise<void> {
+    const store = this.requireStore()
+    const existing = store.getDocument(id)
+    if (existing === undefined) throw new Error(`document not found: ${id}`)
+    await this.deleteDocumentRecursive(id)
+    // One updatedAt write per delete, not per descendant.
+    await this.touchBase(existing.baseId)
+  }
+
+  /** Delete one document (recursing into directory containers), one write per item. */
+  private async deleteDocumentRecursive(id: string): Promise<void> {
+    const store = this.requireStore()
+    const existing = store.getDocument(id)
+    if (existing === undefined) return
+    // Deleting a directory container also removes its descendants.
+    if (existing.sourceType === 'directory') {
+      for (const child of store.listDocuments(existing.baseId)) {
+        if (child.parentDirectoryId === id) await this.deleteDocumentRecursive(child.id)
+      }
+    }
+    await store.deleteChunks(id)
+    await store.deleteDocument(id)
+  }
+
+  async renameDocument(id: string, title: string): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
+    const existing = store.getDocument(id)
+    if (existing === undefined) throw new Error(`document not found: ${id}`)
+    const next = { ...existing, title: title.trim() || existing.title, updatedAt: Date.now() }
+    await store.putDocument(next)
+    return next
+  }
+
+  async reindexDocument(id: string): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
+    const document = store.getDocument(id)
+    if (document === undefined) throw new Error(`document not found: ${id}`)
+    const text = document.rawText ?? reconstructFromChunks(store.listChunksByDoc(id))
+    const config = this.getConfigFor(document.baseId)
+    // Reuse old vectors for chunks whose search text is unchanged (same source
+    // only), so a re-chunk after a size change re-embeds just the new slices.
+    const key = embeddingKey(config)
+    const reuse = new Map<string, number[]>()
+    if (key !== undefined) {
+      for (const chunk of store.listChunksByDoc(id)) {
+        if (chunk.embedding !== undefined && chunk.embeddingModel === key) {
+          reuse.set(sha256(chunkSearchText(chunk)), chunk.embedding)
+        }
+      }
+    }
+    const { chunks, embeddingError } = await this.buildChunks(document.baseId, document.id, document.title, text, config, reuse)
+    const { embeddingError: _staleError, ...rest } = document
+    const next: KnowledgeDocument = {
+      ...rest,
+      rawText: text,
+      charCount: text.length,
+      tokenCount: estimateTokens(text),
+      chunkCount: chunks.length,
+      ...(embeddingError !== undefined ? { embeddingError } : {}),
+      updatedAt: Date.now(),
+    }
+    // putChunks overwrites the doc's chunk bundle in one write (legacy per-chunk
+    // rows, if any, stay hidden because a bundle record is authoritative).
+    await store.putChunks(chunks)
+    await store.putDocument(next)
+    await this.touchBase(document.baseId)
+    return next
+  }
+
+  async reindexBase(baseId: string): Promise<{ reindexed: number }> {
+    const store = this.requireStore()
+    const documents = store.listDocuments(baseId)
+    for (const document of documents) await this.reindexDocument(document.id)
+    return { reindexed: documents.length }
+  }
+
+  /** Start re-embedding a whole base as a cancellable background job. */
+  async startReindexBase(baseId: string): Promise<{ jobId: string; total: number }> {
+    const store = this.requireStore()
+    if (store.getBase(baseId) === undefined) throw new Error(`knowledge base not found: ${baseId}`)
+    const documents = store.listDocuments(baseId)
+    const jobId = crypto.randomUUID()
+    this.pruneJobs()
+    this.jobs.set(jobId, {
+      baseId,
+      kind: 'reindex',
+      cancelled: false,
+      imported: 0,
+      skipped: 0,
+      total: documents.length,
+      current: '',
+      errors: [],
+      done: false,
+    })
+    void this.runReindexJob(jobId, baseId)
+    return { jobId, total: documents.length }
+  }
+
+  /** Progress snapshot of an active (or just-finished) reindex job. */
+  reindexJobStatus(jobId: string): BackgroundJob | undefined {
+    return this.jobs.get(jobId)
+  }
+
+  cancelReindexJob(jobId: string): void {
+    const job = this.jobs.get(jobId)
+    if (job !== undefined && !job.done) job.cancelled = true
+  }
+
+  private async runReindexJob(jobId: string, baseId: string): Promise<void> {
+    const job = this.jobs.get(jobId)
+    if (job === undefined) return
+    const documents = this.requireStore().listDocuments(baseId)
+    for (const doc of documents) {
+      if (job.cancelled) break
+      job.current = doc.title
+      if (doc.sourceType === 'directory') {
+        job.skipped += 1
+        continue
+      }
+      try {
+        await this.reindexDocument(doc.id)
+        job.imported += 1
+      } catch (error) {
+        job.errors.push({ file: doc.title, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    job.done = true
+    job.current = ''
+  }
+
+  async reindexDocuments(ids: readonly string[]): Promise<{ reindexed: number }> {
+    let reindexed = 0
+    for (const id of ids) {
+      if (this.requireStore().getDocument(id) === undefined) continue
+      await this.reindexDocument(id)
+      reindexed += 1
+    }
+    return { reindexed }
+  }
+
+  async deleteDocuments(ids: readonly string[]): Promise<{ deleted: number }> {
+    const store = this.requireStore()
+    let deleted = 0
+    const touched = new Set<string>()
+    for (const id of ids) {
+      const document = store.getDocument(id)
+      if (document === undefined) continue
+      await store.deleteChunks(id)
+      await store.deleteDocument(id)
+      touched.add(document.baseId)
+      deleted += 1
+    }
+    // One updatedAt write per affected base, not per document.
+    for (const baseId of touched) await this.touchBase(baseId)
+    return { deleted }
+  }
+
+  listDocuments(baseId: string): DocumentSummary[] {
+    const store = this.requireStore()
+    // One grouped pass over the base's chunks (embedding is all-or-nothing per
+    // doc), avoiding a full chunk scan per document on every list.
+    const { withChunks, missingEmbedding } = store.docChunkStatus(baseId)
+    const allDocs = store.listDocuments(baseId)
+    const childCount = new Map<string, number>()
+    for (const doc of allDocs) {
+      if (doc.parentDirectoryId !== undefined) {
+        childCount.set(doc.parentDirectoryId, (childCount.get(doc.parentDirectoryId) ?? 0) + 1)
+      }
+    }
+    return allDocs.map(doc => {
+      const embedded = withChunks.has(doc.id) && !missingEmbedding.has(doc.id)
+      const active = this.indexing.get(doc.id)
+      let status: 'pending' | 'processing' | 'completed' | 'failed' = 'pending'
+      if (doc.sourceType !== 'directory') {
+        if (doc.embeddingError !== undefined) status = 'failed'
+        else if (active !== undefined) status = 'processing'
+        else if (embedded) status = 'completed'
+      }
+      return {
+        id: doc.id,
+        baseId: doc.baseId,
+        title: doc.title,
+        sourceType: doc.sourceType,
+        fileName: doc.fileName,
+        url: doc.url,
+        ...(doc.parentDirectoryId !== undefined ? { parentDirectoryId: doc.parentDirectoryId } : {}),
+        charCount: doc.charCount,
+        tokenCount: doc.tokenCount,
+        chunkCount: doc.chunkCount,
+        ...(doc.sourceType === 'directory' ? { childCount: childCount.get(doc.id) ?? 0 } : {}),
+        embedded,
+        ...(doc.embeddingError !== undefined ? { embeddingError: doc.embeddingError } : {}),
+        ...(doc.sourceType !== 'directory' ? { status } : {}),
+        ...(active !== undefined ? { indexingProgress: active.progress, indexingPhase: active.phase } : {}),
+        createdAt: doc.createdAt,
+        ...(doc.updatedAt !== undefined ? { updatedAt: doc.updatedAt } : {}),
+      }
+    })
+  }
+
+  /** Pre-order DFS outline of one base's directory tree (kb_list outline mode). */
+  listBaseOutline(baseId: string): {
+    baseId: string
+    totalItems: number
+    nodes: Array<{ depth: number; docId: string; title: string; type: DocumentSourceType; status: string }>
+  } {
+    const summaries = this.listDocuments(baseId)
+    const children = new Map<string, DocumentSummary[]>()
+    const roots: DocumentSummary[] = []
+    for (const doc of summaries) {
+      if (doc.parentDirectoryId === undefined) roots.push(doc)
+      else {
+        const list = children.get(doc.parentDirectoryId) ?? []
+        list.push(doc)
+        children.set(doc.parentDirectoryId, list)
+      }
+    }
+    const byTitle = (a: DocumentSummary, b: DocumentSummary): number => a.title.localeCompare(b.title)
+    roots.sort(byTitle)
+    for (const list of children.values()) list.sort(byTitle)
+    const nodes: Array<{ depth: number; docId: string; title: string; type: DocumentSourceType; status: string }> = []
+    const walk = (doc: DocumentSummary, depth: number): void => {
+      nodes.push({
+        depth,
+        docId: doc.id,
+        title: doc.title,
+        type: doc.sourceType,
+        status: doc.status ?? 'completed',
+      })
+      for (const child of children.get(doc.id) ?? []) walk(child, depth + 1)
+    }
+    for (const root of roots) walk(root, 0)
+    return { baseId, totalItems: summaries.length, nodes }
+  }
+
+  /** Live import/embedding progress for every document currently being indexed. */
+  indexingStatus(): Array<{ docId: string; baseId: string; title: string; phase: 'parsing' | 'embedding'; progress: number }> {
+    return [...this.indexing.entries()].map(([docId, entry]) => ({
+      docId,
+      baseId: entry.baseId,
+      title: entry.title,
+      phase: entry.phase,
+      progress: entry.progress,
+    }))
+  }
+
+  /** Current download/load state of an in-process embedding model. */
+  getLocalModelStatus(modelId?: string): LocalModelStatus {
+    return getLocalModelStatus(modelId?.trim() || DEFAULT_LOCAL_MODEL)
+  }
+
+  // ── local model manager (settings "本地模型") ──────────────────────────────
+
+  listLocalModels(): Promise<LocalModelSummary[]> {
+    return listLocalModels()
+  }
+
+  downloadLocalModel(id: string): Promise<LocalModelSummary> {
+    return downloadLocalModel(id)
+  }
+
+  cancelLocalModel(id: string): Promise<LocalModelSummary> {
+    return cancelLocalModelDownload(id)
+  }
+
+  deleteLocalModel(id: string): Promise<LocalModelSummary> {
+    return deleteLocalModel(id)
+  }
+
+  listChunks(documentId: string, limit?: number, offset?: number): KnowledgeChunk[] {
+    // Bounded SQL read (LIMIT/OFFSET) on the SQLite-backed store.
+    const start = clampInt(offset ?? 0, 0, Number.MAX_SAFE_INTEGER, 0)
+    const count = limit === undefined ? undefined : clampInt(limit, 0, Number.MAX_SAFE_INTEGER, 0)
+    return this.requireStore().listChunksByDoc(documentId, count, start)
+  }
+
+  getDocument(id: string, opts?: { includeChunks?: boolean; rawTextLimit?: number }): DocumentDetail {
+    const store = this.requireStore()
+    const doc = store.getDocument(id)
+    if (doc === undefined) throw new Error(`document not found: ${id}`)
+    const rawText = doc.rawText
+    const rawTextLimit = opts?.rawTextLimit
+    const truncated = rawText !== undefined && rawTextLimit !== undefined && rawText.length > rawTextLimit
+    return {
+      id: doc.id,
+      baseId: doc.baseId,
+      title: doc.title,
+      sourceType: doc.sourceType,
+      ...(doc.fileName !== undefined ? { fileName: doc.fileName } : {}),
+      ...(doc.url !== undefined ? { url: doc.url } : {}),
+      rawText: truncated ? rawText.slice(0, rawTextLimit) : rawText,
+      ...(truncated ? { rawTextTruncated: true } : {}),
+      charCount: doc.charCount,
+      ...(doc.tokenCount !== undefined ? { tokenCount: doc.tokenCount } : {}),
+      chunkCount: doc.chunkCount,
+      createdAt: doc.createdAt,
+      ...(opts?.includeChunks === false ? {} : { chunks: store.listChunksByDoc(id) }),
+    }
+  }
+
+  /** Read one document's source text as a `[charStart, charEnd)` slice (kb_read read mode). */
+  readDocumentText(id: string, charStart?: number, charEnd?: number): {
+    id: string
+    baseId: string
+    title: string
+    sourceType: DocumentSourceType
+    totalChars: number
+    charStart: number
+    charEnd: number
+    content: string
+    truncated: boolean
+  } {
+    const store = this.requireStore()
+    const doc = store.getDocument(id)
+    if (doc === undefined) throw new Error(`document not found: ${id}`)
+    const text = doc.rawText ?? reconstructFromChunks(store.listChunksByDoc(id))
+    const total = text.length
+    const start = clampInt(charStart ?? 0, 0, total, 0)
+    const end = clampInt(charEnd ?? total, start, total, total)
+    return {
+      id: doc.id,
+      baseId: doc.baseId,
+      title: doc.title,
+      sourceType: doc.sourceType,
+      totalChars: total,
+      charStart: start,
+      charEnd: end,
+      content: text.slice(start, end),
+      truncated: end < total,
+    }
+  }
+
+  /** Grep one document's source text for a regular expression (kb_read grep mode). */
+  grepDocument(id: string, pattern: string, maxMatches?: number, ignoreCase = true): {
+    id: string
+    baseId: string
+    title: string
+    totalMatches: number
+    matches: Array<{ line: number; charStart: number; charEnd: number; snippet: string }>
+  } {
+    const store = this.requireStore()
+    const doc = store.getDocument(id)
+    if (doc === undefined) throw new Error(`document not found: ${id}`)
+    const text = doc.rawText ?? reconstructFromChunks(store.listChunksByDoc(id))
+    let regex: RegExp
+    try {
+      regex = new RegExp(pattern, `g${ignoreCase ? 'i' : ''}`)
+    } catch (error) {
+      throw new Error(`invalid regex: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    const cap = clampInt(maxMatches ?? 50, 1, 200, 50)
+    const matches: Array<{ line: number; charStart: number; charEnd: number; snippet: string }> = []
+    let match: RegExpExecArray | null
+    while (matches.length < cap && (match = regex.exec(text)) !== null) {
+      const matchStart = match.index
+      const matchEnd = matchStart + match[0].length
+      const line = text.slice(0, matchStart).split('\n').length
+      const snippetStart = Math.max(0, matchStart - 60)
+      const snippetEnd = Math.min(text.length, matchEnd + 60)
+      matches.push({
+        line,
+        charStart: matchStart,
+        charEnd: matchEnd,
+        snippet: `${snippetStart > 0 ? '…' : ''}${text.slice(snippetStart, snippetEnd)}${snippetEnd < text.length ? '…' : ''}`,
+      })
+      if (match[0].length === 0) regex.lastIndex += 1
+    }
+    return { id: doc.id, baseId: doc.baseId, title: doc.title, totalMatches: matches.length, matches }
+  }
+
+  // ── statistics ────────────────────────────────────────────────────────────
+
+  stats(baseId?: string): BaseStats {
+    const store = this.requireStore()
+    const bases = baseId !== undefined ? store.listBases().filter(base => base.id === baseId) : store.listBases()
+    const documents = bases.flatMap(base => store.listDocuments(base.id))
+    const charCount = documents.reduce((sum, doc) => sum + doc.charCount, 0)
+    const tokenCount = documents.reduce((sum, doc) => sum + (doc.tokenCount ?? 0), 0)
+    const chunkStats = store.chunkStats(bases.map(base => base.id))
+    // Staleness: an embedded chunk is stale when it was produced by a different
+    // embedding source than the base's currently resolved configuration.
+    let staleChunkCount = 0
+    let hasCurrentKey = false
+    for (const base of bases) {
+      const key = embeddingKey(this.getConfigFor(base.id))
+      if (key === undefined) continue
+      hasCurrentKey = true
+      for (const entry of chunkStats.embeddingModelCounts) {
+        if (entry.baseId === base.id && entry.model !== key) staleChunkCount += entry.count
+      }
+    }
+    return {
+      ...(baseId !== undefined ? { baseId } : {}),
+      documentCount: documents.length,
+      chunkCount: chunkStats.count,
+      charCount,
+      tokenCount,
+      embedded: chunkStats.embedded,
+      ...(chunkStats.dimensions !== undefined ? { embeddingDimensions: chunkStats.dimensions } : {}),
+      ...(hasCurrentKey && staleChunkCount > 0 ? { staleEmbeddings: true, staleChunkCount } : {}),
+    }
+  }
+
+  // ── retrieval ─────────────────────────────────────────────────────────────
+
+  async search(request: SearchRequest): Promise<SearchResult> {
+    const startedAt = Date.now()
+    const store = this.requireStore()
+    const config = this.getConfigFor(request.baseId)
+    const query = request.query.trim()
+    if (query.length === 0) return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] }
+    // A stale base id (e.g. a base deleted without sweeping child records)
+    // must not surface orphaned content.
+    if (request.baseId !== undefined && store.getBase(request.baseId) === undefined) {
+      return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] }
+    }
+
+    const requestedMode = request.mode ?? config.searchMode
+    const topK = clampInt(request.topK ?? config.topK, 1, 50, 6)
+    const threshold = request.threshold ?? config.similarityThreshold
+
+    const lane = store.retrievalLane
+    if (lane !== undefined) {
+      const scope = request.baseId !== undefined
+        ? [request.baseId]
+        : request.baseIds !== undefined && request.baseIds.length > 0
+          ? [...request.baseIds]
+          : store.listBases().map(base => base.id)
+      const poolSize = Math.min(Math.max(topK * 4, 20), LANE_CANDIDATE_CAP)
+
+      let queryVector: number[] | undefined
+      if ((requestedMode === 'vector' || requestedMode === 'hybrid' || requestedMode === 'auto') && config.embeddingProvider !== 'none') {
+        try {
+          const [vector] = await embedTexts(
+            config.embeddingProvider,
+            config.embeddingBaseUrl,
+            config.embeddingModel,
+            config.embeddingApiKey,
+            [query],
+          )
+          queryVector = vector
+        } catch (error) {
+          this.ctx.logger.warn(`knowledge: embedding failed, using lexical retrieval: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+
+      const useVector = queryVector !== undefined && requestedMode !== 'lexical'
+      let ranked: RankedHit[] = []
+      const byId = new Map<string, KnowledgeChunk>()
+      let total = 0
+      if (useVector) {
+        const vec = await lane.vector(queryVector!, scope, poolSize)
+        total = Math.max(total, vec.total)
+        for (const hit of vec.hits) byId.set(hit.id, hit)
+        if (requestedMode === 'vector') {
+          ranked = vec.hits.map(hit => ({ id: hit.id, score: hit.score, vectorScore: hit.score }))
+        } else {
+          // Hybrid/auto: fuse both lanes with Reciprocal Rank Fusion.
+          const lex = await lane.lexical(query, scope, poolSize)
+          total = Math.max(total, lex.total)
+          for (const hit of lex.hits) if (!byId.has(hit.id)) byId.set(hit.id, hit)
+          const vectorOrder = vec.hits.map(hit => hit.id)
+          const lexicalOrder = lex.hits.map(hit => hit.id)
+          const fused = reciprocalRankFusion([vectorOrder, lexicalOrder])
+          const maxFused = 2 / (RRF_K + 1)
+          const vectorScores = new Map(vec.hits.map(hit => [hit.id, hit.score]))
+          const lexicalScores = new Map(lex.hits.map(hit => [hit.id, hit.score]))
+          ranked = [...new Set([...vectorOrder, ...lexicalOrder])].map(id => ({
+            id,
+            score: (fused.get(id) ?? 0) / maxFused,
+            vectorScore: vectorScores.get(id),
+            lexicalScore: lexicalScores.get(id),
+          }))
+        }
+      } else {
+        const lex = await lane.lexical(query, scope, poolSize)
+        total = lex.total
+        for (const hit of lex.hits) byId.set(hit.id, hit)
+        ranked = lex.hits.map(hit => ({ id: hit.id, score: hit.score, lexicalScore: hit.score }))
+      }
+
+      ranked.sort((a, b) => b.score - a.score)
+      if (request.mmr ?? config.mmrDiversity > 0) {
+        if (config.mmrDiversity > 0 && queryVector !== undefined) {
+          ranked = maximalMarginalRelevance(ranked, byId, queryVector, config.mmrDiversity, Math.max(topK * 3, 12))
+        }
+      }
+      return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, total, startedAt)
+    }
+
+    const chunks = request.baseId !== undefined
+      ? store.listChunks(request.baseId)
+      : request.baseIds !== undefined && request.baseIds.length > 0
+        ? request.baseIds.flatMap(id => store.listChunks(id))
+        : store.listBases().flatMap(base => store.listChunks(base.id))
+    if (chunks.length === 0) return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] }
+
+    const byId = new Map(chunks.map(chunk => [chunk.id, chunk]))
+    const candidates = chunks.map(chunk => ({
+      id: chunk.id,
+      text: chunkSearchText(chunk),
+      embedding: chunk.embedding,
+    }))
+
+    let queryVector: number[] | undefined
+    if (requestedMode !== 'lexical' && config.embeddingProvider !== 'none') {
+      try {
+        const [vector] = await embedTexts(
+          config.embeddingProvider,
+          config.embeddingBaseUrl,
+          config.embeddingModel,
+          config.embeddingApiKey,
+          [query],
+        )
+        queryVector = vector
+      } catch (error) {
+        this.ctx.logger.warn(`knowledge: embedding failed, using lexical retrieval: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+
+    // Retrieval produces a candidate pool; rerank (if configured) re-scores it
+    // before the threshold + Top K cut, exactly like Cherry Studio's pipeline.
+    const poolSize = Math.min(chunks.length, Math.max(topK * 4, 20))
+    const ranked = rank(query, candidates, {
+      mode: requestedMode,
+      topK: poolSize,
+      threshold: 0,
+      mmr: request.mmr ?? config.mmrDiversity > 0,
+      mmrLambda: config.mmrDiversity,
+      queryVector,
+    })
+    return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, chunks.length, startedAt)
+  }
+
+  /** Shared tail: rerank (optional), threshold + top-K cut, and hit mapping. */
+  private async finishSearch(
+    store: Store,
+    config: KnowledgeConfig,
+    query: string,
+    requestedMode: SearchMode,
+    initial: RankedHit[],
+    byId: ReadonlyMap<string, KnowledgeChunk>,
+    topK: number,
+    threshold: number,
+    total: number,
+    startedAt: number,
+  ): Promise<SearchResult> {
+    let ranked = initial
+    let reranked = false
+    if (config.rerankModel.trim() !== '' && ranked.length > 1) {
+      try {
+        const pool = ranked.map(hit => ({ id: hit.id, text: chunkSearchText(byId.get(hit.id)!)}))
+        const scores = await rerankCandidates(
+          config.rerankBaseUrl,
+          config.rerankModel,
+          config.rerankApiKey,
+          query,
+          pool,
+        )
+        ranked = ranked.map(hit => ({
+          ...hit,
+          score: scores.get(hit.id) ?? hit.score,
+        }))
+        ranked.sort((a, b) => b.score - a.score)
+        reranked = true
+      } catch (error) {
+        this.ctx.logger.warn(`knowledge: rerank failed, keeping retrieval order: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+
+    const hits: SearchHit[] = ranked
+      // Cherry semantics: the threshold filters only reranked `relevance` scores;
+      // raw BM25/hybrid ranking scores are never threshold-filtered.
+      .filter(hit => (reranked ? hit.score >= threshold : true))
+      .slice(0, topK)
+      .map(hit => {
+        const chunk = byId.get(hit.id)
+        if (chunk === undefined) return undefined
+        return {
+          chunkId: chunk.id,
+          docId: chunk.docId,
+          baseId: chunk.baseId,
+          documentTitle: store.getDocument(chunk.docId)?.title ?? chunk.docId,
+          ...(chunk.heading !== undefined ? { heading: chunk.heading } : {}),
+          index: chunk.index,
+          text: chunk.text,
+          score: hit.score,
+          ...(hit.vectorScore !== undefined ? { vectorScore: hit.vectorScore } : {}),
+          ...(hit.lexicalScore !== undefined ? { lexicalScore: hit.lexicalScore } : {}),
+        }
+      })
+      .filter((hit): hit is SearchHit => hit !== undefined)
+
+    return {
+      query,
+      mode: effectiveMode(requestedMode, ranked),
+      total,
+      reranked,
+      elapsedMs: Date.now() - startedAt,
+      hits,
+    }
+  }
+
+  // ── internal ──────────────────────────────────────────────────────────────
+
+  private async ingestDocument(input: {
+    baseId: string
+    title: string
+    sourceType: DocumentSourceType
+    fileName?: string
+    mimeType?: string
+    url?: string
+    parentDirectoryId?: string
+    text: string
+    /** Pre-created placeholder id (already stored, shown while embedding). */
+    placeholderId?: string
+  }): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
+    const config = this.getConfigFor(input.baseId)
+    const contentHash = sha256(input.text)
+    for (const doc of store.listDocuments(input.baseId)) {
+      if (doc.id === input.placeholderId) continue
+      if (doc.contentHash === contentHash) {
+        throw new Error(`duplicate document: "${doc.title}" already contains identical content`)
+      }
+    }
+    const docId = input.placeholderId ?? crypto.randomUUID()
+    const pieces = chunkText(input.text, config.chunkSize, config.chunkOverlap, {
+      smartChunk: config.smartChunk,
+      separator: config.chunkSeparator,
+    })
+    const { chunks, embeddingError } = await this.buildChunks(input.baseId, docId, input.title, input.text, config, undefined, pieces)
+    const prior = input.placeholderId !== undefined ? store.getDocument(docId) : undefined
+    const document: KnowledgeDocument = {
+      id: docId,
+      baseId: input.baseId,
+      title: input.title,
+      sourceType: input.sourceType,
+      ...(input.fileName !== undefined ? { fileName: input.fileName } : {}),
+      ...(input.mimeType !== undefined ? { mimeType: input.mimeType } : {}),
+      ...(input.url !== undefined ? { url: input.url } : {}),
+      ...(input.parentDirectoryId !== undefined ? { parentDirectoryId: input.parentDirectoryId } : {}),
+      contentHash,
+      rawText: input.text,
+      charCount: input.text.length,
+      tokenCount: estimateTokens(input.text),
+      chunkCount: chunks.length,
+      ...(embeddingError !== undefined ? { embeddingError } : {}),
+      createdAt: prior?.createdAt ?? Date.now(),
+      updatedAt: Date.now(),
+    }
+    await store.putDocument(document)
+    await store.putChunks(chunks)
+    this.indexing.delete(docId)
+    await this.touchBase(input.baseId)
+    return document
+  }
+
+  private async buildChunks(
+    baseId: string,
+    docId: string,
+    title: string,
+    text: string,
+    config: KnowledgeConfig,
+    reuse?: Map<string, number[]>,
+    pieces?: readonly ChunkPiece[],
+  ): Promise<{ chunks: KnowledgeChunk[]; embeddingError?: string }> {
+    const slices = pieces ?? chunkText(text, config.chunkSize, config.chunkOverlap, {
+      smartChunk: config.smartChunk,
+      separator: config.chunkSeparator,
+    })
+    const chunks: KnowledgeChunk[] = slices.map((piece, index) => ({
+      id: crypto.randomUUID(),
+      docId,
+      baseId,
+      index,
+      text: piece.text,
+      ...(piece.heading !== undefined ? { heading: piece.heading } : {}),
+      context: piece.heading !== undefined ? `${title} > ${piece.heading}` : title,
+    }))
+    let embeddingError: string | undefined
+    if (config.embeddingProvider !== 'none' && chunks.length > 0) {
+      const key = embeddingKey(config)
+      this.indexing.set(docId, { baseId, title, phase: 'embedding', total: chunks.length, progress: 0 })
+      try {
+        // Reuse vectors for chunks whose search text is byte-identical to a
+        // previous chunk of the SAME embedding source (Cherry's sha256 dedup),
+        // so a re-chunk after a chunk-size change re-embeds only new slices.
+        const need: number[] = []
+        const needTexts: string[] = []
+        for (let i = 0; i < chunks.length; i += 1) {
+          const searchText = chunkSearchText(chunks[i])
+          const cached = reuse?.get(sha256(searchText))
+          if (cached !== undefined) {
+            chunks[i] = { ...chunks[i], embedding: cached, ...(key !== undefined ? { embeddingModel: key } : {}) }
+          } else {
+            need.push(i)
+            needTexts.push(searchText)
+          }
+        }
+        if (need.length > 0) {
+          const vectors = await this.embedInBatches(needTexts, config, (done, total) => {
+            this.indexing.set(docId, { baseId, title, phase: 'embedding', total, progress: Math.round((done / total) * 100) })
+          })
+          for (let j = 0; j < need.length; j += 1) {
+            const index = need[j]
+            chunks[index] = { ...chunks[index], embedding: vectors[j], ...(key !== undefined ? { embeddingModel: key } : {}) }
+          }
+        }
+      } catch (error) {
+        embeddingError = error instanceof Error ? error.message : String(error)
+        this.ctx.logger.warn(`knowledge: embedding during import failed, storing lexical-only chunks: ${embeddingError}`)
+      } finally {
+        this.indexing.delete(docId)
+      }
+    }
+    return { chunks, embeddingError }
+  }
+
+  private async embedInBatches(texts: string[], config: KnowledgeConfig, onProgress?: (done: number, total: number) => void): Promise<number[][]> {
+    const vectors: number[][] = []
+    for (let i = 0; i < texts.length; i += config.embeddingBatchSize) {
+      const batch = texts.slice(i, i + config.embeddingBatchSize)
+      const batchVectors = await embedTexts(
+        config.embeddingProvider,
+        config.embeddingBaseUrl,
+        config.embeddingModel,
+        config.embeddingApiKey,
+        batch,
+      )
+      vectors.push(...batchVectors)
+      onProgress?.(vectors.length, texts.length)
+    }
+    return vectors
+  }
+
+  /** Bump the base's updatedAt so the data view's "更新于" stays meaningful. */
+  private async touchBase(baseId: string): Promise<void> {
+    const store = this.requireStore()
+    const base = store.getBase(baseId)
+    if (base !== undefined) await store.putBase({ ...base, updatedAt: Date.now() })
+  }
+
+  private requireStore(): Store {
+    if (this.store === undefined) throw new Error('knowledge store is not ready')
+    return this.store
+  }
+}
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+function chunkSearchText(chunk: KnowledgeChunk): string {
+  return chunk.context !== undefined && chunk.context.length > 0
+    ? `${chunk.context}\n${chunk.text}`
+    : chunk.text
+}
+
+/** Stable identifier for the embedding source, used to detect model changes. */
+function embeddingKey(config: KnowledgeConfig): string | undefined {
+  if (config.embeddingProvider === 'none') return undefined
+  // `embedTexts` falls back to the default local model when the field is empty;
+  // mirror that so the key matches what actually produced the vectors.
+  const model = config.embeddingModel.trim() === '' && config.embeddingProvider === 'local'
+    ? DEFAULT_LOCAL_MODEL
+    : config.embeddingModel.trim()
+  if (model === '') return undefined
+  return `${config.embeddingProvider}:${model}`
+}
+
+function effectiveMode(requested: SearchMode, ranked: readonly RankedHit[]): SearchMode {
+  if (requested === 'vector' || requested === 'lexical') return requested
+  const hybrid = ranked.some(hit => hit.vectorScore !== undefined && hit.lexicalScore !== undefined)
+  if (requested === 'hybrid') return hybrid ? 'hybrid' : 'lexical'
+  // auto
+  return hybrid ? 'hybrid' : 'lexical'
+}
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+function estimateTokens(text: string): number {
+  const cjk = (text.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/g) ?? []).length
+  const latin = text.length - cjk
+  return Math.max(1, Math.ceil(cjk / 1.5 + latin / 4))
+}
+
+function reconstructFromChunks(chunks: KnowledgeChunk[]): string {
+  return chunks
+    .slice()
+    .sort((a, b) => a.index - b.index)
+    .map(chunk => chunk.text)
+    .join('\n\n')
+}
+
+function clampInt(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(max, Math.max(min, Math.trunc(value)))
+}
+
+/** Drop empty-string config fields so a base only stores real overrides. */
+function compactBaseConfig(config: BaseConfig): BaseConfig {
+  const next: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(config)) {
+    if (typeof value === 'string') {
+      if (value.trim().length > 0) next[key] = value
+    } else if (typeof value === 'boolean') {
+      next[key] = value
+    } else if (value !== undefined && Number.isFinite(value)) {
+      next[key] = value
+    }
+  }
+  return next as BaseConfig
+}
+
+/** Merge a per-base config patch; an empty string clears the override (inherit global). */
+function mergeBaseConfig(existing: BaseConfig | undefined, patch: BaseConfig): BaseConfig | undefined {
+  const merged: Record<string, unknown> = { ...(existing ?? {}) }
+  for (const [key, value] of Object.entries(patch)) {
+    if (typeof value === 'string' && value.trim() === '') {
+      delete merged[key]
+    } else {
+      merged[key] = value
+    }
+  }
+  return merged as BaseConfig
+}
+
+function decodeBase64(value: string): Uint8Array {
+  if (typeof Buffer !== 'undefined') return Buffer.from(value, 'base64')
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
+async function fetchHtml(url: string): Promise<string> {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(15000),
+    headers: { 'user-agent': 'dsh-knowledge/0.1 (+knowledge-base-import)' },
+  })
+  if (!response.ok) throw new Error(`URL fetch failed: HTTP ${response.status}`)
+  const contentType = (response.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase()
+  if (contentType !== '' && contentType !== 'text/html' && contentType !== 'application/xhtml+xml') {
+    throw new Error(`URL did not return HTML (content-type: ${contentType || 'unknown'})`)
+  }
+  return response.text()
+}
+
+const DIRECTORY_EXTENSIONS = new Set([
+  '.txt', '.md', '.markdown', '.csv', '.html', '.htm', '.json', '.log',
+  '.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.epub',
+])
+
+const DIRECTORY_MAX_FILES = 500
+const DIRECTORY_MAX_DEPTH = 8
+
+/** Recursively collect supported files under a directory (bounded). */
+async function scanDirectory(root: string): Promise<string[]> {
+  const found: string[] = []
+  async function walk(dir: string, depth: number): Promise<void> {
+    if (depth > DIRECTORY_MAX_DEPTH || found.length >= DIRECTORY_MAX_FILES) return
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch (error) {
+      throw new Error(`cannot read directory ${root}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    for (const entry of entries) {
+      if (found.length >= DIRECTORY_MAX_FILES) return
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await walk(full, depth + 1)
+      } else if (entry.isFile() && DIRECTORY_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+        found.push(full)
+      }
+    }
+  }
+  await walk(root, 0)
+  return found
+}
+
+export default KnowledgeService
