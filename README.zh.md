@@ -133,4 +133,4 @@ pnpm run build    # esbuild → lib/（含 client bundle）
 
 ## 许可
 
-[MIT](LICENSE)。参考并致谢社区项目：[dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness)、[dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor)、[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)。
+[MIT](LICENSE)。特别感谢 [Cherry Studio](https://github.com/CherryHQ/cherry-studio)：本项目界面与功能设计以其为灵感（AGPL-3.0），代码为独立实现，未包含其源码。另参考并致谢社区项目：[dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness)、[dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor)、[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)。
