@@ -56,6 +56,15 @@ import type { KnowledgePanelStore } from './panel-store.js'
 
 export type { Translate } from './locales.js'
 
+// Shared styles (panel + sidebar-entry hover) must exist before the sidebar
+// button first renders — the panel itself injects nothing until it opens.
+if (typeof document !== 'undefined' && document.getElementById('kb-panel-styles') === null) {
+  const el = document.createElement('style')
+  el.id = 'kb-panel-styles'
+  el.textContent = PANEL_CSS
+  document.head.appendChild(el)
+}
+
 /** Cap the document-preview payload so huge files cannot wedge the panel. */
 const PREVIEW_RAW_TEXT_LIMIT = 200_000
 const PREVIEW_CHUNK_LIMIT = 500
@@ -181,15 +190,6 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       setBusy(false)
     }
   }, [notify])
-
-  useEffect(() => {
-    const id = 'kb-panel-styles'
-    if (document.getElementById(id) !== null) return
-    const el = document.createElement('style')
-    el.id = id
-    el.textContent = PANEL_CSS
-    document.head.appendChild(el)
-  }, [])
 
   const refreshBases = useCallback(async (): Promise<void> => {
     const [nextBases, nextConfig, nextGroups, nextToggle] = await Promise.all([

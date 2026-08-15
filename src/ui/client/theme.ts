@@ -35,6 +35,9 @@ export const PANEL_CSS = `
 .kb-card:hover { border-color: var(--dsw-alias-border-l2, #c7ccd4) }
 .kb-iconbtn { transition: color 0.15s ease, background 0.15s ease }
 .kb-iconbtn:hover { color: var(--dsw-alias-brand-primary, #3b6ef6); background: ${accentSoft} }
+/* Backgrounds live in classes (not inline) so :hover can override them, the
+   same way the shell's Settings trigger styles itself. */
+.kb-sidebar-action { background: transparent }
 .kb-sidebar-action:hover { background: var(--dsw-alias-interactive-bg-hover) }
 .kb-dangerbtn:hover { color: var(--dsw-alias-state-error-primary, #e5484d); background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 10%, transparent) }
 .kb-scroll::-webkit-scrollbar { width: 8px; height: 8px }
@@ -166,12 +169,13 @@ export const style = {
   modalHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 } as CSSProperties,
   sidebarAction: {
     // Geometry mirrors the shell's Settings trigger (ui-settings-general
-    // SettingsRoot.module.css) so the two footer rows read as one.
+    // SettingsRoot.module.css) so the two footer rows read as one. Background
+    // is set by the .kb-sidebar-action class (hover must be able to override).
     flex: 'none', display: 'flex', alignItems: 'center', gap: 8,
     width: 'calc(100% + 8px)', height: 34,
     margin: '4px -4px 4px', padding: '6px 2px 6px 10px',
     boxSizing: 'border-box', border: 'none', borderRadius: 12,
-    background: 'transparent', cursor: 'pointer', overflow: 'hidden',
+    cursor: 'pointer', overflow: 'hidden',
     color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit',
     fontSize: 14, lineHeight: 22,
   } as CSSProperties,
