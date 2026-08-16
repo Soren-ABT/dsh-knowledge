@@ -73,6 +73,8 @@ export type KnowledgeKey =
   | 'chunkOverlap'
   | 'topK'
   | 'mmrDiversity'
+  | 'rrfVectorWeight'
+  | 'rrfVectorWeightHint'
   | 'batchSize'
   | 'stats'
   | 'statsDocs'
@@ -258,6 +260,8 @@ export const zh: Record<KnowledgeKey, string> = {
   chunkOverlap: '重叠大小',
   topK: 'Top K',
   mmrDiversity: '结果多样性（MMR，0=关）',
+  rrfVectorWeight: '向量融合权重',
+  rrfVectorWeightHint: '混合检索中向量 lane 的相对权重（0.1–5，1=均衡；语义问题可调大）',
   batchSize: 'embedding 批大小',
   stats: '统计',
   statsDocs: '文档',
@@ -441,6 +445,8 @@ export const en: Record<KnowledgeKey, string> = {
   chunkOverlap: 'Overlap Size',
   topK: 'Top K',
   mmrDiversity: 'Diversity (MMR, 0=off)',
+  rrfVectorWeight: 'Vector fusion weight',
+  rrfVectorWeightHint: 'Relative weight of the vector lane in hybrid fusion (0.1–5, 1=balanced; raise for semantic questions)',
   batchSize: 'Embedding batch size',
   stats: 'Stats',
   statsDocs: 'docs',

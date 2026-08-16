@@ -1039,14 +1039,16 @@ export class KnowledgeService extends Service {
         if (requestedMode === 'vector') {
           ranked = vec.hits.map(hit => ({ id: hit.id, score: hit.score, vectorScore: hit.score }))
         } else {
-          // Hybrid/auto: fuse both lanes with Reciprocal Rank Fusion.
+          // Hybrid/auto: fuse both lanes with Reciprocal Rank Fusion; the
+          // vector lane carries the configured relative weight.
           const lex = await lane.lexical(query, scope, poolSize)
           total = Math.max(total, lex.total)
           for (const hit of lex.hits) if (!byId.has(hit.id)) byId.set(hit.id, hit)
           const vectorOrder = vec.hits.map(hit => hit.id)
           const lexicalOrder = lex.hits.map(hit => hit.id)
-          const fused = reciprocalRankFusion([vectorOrder, lexicalOrder])
-          const maxFused = 2 / (RRF_K + 1)
+          const vectorWeight = config.rrfVectorWeight
+          const fused = reciprocalRankFusion([vectorOrder, lexicalOrder], [vectorWeight, 1])
+          const maxFused = (vectorWeight + 1) / (RRF_K + 1)
           const vectorScores = new Map(vec.hits.map(hit => [hit.id, hit.score]))
           const lexicalScores = new Map(lex.hits.map(hit => [hit.id, hit.score]))
           ranked = [...new Set([...vectorOrder, ...lexicalOrder])].map(id => ({

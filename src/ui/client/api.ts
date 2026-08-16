@@ -24,6 +24,7 @@ export interface BaseConfig {
   searchMode?: SearchMode
   similarityThreshold?: number
   mmrDiversity?: number
+  rrfVectorWeight?: number
   embeddingBatchSize?: number
 }
 
@@ -111,6 +112,7 @@ export interface KnowledgeConfig {
   searchMode: SearchMode
   similarityThreshold: number
   mmrDiversity: number
+  rrfVectorWeight: number
   embeddingBatchSize: number
   hfEndpoint: string
 }

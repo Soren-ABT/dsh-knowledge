@@ -28,6 +28,8 @@ export interface BaseConfig {
   readonly searchMode?: SearchMode
   readonly similarityThreshold?: number
   readonly mmrDiversity?: number
+  /** Relative weight of the vector lane in RRF hybrid fusion (0.1–5, 1 = balanced). */
+  readonly rrfVectorWeight?: number
   readonly embeddingBatchSize?: number
 }
 
@@ -113,6 +115,8 @@ export interface KnowledgeConfig {
   readonly searchMode: SearchMode
   readonly similarityThreshold: number
   readonly mmrDiversity: number
+  /** Relative weight of the vector lane in RRF hybrid fusion (0.1–5, 1 = balanced). */
+  readonly rrfVectorWeight: number
   readonly embeddingBatchSize: number
   /** Hugging Face endpoint override (mirror); empty = official hub / `HF_ENDPOINT` env. */
   readonly hfEndpoint: string

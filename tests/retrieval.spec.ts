@@ -80,4 +80,12 @@ describe('reciprocalRankFusion', () => {
     const fused = reciprocalRankFusion([['a', 'b'], ['a', 'c']])
     expect(fused.get('a') ?? 0).toBeGreaterThan(fused.get('b') ?? 0)
   })
+
+  it('scales each list by its weight', () => {
+    const balanced = reciprocalRankFusion([['a', 'b'], ['b', 'a']])
+    const weighted = reciprocalRankFusion([['a', 'b'], ['b', 'a']], [2, 1])
+    // Weighting the first list lifts its top entry over the second list's.
+    expect((weighted.get('a') ?? 0) - (weighted.get('b') ?? 0))
+      .toBeGreaterThan((balanced.get('a') ?? 0) - (balanced.get('b') ?? 0))
+  })
 })

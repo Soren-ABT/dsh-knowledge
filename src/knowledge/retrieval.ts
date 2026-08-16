@@ -103,12 +103,20 @@ export function normalizeBm25(raw: number): number {
 
 export const RRF_K = 60
 
-/** Reciprocal Rank Fusion over id-ranked lists; returns id → fused score. */
-export function reciprocalRankFusion(rankedLists: ReadonlyArray<readonly string[]>): Map<string, number> {
+/**
+ * Reciprocal Rank Fusion over id-ranked lists; returns id → fused score.
+ * `weights` (parallel to `rankedLists`, defaults to 1 for each) scales each
+ * list's contribution — e.g. [2, 1] doubles the first lane's pull.
+ */
+export function reciprocalRankFusion(
+  rankedLists: ReadonlyArray<readonly string[]>,
+  weights?: readonly number[],
+): Map<string, number> {
   const fused = new Map<string, number>()
-  for (const list of rankedLists) {
-    list.forEach((id, index) => {
-      fused.set(id, (fused.get(id) ?? 0) + 1 / (RRF_K + index + 1))
+  for (let i = 0; i < rankedLists.length; i += 1) {
+    const weight = weights?.[i] ?? 1
+    rankedLists[i].forEach((id, index) => {
+      fused.set(id, (fused.get(id) ?? 0) + weight / (RRF_K + index + 1))
     })
   }
   return fused

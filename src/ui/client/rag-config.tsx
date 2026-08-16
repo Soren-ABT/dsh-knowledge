@@ -245,6 +245,17 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   onChange={(e) => patch({ chunkOverlap: Number(e.target.value) })}
                 />
               </FieldRow>
+              <FieldRow label={t('rrfVectorWeight')} hint={t('rrfVectorWeightHint')}>
+                <input
+                  style={{ ...style.input, width: 100 }}
+                  type="number"
+                  step="0.1"
+                  min="0.1"
+                  max="5"
+                  value={values.rrfVectorWeight}
+                  onChange={(e) => patch({ rrfVectorWeight: Number(e.target.value) })}
+                />
+              </FieldRow>
               <div style={style.warningHint}>{t('chunkChangeWarning')}</div>
             </div>
           )}

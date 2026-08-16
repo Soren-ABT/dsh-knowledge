@@ -31,6 +31,7 @@ export const baseConfigSchema = z.object({
   searchMode: z.enum(['auto', 'hybrid', 'vector', 'lexical']).optional(),
   similarityThreshold: z.number().gte(0).lte(1).optional(),
   mmrDiversity: z.number().gte(0).lte(1).optional(),
+  rrfVectorWeight: z.number().gte(0.1).lte(5).optional(),
   embeddingBatchSize: z.number().int().gt(0).optional(),
 })
 
@@ -80,6 +81,7 @@ export const configOverridesSchema = z.object({
   searchMode: z.enum(['auto', 'hybrid', 'vector', 'lexical']).optional(),
   similarityThreshold: z.number().gte(0).lte(1).optional(),
   mmrDiversity: z.number().gte(0).lte(1).optional(),
+  rrfVectorWeight: z.number().gte(0.1).lte(5).optional(),
   embeddingBatchSize: z.number().int().gt(0).optional(),
   hfEndpoint: z.string().optional(),
 })
@@ -101,6 +103,7 @@ export interface ConfigOverrides {
   searchMode?: KnowledgeConfig['searchMode']
   similarityThreshold?: number
   mmrDiversity?: number
+  rrfVectorWeight?: number
   embeddingBatchSize?: number
   hfEndpoint?: string
 }

@@ -23,6 +23,7 @@ const DEFAULT_CONFIG: Config = {
   searchMode: 'auto',
   similarityThreshold: 0,
   mmrDiversity: 0,
+  rrfVectorWeight: 1,
   embeddingBatchSize: 32,
   localModelCacheDir: '',
   hfEndpoint: '',
