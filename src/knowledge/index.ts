@@ -25,6 +25,7 @@ import { rank } from './retrieval.js'
 import { maximalMarginalRelevance, reciprocalRankFusion, RRF_K } from './retrieval.js'
 import type { RankedHit } from './retrieval.js'
 import { rerankCandidates } from './rerank.js'
+import { hashEmbeddingText } from './chunkdb.js'
 import { openStore } from './store.js'
 import type { StorageDomainFacility, Store } from './store.js'
 import type {
@@ -611,18 +612,9 @@ export class KnowledgeService extends Service {
     if (document === undefined) throw new Error(`document not found: ${id}`)
     const text = document.rawText ?? reconstructFromChunks(store.listChunksByDoc(id))
     const config = this.getConfigFor(document.baseId)
-    // Reuse old vectors for chunks whose search text is unchanged (same source
-    // only), so a re-chunk after a size change re-embeds just the new slices.
-    const key = embeddingKey(config)
-    const reuse = new Map<string, number[]>()
-    if (key !== undefined) {
-      for (const chunk of store.listChunksByDoc(id)) {
-        if (chunk.embedding !== undefined && chunk.embeddingModel === key) {
-          reuse.set(sha256(chunkSearchText(chunk)), chunk.embedding)
-        }
-      }
-    }
-    const { chunks, embeddingError } = await this.buildChunks(document.baseId, document.id, document.title, text, config, reuse)
+    // buildChunks reuses stored vectors library-wide by embedding-text hash
+    // (Cherry's decision A4), so unchanged slices are not re-embedded.
+    const { chunks, embeddingError } = await this.buildChunks(document.baseId, document.id, document.title, text, config)
     const { embeddingError: _staleError, ...rest } = document
     const next: KnowledgeDocument = {
       ...rest,
@@ -1222,7 +1214,7 @@ export class KnowledgeService extends Service {
       smartChunk: config.smartChunk,
       separator: config.chunkSeparator,
     })
-    const { chunks, embeddingError } = await this.buildChunks(input.baseId, docId, input.title, input.text, config, undefined, pieces)
+    const { chunks, embeddingError } = await this.buildChunks(input.baseId, docId, input.title, input.text, config, pieces)
     const prior = input.placeholderId !== undefined ? store.getDocument(docId) : undefined
     const document: KnowledgeDocument = {
       id: docId,
@@ -1255,7 +1247,6 @@ export class KnowledgeService extends Service {
     title: string,
     text: string,
     config: KnowledgeConfig,
-    reuse?: Map<string, number[]>,
     pieces?: readonly ChunkPiece[],
   ): Promise<{ chunks: KnowledgeChunk[]; embeddingError?: string }> {
     const slices = pieces ?? chunkText(text, config.chunkSize, config.chunkOverlap, {
@@ -1276,19 +1267,26 @@ export class KnowledgeService extends Service {
       const key = embeddingKey(config)
       this.indexing.set(docId, { baseId, title, phase: 'embedding', total: chunks.length, progress: 0 })
       try {
-        // Reuse vectors for chunks whose search text is byte-identical to a
-        // previous chunk of the SAME embedding source (Cherry's sha256 dedup),
-        // so a re-chunk after a chunk-size change re-embeds only new slices.
+        // Library-wide vector reuse (Cherry's decision A4): chunks whose search
+        // text is byte-identical to a chunk already stored under the SAME
+        // embedding model get that stored vector; only the missing hashes hit
+        // the embedding API. This covers re-chunking after a chunk-size change,
+        // reindexing, and re-importing text already indexed elsewhere — the
+        // reuse key is the hash of the exact text the model sees, so an equal
+        // hash guarantees an equal vector.
+        const hashes = chunks.map(chunk => hashEmbeddingText(chunkSearchText(chunk)))
+        const stored = key !== undefined
+          ? this.requireStore().listEmbeddingVectorsByHashes(hashes, key)
+          : new Map<string, number[]>()
         const need: number[] = []
         const needTexts: string[] = []
         for (let i = 0; i < chunks.length; i += 1) {
-          const searchText = chunkSearchText(chunks[i])
-          const cached = reuse?.get(sha256(searchText))
+          const cached = stored.get(hashes[i])
           if (cached !== undefined) {
             chunks[i] = { ...chunks[i], embedding: cached, ...(key !== undefined ? { embeddingModel: key } : {}) }
           } else {
             need.push(i)
-            needTexts.push(searchText)
+            needTexts.push(chunkSearchText(chunks[i]))
           }
         }
         if (need.length > 0) {

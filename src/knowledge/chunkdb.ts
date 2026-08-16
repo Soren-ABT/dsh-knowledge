@@ -17,6 +17,7 @@
  * @module dsh-knowledge/knowledge/chunkdb
  */
 
+import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -40,6 +41,9 @@ function dshHome(): string {
   const fromEnv = process.env.DSH_HOME
   return fromEnv !== undefined && fromEnv.trim() !== '' ? fromEnv : join(homedir(), '.dsh')
 }
+
+/** Max bound parameters per reuse query (SQLite's limit is ~999; Cherry uses 500). */
+const EMBEDDING_HASH_QUERY_BATCH = 500
 
 // ── FTS query compilation (trigram tokenizer) ────────────────────────────────
 
@@ -99,6 +103,18 @@ function decodeEmbedding(blob: Buffer | null | undefined): number[] | undefined 
   return Array.from(new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4))
 }
 
+/**
+ * Stable hash of the exact text fed to the embedding model — the dedup key for
+ * vector reuse (Cherry's `embedding_text_hash` / decision A4). Two chunks with
+ * the same hash + embedding model share one embedding, so a re-embed (reindex,
+ * chunk-size change) reuses stored vectors instead of re-spending the API.
+ * The hash covers the SAME text `embedTexts` receives (context + body), so an
+ * identical hash guarantees an identical vector.
+ */
+export function hashEmbeddingText(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
 // ── the store ────────────────────────────────────────────────────────────────
 
 /** One candidate returned by a retrieval lane: a chunk plus its lane score. */
@@ -141,7 +157,8 @@ export class ChunkDatabase implements RetrievalLane {
         heading TEXT,
         context TEXT,
         embedding BLOB,
-        embedding_model TEXT
+        embedding_model TEXT,
+        embedding_text_hash TEXT
       );
       CREATE INDEX IF NOT EXISTS chunk_doc_idx ON chunk(doc_id);
       CREATE INDEX IF NOT EXISTS chunk_base_idx ON chunk(base_id);
@@ -159,7 +176,39 @@ export class ChunkDatabase implements RetrievalLane {
         INSERT INTO chunk_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
       END;
     `)
+    this.migrateEmbeddingHashColumn()
     this.migrateFromBundleLayout()
+  }
+
+  /**
+   * Schema evolution for the `embedding_text_hash` dedup column: add it to a
+   * store created by an older version, then backfill the hash of every stored
+   * vector from its `search_text` (the exact text the embedding model saw, so
+   * the hash is authoritative for reuse). Idempotent — a fresh store already
+   * has the column and nothing to backfill. The index is created here, AFTER
+   * the column exists: on an old store the column does not exist when the
+   * constructor's CREATE TABLE runs, and a CREATE INDEX on a missing column
+   * would fail the whole open.
+   */
+  private migrateEmbeddingHashColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(chunk)').all() as Array<{ name: string }>
+    if (!columns.some(column => column.name === 'embedding_text_hash')) {
+      this.db.exec('ALTER TABLE chunk ADD COLUMN embedding_text_hash TEXT')
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS chunk_emb_hash_idx ON chunk(embedding_text_hash, embedding_model)')
+    const missing = this.db.prepare(
+      'SELECT chunk_id, search_text FROM chunk WHERE embedding IS NOT NULL AND embedding_text_hash IS NULL',
+    ).all() as Array<{ chunk_id: string; search_text: string }>
+    if (missing.length === 0) return
+    const update = this.db.prepare('UPDATE chunk SET embedding_text_hash = ? WHERE chunk_id = ?')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const row of missing) update.run(hashEmbeddingText(row.search_text), row.chunk_id)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   /** One-time migration from the previous per-document bundle layout. */
@@ -170,24 +219,26 @@ export class ChunkDatabase implements RetrievalLane {
     if (count === 0) {
       const bundles = this.db.prepare('SELECT doc_id, chunks_json FROM chunk_bundles').all() as Array<{ doc_id: string; chunks_json: string }>
       const insert = this.db.prepare(
-        'INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model, embedding_text_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       this.db.exec('BEGIN IMMEDIATE')
       try {
         for (const row of bundles) {
           const chunks = JSON.parse(row.chunks_json) as KnowledgeChunk[]
           for (const chunk of chunks) {
+            const searchText = searchTextOf(chunk)
             insert.run(
               chunk.id,
               chunk.docId,
               chunk.baseId,
               chunk.index,
               chunk.text,
-              searchTextOf(chunk),
+              searchText,
               chunk.heading ?? null,
               chunk.context ?? null,
               chunk.embedding !== undefined ? encodeEmbedding(chunk.embedding) : null,
               chunk.embeddingModel ?? null,
+              chunk.embedding !== undefined ? hashEmbeddingText(searchText) : null,
             )
           }
         }
@@ -231,23 +282,25 @@ export class ChunkDatabase implements RetrievalLane {
     const docId = chunks[0].docId
     const deleteOld = this.db.prepare('DELETE FROM chunk WHERE doc_id = ?')
     const insert = this.db.prepare(
-      'INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model, embedding_text_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     this.db.exec('BEGIN IMMEDIATE')
     try {
       deleteOld.run(docId)
       for (const chunk of chunks) {
+        const searchText = searchTextOf(chunk)
         insert.run(
           chunk.id,
           chunk.docId,
           chunk.baseId,
           chunk.index,
           chunk.text,
-          searchTextOf(chunk),
+          searchText,
           chunk.heading ?? null,
           chunk.context ?? null,
           chunk.embedding !== undefined ? encodeEmbedding(chunk.embedding) : null,
           chunk.embeddingModel ?? null,
+          chunk.embedding !== undefined ? hashEmbeddingText(searchText) : null,
         )
       }
       this.db.exec('COMMIT')
@@ -263,6 +316,37 @@ export class ChunkDatabase implements RetrievalLane {
 
   deleteChunksByBase(baseId: string): void {
     this.db.prepare('DELETE FROM chunk WHERE base_id = ?').run(baseId)
+  }
+
+  /**
+   * Library-wide vector reuse (Cherry's `listExistingEmbeddingHashes`, decision
+   * A4): for each embedding-text hash already stored under `embeddingModel`,
+   * return its vector. The caller embeds only the hashes missing from this
+   * map, so a re-embed of unchanged chunk text reuses the stored vector instead
+   * of re-spending the embedding API. Matching is (hash, embedding_model) —
+   * two bases in one store may use different models, so a hash alone is not a
+   * valid reuse key (vectors from another model are not comparable). Rows
+   * without a vector (a failed/lexical-only import) never match.
+   *
+   * Batch size stays well under SQLite's bound-parameter limit (Cherry uses
+   * 500 for the same reason).
+   */
+  listEmbeddingVectorsByHashes(hashes: readonly string[], embeddingModel: string): Map<string, number[]> {
+    const vectors = new Map<string, number[]>()
+    for (let i = 0; i < hashes.length; i += EMBEDDING_HASH_QUERY_BATCH) {
+      const batch = hashes.slice(i, i + EMBEDDING_HASH_QUERY_BATCH)
+      if (batch.length === 0) continue
+      const placeholders = batch.map(() => '?').join(',')
+      const rows = this.db.prepare(
+        `SELECT embedding_text_hash, embedding FROM chunk
+         WHERE embedding_text_hash IN (${placeholders}) AND embedding_model = ? AND embedding IS NOT NULL`,
+      ).all(...batch, embeddingModel) as Array<{ embedding_text_hash: string; embedding: Buffer }>
+      for (const row of rows) {
+        const vector = decodeEmbedding(row.embedding)
+        if (vector !== undefined) vectors.set(row.embedding_text_hash, vector)
+      }
+    }
+    return vectors
   }
 
   /** Per-doc chunk presence + embedding coverage in one grouped pass (listDocuments). */
@@ -404,7 +488,8 @@ function rowToChunk(row: ChunkRow): KnowledgeChunk {
   }
 }
 
-function searchTextOf(chunk: KnowledgeChunk): string {
+/** The search/embedding text of a chunk: context (title/heading path) + body. */
+export function searchTextOf(chunk: KnowledgeChunk): string {
   return chunk.context !== undefined && chunk.context.length > 0 ? `${chunk.context}\n${chunk.text}` : chunk.text
 }
 

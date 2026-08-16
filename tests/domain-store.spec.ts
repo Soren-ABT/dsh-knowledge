@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { knowledgeDomainSpec } from '../src/knowledge/domain.js'
-import { ChunkDatabase, migrateLegacyChunkFile } from '../src/knowledge/chunkdb.js'
+import { ChunkDatabase, hashEmbeddingText, migrateLegacyChunkFile } from '../src/knowledge/chunkdb.js'
 import { openStore } from '../src/knowledge/store.js'
 import type { StorageDomainFacility } from '../src/knowledge/store.js'
 import { KnowledgeService } from '../src/knowledge/index.js'
@@ -260,6 +260,103 @@ describe('ChunkDatabase (per-chunk SQL layout)', () => {
       const migrated = await migrateLegacyChunkFile(jsonPath, db, () => {})
       expect(migrated).toBe(0)
       expect(db.listChunksByDoc('d1')).toHaveLength(0)
+      db.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reuses stored vectors by embedding-text hash + model, across documents', async () => {
+    const dir = await tempDir()
+    try {
+      const db = new ChunkDatabase(join(dir, 'chunks.sqlite'))
+      // All embedded chunks share context 'doc d1' — the embedding input is
+      // context + text, so reuse only holds between chunks whose full search
+      // text (hash key) is identical.
+      const embedded = (id: string, docId: string, baseId: string, index: number, text: string, model: string, vector: number[]): KnowledgeChunk => ({
+        ...chunk(id, docId, baseId, index, text),
+        context: 'doc d1',
+        embedding: vector,
+        embeddingModel: model,
+      })
+      db.putChunks([
+        embedded('c1', 'd1', 'b1', 0, 'alpha text', 'openai:m1', [1, 0, 0]),
+        embedded('c2', 'd1', 'b1', 1, 'beta text', 'openai:m1', [0, 1, 0]),
+        // Same chunk text under a different model must NOT be reusable.
+        embedded('c3', 'd2', 'b2', 0, 'alpha text', 'openai:m2', [0.5, 0.5, 0]),
+        // A lexical-only chunk (no vector) must never match.
+        chunk('c4', 'd3', 'b1', 0, 'alpha text'),
+      ])
+
+      // Another document embedding the same text under the same model reuses.
+      const alphaHash = hashEmbeddingText('doc d1\nalpha text')
+      const betaHash = hashEmbeddingText('doc d1\nbeta text')
+      const missingHash = hashEmbeddingText('doc d1\nnever seen')
+      const reused = db.listEmbeddingVectorsByHashes([alphaHash, betaHash, missingHash], 'openai:m1')
+      expect(reused.get(alphaHash)).toEqual([1, 0, 0])
+      expect(reused.get(betaHash)).toEqual([0, 1, 0])
+      expect(reused.has(missingHash)).toBe(false)
+      // Another model sees only its own vectors.
+      const m2 = db.listEmbeddingVectorsByHashes([alphaHash], 'openai:m2')
+      expect(m2.get(alphaHash)).toEqual([0.5, 0.5, 0])
+      db.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('backfills the embedding_text_hash column on a store created by an older version', async () => {
+    const dir = await tempDir()
+    try {
+      const path = join(dir, 'chunks.sqlite')
+      // Create the OLD schema by hand (no embedding_text_hash column) with a stored vector.
+      const { DatabaseSync } = await import('node:sqlite')
+      const seed = new DatabaseSync(path)
+      seed.exec(`
+        CREATE TABLE chunk (
+          chunk_id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, base_id TEXT NOT NULL, idx INTEGER NOT NULL,
+          text TEXT NOT NULL, search_text TEXT NOT NULL, heading TEXT, context TEXT,
+          embedding BLOB, embedding_model TEXT
+        )
+      `)
+      const blob = Buffer.from(new Float32Array([1, 0, 0]).buffer)
+      seed.prepare('INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, context, embedding, embedding_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run('c1', 'd1', 'b1', 0, 'alpha text', 'doc d1\nalpha text', 'doc d1', blob, 'openai:m1')
+      seed.prepare('INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text) VALUES (?, ?, ?, ?, ?, ?)')
+        .run('c2', 'd1', 'b1', 1, 'lexical only', 'doc d1\nlexical only')
+      seed.close()
+
+      const db = new ChunkDatabase(path)
+      const hash = hashEmbeddingText('doc d1\nalpha text')
+      const reused = db.listEmbeddingVectorsByHashes([hash], 'openai:m1')
+      expect(reused.get(hash)).toEqual([1, 0, 0])
+      // The lexical-only row still has no vector and no hash.
+      const { DatabaseSync: Sync } = await import('node:sqlite')
+      const check = new Sync(path)
+      const row = check.prepare('SELECT embedding_text_hash FROM chunk WHERE chunk_id = ?').get('c2') as { embedding_text_hash: string | null }
+      expect(row.embedding_text_hash).toBeNull()
+      check.close()
+      db.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('re-embeds after a delete removes the reuse source', async () => {
+    const dir = await tempDir()
+    try {
+      const db = new ChunkDatabase(join(dir, 'chunks.sqlite'))
+      const embedded = (id: string, docId: string, text: string, vector: number[]): KnowledgeChunk => ({
+        ...chunk(id, docId, 'b1', 0, text),
+        context: 'doc',
+        embedding: vector,
+        embeddingModel: 'openai:m1',
+      })
+      db.putChunks([embedded('c1', 'd1', 'alpha text', [1, 0, 0])])
+      const hash = hashEmbeddingText('doc\nalpha text')
+      expect(db.listEmbeddingVectorsByHashes([hash], 'openai:m1').has(hash)).toBe(true)
+      db.deleteChunksByBase('b1')
+      expect(db.listEmbeddingVectorsByHashes([hash], 'openai:m1').has(hash)).toBe(false)
       db.close()
     } finally {
       await rm(dir, { recursive: true, force: true })

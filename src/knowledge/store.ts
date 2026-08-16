@@ -12,7 +12,7 @@
 import type { Domain, DomainSpec } from '@deepseek-ai/dsh-storage-domain'
 import { knowledgeDomainSpec, TABLES } from './domain.js'
 import type { ConfigOverrides } from './domain.js'
-import { ChunkDatabase, legacyChunkFilePath, migrateLegacyChunkFile, resolveChunkStorePath } from './chunkdb.js'
+import { ChunkDatabase, hashEmbeddingText, legacyChunkFilePath, migrateLegacyChunkFile, resolveChunkStorePath, searchTextOf } from './chunkdb.js'
 import type { RetrievalLane } from './chunkdb.js'
 import type {
   KnowledgeBase,
@@ -45,6 +45,13 @@ export interface Store {
   deleteChunks(docId: string): Promise<void>
   /** Drop every chunk of a base in one operation (used by deleteBase). */
   deleteChunksByBase(baseId: string): Promise<void>
+  /**
+   * Library-wide vector reuse: stored vectors for the given embedding-text
+   * hashes under one embedding model (Cherry's `listExistingEmbeddingHashes` /
+   * decision A4). The caller embeds only the hashes missing from the result,
+   * so re-embedding unchanged chunk text reuses the stored vector.
+   */
+  listEmbeddingVectorsByHashes(hashes: readonly string[], embeddingModel: string): Map<string, number[]>
   /** Actual chunk count per document, for reconciling stale document metadata. */
   chunkCountsByDoc(baseIds: readonly string[]): Map<string, number>
   /** Per-doc chunk presence + embedding coverage in one pass (document lists). */
@@ -183,6 +190,10 @@ class DomainStore implements Store {
 
   async deleteChunksByBase(baseId: string): Promise<void> {
     this.chunkDb.deleteChunksByBase(baseId)
+  }
+
+  listEmbeddingVectorsByHashes(hashes: readonly string[], embeddingModel: string): Map<string, number[]> {
+    return this.chunkDb.listEmbeddingVectorsByHashes(hashes, embeddingModel)
   }
 
   chunkCountsByDoc(baseIds: readonly string[]): Map<string, number> {
@@ -354,6 +365,17 @@ class MemoryStore implements Store {
     for (const [id, chunk] of this.chunks) {
       if (chunk.baseId === baseId) this.chunks.delete(id)
     }
+  }
+
+  listEmbeddingVectorsByHashes(hashes: readonly string[], embeddingModel: string): Map<string, number[]> {
+    const wanted = new Set(hashes)
+    const vectors = new Map<string, number[]>()
+    for (const chunk of this.chunks.values()) {
+      if (chunk.embedding === undefined || chunk.embeddingModel !== embeddingModel) continue
+      const hash = hashEmbeddingText(searchTextOf(chunk))
+      if (wanted.has(hash)) vectors.set(hash, chunk.embedding)
+    }
+    return vectors
   }
 
   chunkCountsByDoc(baseIds: readonly string[]): Map<string, number> {

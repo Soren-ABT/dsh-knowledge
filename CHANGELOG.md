@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.1 — Library-wide embedding reuse (Cherry's decision A4)
+
+Re-embedding unchanged text no longer re-spends the embedding API. Each chunk
+row now persists `embedding_text_hash` (sha256 of the exact search text the
+embedding model sees), and `buildChunks` asks the store which of the new
+chunk hashes already have a vector under the current embedding model before
+calling the API — only the missing hashes are embedded.
+
+- **Library-wide reuse**: a reindex, a chunk-size change, or a fresh import of
+  text already indexed elsewhere (same base, another base, or the same
+  document) reuses the stored vector whenever `(hash, embedding_model)` matches
+  — the same dedup Cherry Studio gets from its `embedding` table keyed by
+  `embedding_text_hash`. The model is part of the key because one chunk store
+  can serve several bases with different models, so a hash alone is not a valid
+  reuse key.
+- **Automatic migration**: on first start after upgrade, the `embedding_text_hash`
+  column is added and backfilled for every stored vector from its `search_text`
+  (idempotent; ~3k vectors backfill in well under a second). The hash index is
+  created after the column exists, so an older store opens cleanly.
+- **No behavior change to retrieval**: reuse only affects which vectors are
+  *computed*, not what is stored or searched; eval baselines are unchanged.
+
 ## 0.2.0 — SQLite chunk store + SQL retrieval (scale fix)
 
 Chunk data moved out of the durable domain (`json` backend, which atomically
