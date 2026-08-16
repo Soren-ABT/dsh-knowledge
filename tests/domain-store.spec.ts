@@ -316,6 +316,49 @@ describe('DomainStore wiring', () => {
     }
   })
 
+  it('cleans up documents an interrupted import left behind', async () => {
+    const dir = await tempDir()
+    try {
+      // First run: seed a crashed state — a placeholder (no chunks) and a
+      // half-finished doc (chunkCount > 0 but no chunks) from a previous run.
+      {
+        const domain = fakeDomain()
+        const bases = domain.table('bases') as unknown as FakeTable<string, unknown>
+        const documents = domain.table('documents') as unknown as FakeTable<string, unknown>
+        await bases.put('b1', { id: 'b1', name: 'b1', description: '', createdAt: 1, updatedAt: 1 })
+        await documents.put('ghost', { id: 'ghost', baseId: 'b1', title: 'crash-placeholder', sourceType: 'file', fileName: 'a.pdf', charCount: 0, chunkCount: 0, createdAt: 100, updatedAt: 100 })
+        await documents.put('half', { id: 'half', baseId: 'b1', title: 'crash-half', sourceType: 'file', charCount: 10, chunkCount: 5, createdAt: 200, updatedAt: 200 })
+        await documents.put('fine', { id: 'fine', baseId: 'b1', title: 'complete', sourceType: 'file', charCount: 10, chunkCount: 1, createdAt: 300, updatedAt: 300 })
+        const store = await openStore({ open: async () => domain } as unknown as StorageDomainFacility, {
+          chunkStorePath: join(dir, 'chunks.sqlite'),
+          legacyJsonPath: join(dir, 'missing.json'),
+        })
+        // 'half' claims chunks but has none — give it a chunk so it is real.
+        await store.putChunks([chunk('c1', 'fine', 'b1', 0, 'x')])
+        await store.close()
+      }
+      // Reopen at a later "process start": ghosts with no chunks predating the
+      // start are removed; the completed doc survives.
+      const domain = fakeDomain()
+      const bases = domain.table('bases') as unknown as FakeTable<string, unknown>
+      const documents = domain.table('documents') as unknown as FakeTable<string, unknown>
+      await bases.put('b1', { id: 'b1', name: 'b1', description: '', createdAt: 1, updatedAt: 1 })
+      await documents.put('ghost', { id: 'ghost', baseId: 'b1', title: 'crash-placeholder', sourceType: 'file', fileName: 'a.pdf', charCount: 0, chunkCount: 0, createdAt: 100, updatedAt: 100 })
+      await documents.put('half', { id: 'half', baseId: 'b1', title: 'crash-half', sourceType: 'file', charCount: 10, chunkCount: 5, createdAt: 200, updatedAt: 200 })
+      await documents.put('fine', { id: 'fine', baseId: 'b1', title: 'complete', sourceType: 'file', charCount: 10, chunkCount: 1, createdAt: 300, updatedAt: 300 })
+      const store = await openStore({ open: async () => domain } as unknown as StorageDomainFacility, {
+        chunkStorePath: join(dir, 'chunks.sqlite'),
+        legacyJsonPath: join(dir, 'missing.json'),
+      })
+      expect(store.getDocument('ghost')).toBeUndefined()   // placeholder removed
+      expect(store.getDocument('half')).toBeUndefined()     // no chunks → removed
+      expect(store.getDocument('fine')).toBeDefined()       // has chunks → kept
+      await store.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('serves lexical search through the SQL lanes end to end', async () => {
     const dir = await tempDir()
     try {
