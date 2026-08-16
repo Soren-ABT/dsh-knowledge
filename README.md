@@ -34,18 +34,17 @@
 
 ## 安装
 
-本包声明 `dsh.bundle.patch`，`dsh plugin add` 会自动登记并插入插件行：
+本包已发布到 [npm](https://www.npmjs.com/package/dsh-knowledge)（声明 `dsh.bundle.patch`），`dsh plugin add` 会自动登记并插入插件行：
 
 ```bash
-# 从 npm（发布后）
+# 从 npm（推荐，无需构建）
 dsh plugin --profile <name> add dsh-knowledge
 
-# 或从本地路径 / tarball
-dsh plugin --profile <name> add file:/path/to/dsh-knowledge
+# 从发布 tarball（GitHub Releases 或 npm pack 产物）
 dsh plugin --profile <name> add ./dsh-knowledge-0.1.0.tgz
 
-# 或从 GitHub
-dsh plugin --profile <name> add github:you/dsh-knowledge
+# 从本地源码目录（需先构建，见下方「开发」）
+dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 ```
 
 > **pnpm 10+ 构建脚本白名单**：进程内本地嵌入运行时依赖 `onnxruntime-node`、`sharp`、`protobufjs`，pnpm 默认拒绝运行它们的 postinstall，`dsh plugin add` 会因此以非零退出、并在登记 bundle 前中断。请在**安装前**于 profile 的 `pnpm-workspace.yaml` 中加入以下内容，再重新执行 add：
