@@ -739,6 +739,14 @@ export class KnowledgeService extends Service {
     const store = this.requireStore()
     const document = store.getDocument(id)
     if (document === undefined) throw new Error(`document not found: ${id}`)
+    // A directory container has no content of its own: reindexing it means
+    // reindexing its whole subtree (Cherry's reindex-subtree semantics).
+    if (document.sourceType === 'directory') {
+      for (const child of store.listDocuments(document.baseId)) {
+        if (child.parentDirectoryId === document.id) await this.reindexDocument(child.id)
+      }
+      return document
+    }
     // Re-read and re-parse the original source when it was persisted (Cherry's
     // `canKnowledgeItemRebuildSource`): a reindex after a parser upgrade gets
     // the better extraction, and the raw copy is the stable rebuild source.
@@ -794,9 +802,15 @@ export class KnowledgeService extends Service {
 
   async reindexBase(baseId: string): Promise<{ reindexed: number }> {
     const store = this.requireStore()
-    const documents = store.listDocuments(baseId)
-    for (const document of documents) await this.reindexDocument(document.id)
-    return { reindexed: documents.length }
+    const ids = store.listDocuments(baseId).map(doc => doc.id)
+    // Fold to outermost roots: a directory reindexes its subtree recursively,
+    // so its descendants must not be reindexed a second time as siblings.
+    let reindexed = 0
+    for (const id of this.outermostSelectedIds(ids)) {
+      await this.reindexDocument(id)
+      reindexed += 1
+    }
+    return { reindexed }
   }
 
   /** Start re-embedding a whole base as a cancellable background job. */
@@ -854,9 +868,14 @@ export class KnowledgeService extends Service {
   }
 
   async reindexDocuments(ids: readonly string[]): Promise<{ reindexed: number }> {
+    const store = this.requireStore()
+    // Fold the selection to its outermost roots first (Cherry's
+    // `getOutermostSelectedItemIds`): a directory and one of its descendants
+    // in the same batch must not reindex the subtree twice, and each selected
+    // directory reindexes its whole subtree recursively.
     let reindexed = 0
-    for (const id of ids) {
-      if (this.requireStore().getDocument(id) === undefined) continue
+    for (const id of this.outermostSelectedIds(ids)) {
+      if (store.getDocument(id) === undefined) continue
       await this.reindexDocument(id)
       reindexed += 1
     }
@@ -865,20 +884,51 @@ export class KnowledgeService extends Service {
 
   async deleteDocuments(ids: readonly string[]): Promise<{ deleted: number }> {
     const store = this.requireStore()
-    let deleted = 0
+    // Fold to outermost roots so a directory and its selected descendants are
+    // not deleted twice; deleteDocumentRecursive removes the whole subtree.
     const touched = new Set<string>()
-    for (const id of ids) {
+    let deleted = 0
+    for (const id of this.outermostSelectedIds(ids)) {
       const document = store.getDocument(id)
       if (document === undefined) continue
-      if (document.rawFilePath !== undefined) await store.raw?.delete(document.rawFilePath)
-      await store.deleteChunks(id)
-      await store.deleteDocument(id)
+      await this.deleteDocumentRecursive(id)
       touched.add(document.baseId)
       deleted += 1
     }
     // One updatedAt write per affected base, not per document.
     for (const baseId of touched) await this.touchBase(baseId)
     return { deleted }
+  }
+
+  /**
+   * Fold a set of selected document ids to its outermost roots (Cherry's
+   * `getOutermostSelectedItemIds`): ids that are descendants of another
+   * selected id are dropped, so a directory plus one of its children in the
+   * same batch resolves to just the directory — the subtree is then handled
+   * once by the recursive operations.
+   */
+  private outermostSelectedIds(ids: readonly string[]): string[] {
+    const store = this.requireStore()
+    const selected = new Set(ids.filter(id => store.getDocument(id) !== undefined))
+    if (selected.size === 0) return []
+    const childrenOf = new Map<string, string[]>()
+    for (const base of store.listBases()) {
+      for (const doc of store.listDocuments(base.id)) {
+        const parent = doc.parentDirectoryId
+        if (parent === undefined) continue
+        const list = childrenOf.get(parent) ?? []
+        list.push(doc.id)
+        childrenOf.set(parent, list)
+      }
+    }
+    // A selected id is "inner" when any of its ancestors is also selected.
+    const inner = new Set<string>()
+    const walk = (docId: string, depth: number): void => {
+      if (depth > 0 && selected.has(docId)) inner.add(docId)
+      for (const child of childrenOf.get(docId) ?? []) walk(child, depth + 1)
+    }
+    for (const id of selected) walk(id, 0)
+    return [...selected].filter(id => !inner.has(id))
   }
 
   listDocuments(baseId: string): DocumentSummary[] {

@@ -426,6 +426,62 @@ describe('KnowledgeService', () => {
     expect(subNode?.depth).toBe(1)
   })
 
+  it('deletes a directory subtree and folds nested selections to the outermost root', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'fold-delete' })
+    const root = await service.createDirectory(base.id, 'root')
+    const child = await service.createDirectory(base.id, 'child', root.id)
+    const leaf = await service.addFileDocument({
+      baseId: base.id, title: 'leaf', fileName: 'leaf.txt',
+      contentBase64: Buffer.from('leaf content here', 'utf8').toString('base64'),
+      parentDirectoryId: child.id,
+    })
+    const top = await service.addTextDocument({ baseId: base.id, title: 'top', content: 'top content here' })
+    expect(service.listDocuments(base.id)).toHaveLength(4)
+
+    // Selecting the directory AND one of its descendants folds to the root:
+    // the subtree is deleted once, everything below it goes with it.
+    const deleted = await service.deleteDocuments([root.id, leaf.id, top.id])
+    expect(deleted.deleted).toBe(2) // root (with subtree) + top
+    expect(service.listDocuments(base.id)).toHaveLength(0)
+  })
+
+  it('reindexes a directory subtree recursively and folds duplicate selections', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'fold-reindex' })
+    const root = await service.createDirectory(base.id, 'root')
+    const child = await service.createDirectory(base.id, 'child', root.id)
+    const a = await service.addFileDocument({
+      baseId: base.id, title: 'a', fileName: 'a.txt',
+      contentBase64: Buffer.from('alpha content here', 'utf8').toString('base64'),
+      parentDirectoryId: child.id,
+    })
+    const b = await service.addTextDocument({ baseId: base.id, title: 'b', content: 'beta content here' })
+
+    // Selecting the root directory (recurses into both leaves) plus the
+    // already-covered leaf 'a' must not reindex 'a' twice.
+    const result = await service.reindexDocuments([root.id, a.id, b.id])
+    expect(result.reindexed).toBe(2) // root (subtree) + b
+    const after = service.listDocuments(base.id)
+    expect(after.find(d => d.id === a.id)?.chunkCount).toBeGreaterThan(0)
+    expect(after.find(d => d.id === b.id)?.chunkCount).toBeGreaterThan(0)
+  })
+
+  it('reindexes a whole base with directories without double work', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'fold-base' })
+    const root = await service.createDirectory(base.id, 'root')
+    await service.addFileDocument({
+      baseId: base.id, title: 'a', fileName: 'a.txt',
+      contentBase64: Buffer.from('alpha content here', 'utf8').toString('base64'),
+      parentDirectoryId: root.id,
+    })
+    await service.addTextDocument({ baseId: base.id, title: 'b', content: 'beta content here' })
+
+    const result = await service.reindexBase(base.id)
+    expect(result.reindexed).toBe(2) // root (subtree) + b — no double work
+  })
+
   it('places an uploaded file inside a directory container', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'nest' })
@@ -464,14 +520,15 @@ describe('KnowledgeService', () => {
 
   it('snapshots a URL and refreshes it when the page changes', async () => {
     const http = await import('node:http')
-    const { AddressInfo } = await import('node:net')
     let page = '<html><head><title>Live Page</title></head><body><p>first version text</p></body></html>'
     const server = http.createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       res.end(page)
     })
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-    const port = (server.address() as AddressInfo).port
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('server did not bind a port')
+    const port = address.port
     const url = `http://127.0.0.1:${port}/page`
 
     const service = await mountService()

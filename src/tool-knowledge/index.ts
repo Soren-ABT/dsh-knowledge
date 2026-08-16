@@ -470,6 +470,36 @@ export function apply(ctx: Context): void {
   }))
 
   ctx.tools.register(defineTool({
+    name: 'knowledge_reindex_document',
+    description: 'Re-index one document (or a whole directory subtree): re-read its source '
+      + '(raw file when present), re-chunk, and re-embed only what changed. '
+      + 'Use after a parser upgrade, a chunk-size change, or to repair a failed embedding.',
+    parameters: {
+      baseId: { type: 'string', required: true, description: 'Knowledge base id (used for validation).' },
+      documentId: { type: 'string', required: true, description: 'Document (or directory) id to reindex.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          title: { type: 'string', required: true },
+          chunkCount: { type: 'number', required: true },
+        },
+      },
+      render: (_args, value: { title: string; chunkCount: number }) => [
+        { type: 'text', text: `reindexed "${value.title}" (${value.chunkCount} chunks)` },
+      ],
+    },
+    async execute(args) {
+      void args.baseId
+      const doc = await knowledge.reindexDocument(args.documentId)
+      return { id: doc.id, title: doc.title, chunkCount: doc.chunkCount }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'knowledge_reindex_base',
     description: 'Re-chunk and re-embed every document in a knowledge base using the current configuration. '
       + 'Use after changing the chunk size or the embedding provider.',

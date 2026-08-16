@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.6 — Directory subtree operations (Cherry's outermost-root folding)
+
+Batch operations now understand the directory tree. `deleteDocuments` and
+`reindexDocuments` fold their selection to the outermost roots first —
+Cherry's `getOutermostSelectedItemIds` semantics — so a directory plus one of
+its descendants in the same batch is handled once, and each selected
+directory operates on its whole subtree recursively.
+
+- **Subtree delete**: `deleteDocuments` removes a selected directory and
+  everything below it (chunks + raw files + rows), instead of leaving orphaned
+  descendants behind.
+- **Subtree reindex**: `reindexDocument` on a directory container recursively
+  reindexes its descendants; `reindexDocuments` and `reindexBase` fold the
+  selection so no document is reindexed twice (a directory's children are
+  covered by the directory itself).
+- **New tool `knowledge_reindex_document`**: re-index one document or a whole
+  directory subtree (Cherry's `refreshConcepts` counterpart) — re-reads the
+  raw source, re-chunks, and re-embeds only what changed.
+- Retrieval behavior is unchanged; eval baselines are identical.
+
 ## 0.2.5 — URL snapshots with refresh
 
 URL documents now keep a persisted snapshot of the fetched text (Cherry's
