@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.2 — Crash-resumable imports (lightweight recoverable indexing)
+
+A crash mid-embedding no longer loses the document. `ingestDocument` now
+persists the document (with its source text, marked `incomplete`) BEFORE
+embedding starts, and `buildChunks` lands every finished embedding batch into
+the chunk store as it completes (`putChunkBatch`, an incremental upsert that
+does not clear the document's other rows). On the next start, startup recovery
+reports interrupted documents instead of dropping them, and the service
+automatically resumes each one: hash reuse (0.2.1) re-embeds only the batches
+that never landed, so a multi-hour PDF import interrupted at 60% resumes from
+60% — no re-upload, no full re-embed.
+
+- **Incremental batch persistence**: `ChunkDatabase.putChunkBatch` (upsert by
+  chunk id, rowid-stable `ON CONFLICT DO UPDATE` so the FTS trigger chain stays
+  consistent) — the crash-recovery write path used by both import and reindex.
+- **Interrupted-document recovery**: `recoverInterruptedImports` now returns
+  `{ removed, resume }` — `removed` stays the pure placeholders with no
+  recoverable text (parse crashed before the source was persisted); `resume`
+  lists documents holding rawText that were `incomplete` when the process
+  died. The service re-indexes them in the background after startup.
+- **Resumable reindex**: `reindexDocument` marks the document incomplete while
+  it rebuilds, so a crash during reindex is recovered the same way.
+- Retrieval behavior is unchanged; eval baselines are identical.
+
 ## 0.2.1 — Library-wide embedding reuse (Cherry's decision A4)
 
 Re-embedding unchanged text no longer re-spends the embedding API. Each chunk

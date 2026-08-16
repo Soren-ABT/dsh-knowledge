@@ -151,4 +151,64 @@ describe('embedding hash reuse (Cherry decision A4)', () => {
     // Everything already embedded in base1 → nothing re-embedded.
     expect(embedTextsMock).not.toHaveBeenCalled()
   })
+
+  it('resumes a crashed mid-embedding document by re-embedding only missing batches', async () => {
+    embedTextsMock.mockClear()
+    const service = await mountService()
+    const base = await service.createBase({
+      name: 'resume',
+      config: { embeddingProvider: 'openai', embeddingBaseUrl: 'http://x', embeddingModel: 'm1', embeddingApiKey: 'k', embeddingBatchSize: 1 },
+    })
+    // Enough text for several chunks (batchSize 1 → one API call per chunk).
+    const content = 'alpha paragraph\n\nbeta paragraph\n\ngamma paragraph\n\ndelta paragraph'
+    await service.addTextDocument({ baseId: base.id, title: 'doc', content })
+    const firstEmbeddings = embedTextsMock.mock.calls.flatMap(call => call[4])
+    expect(firstEmbeddings.length).toBeGreaterThan(2)
+
+    // Simulate a crash mid-embedding: keep the document record (rawText +
+    // incomplete) and only the FIRST chunk batch on disk — as if the process
+    // died after the first putChunkBatch. The remaining chunks are gone.
+    const store = (service as unknown as { store: { getDocument(id: string): unknown; putDocument(d: unknown): Promise<void>; deleteChunks(docId: string): Promise<void>; listChunksByDoc(id: string): unknown[] } }).store
+    const doc = store.getDocument('placeholder') // unused; fetch the real one below
+    void doc
+    const summary = service.listDocuments(base.id)[0]
+    const fullChunks = service.listChunks(summary.id)
+    const surviving = fullChunks.slice(0, 1)
+    await store.deleteChunks(summary.id)
+    await store.putDocument({
+      ...summary,
+      chunkCount: 0,
+      incomplete: true,
+      rawText: content,
+      updatedAt: Date.now(),
+    })
+    // Re-add only the first chunk's embedding via the store so the resume
+    // path has something to reuse.
+    const first = surviving[0]
+    const store2 = store as unknown as { putChunkBatch(chunks: unknown[]): Promise<void> }
+    await store2.putChunkBatch([{
+      id: first.id,
+      docId: summary.id,
+      baseId: base.id,
+      index: first.index,
+      text: first.text,
+      context: first.context,
+      embedding: first.embedding,
+      embeddingModel: first.embeddingModel,
+    }])
+
+    // "Restart": recovery reports the document for resume; re-indexing it
+    // must reuse the surviving chunk's vector and embed only the missing ones.
+    const recovery = await (store as unknown as { recoverInterruptedImports(t: number): Promise<{ resume: string[] }> }).recoverInterruptedImports(Date.now())
+    expect(recovery.resume).toContain(summary.id)
+
+    embedTextsMock.mockClear()
+    const resumed = await service.reindexDocument(summary.id)
+    expect(resumed.chunkCount).toBe(fullChunks.length)
+    // Only the missing chunks were embedded — the surviving one was reused.
+    const resumedEmbeddings = embedTextsMock.mock.calls.flatMap(call => call[4])
+    expect(resumedEmbeddings.length).toBe(fullChunks.length - 1)
+    expect(resumedEmbeddings.some(text => text.includes('alpha'))).toBe(false)
+    expect(resumedEmbeddings.some(text => text.includes('beta'))).toBe(true)
+  })
 })

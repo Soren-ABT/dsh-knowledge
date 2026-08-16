@@ -310,6 +310,52 @@ export class ChunkDatabase implements RetrievalLane {
     }
   }
 
+  /**
+   * Incrementally persist a batch of chunks WITHOUT clearing the document's
+   * other rows (unlike {@link putChunks}, which replaces the whole bundle).
+   * This is the crash-recovery write path: `ingestDocument` embeds in batches
+   * and lands each batch here, so a crash mid-embedding leaves every completed
+   * batch in the store. On restart the recovery pass re-runs the embed with
+   * hash reuse (decision A4) and only the missing batches hit the API.
+   *
+   * `ON CONFLICT(chunk_id) DO UPDATE` (not REPLACE) keeps the rowid stable, so
+   * the external-content FTS trigger chain stays consistent.
+   */
+  putChunkBatch(chunks: KnowledgeChunk[]): void {
+    if (chunks.length === 0) return
+    const upsert = this.db.prepare(
+      `INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model, embedding_text_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(chunk_id) DO UPDATE SET
+         doc_id = excluded.doc_id, base_id = excluded.base_id, idx = excluded.idx,
+         text = excluded.text, search_text = excluded.search_text, heading = excluded.heading,
+         context = excluded.context, embedding = excluded.embedding,
+         embedding_model = excluded.embedding_model, embedding_text_hash = excluded.embedding_text_hash`,
+    )
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const chunk of chunks) {
+        const searchText = searchTextOf(chunk)
+        upsert.run(
+          chunk.id,
+          chunk.docId,
+          chunk.baseId,
+          chunk.index,
+          chunk.text,
+          searchText,
+          chunk.heading ?? null,
+          chunk.context ?? null,
+          chunk.embedding !== undefined ? encodeEmbedding(chunk.embedding) : null,
+          chunk.embeddingModel ?? null,
+          chunk.embedding !== undefined ? hashEmbeddingText(searchText) : null,
+        )
+      }
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   deleteChunks(docId: string): void {
     this.db.prepare('DELETE FROM chunk WHERE doc_id = ?').run(docId)
   }

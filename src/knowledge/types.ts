@@ -71,6 +71,12 @@ export interface KnowledgeDocument {
   readonly tokenCount?: number
   /** Number of chunks produced at import time. */
   readonly chunkCount: number
+  /**
+   * True while the document is being indexed (placeholder → mid-embedding).
+   * A crash leaves `incomplete: true` + rawText, so startup recovery can
+   * resume the interrupted embed instead of dropping the document.
+   */
+  readonly incomplete?: boolean
   /** Reason embedding failed at import/reindex time, when it degraded to lexical-only. */
   readonly embeddingError?: string
   readonly createdAt: number

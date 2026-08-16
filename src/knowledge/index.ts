@@ -133,6 +133,37 @@ export class KnowledgeService extends Service {
     this.resolveStore()
     const store = this.store
     this.ctx.effect(() => async () => { await store.close() }, 'knowledge: close store')
+    // Resume documents a previous process left mid-embedding: their chunks are
+    // partially persisted, so re-running the embed with hash reuse completes
+    // them without re-embedding the batches that already landed. (openStore
+    // already ran the removal half of the recovery; this second pass is
+    // idempotent and only harvests the resume list.)
+    const resume = store.recoverInterruptedImports(Date.now()).then(({ resume: resumeIds }) => {
+      if (resumeIds.length > 0) {
+        this.ctx.logger.info(`knowledge: resuming ${resumeIds.length} interrupted import(s)`)
+        void this.resumeInterruptedDocuments(resumeIds)
+      }
+    })
+    void resume.catch(error => this.ctx.logger.warn(`knowledge: interrupted-import recovery failed: ${error instanceof Error ? error.message : String(error)}`))
+  }
+
+  /**
+   * Re-index documents a crash left mid-embedding. Each document holds its
+   * rawText and some persisted chunk batches; hash reuse (decision A4) makes
+   * this re-embed only the missing batches. Fire-and-forget: the service is
+   * already up; runs in the background so startup is not blocked.
+   */
+  private async resumeInterruptedDocuments(ids: readonly string[]): Promise<void> {
+    const store = this.requireStore()
+    for (const id of ids) {
+      const doc = store.getDocument(id)
+      if (doc === undefined || doc.sourceType === 'directory') continue
+      try {
+        await this.reindexDocument(id)
+      } catch (error) {
+        this.ctx.logger.warn(`knowledge: resume of interrupted import failed for "${doc.title}": ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
   }
 
   /** Wait until the durable store is ready; the HTTP route awaits this. */
@@ -612,10 +643,12 @@ export class KnowledgeService extends Service {
     if (document === undefined) throw new Error(`document not found: ${id}`)
     const text = document.rawText ?? reconstructFromChunks(store.listChunksByDoc(id))
     const config = this.getConfigFor(document.baseId)
-    // buildChunks reuses stored vectors library-wide by embedding-text hash
-    // (Cherry's decision A4), so unchanged slices are not re-embedded.
-    const { chunks, embeddingError } = await this.buildChunks(document.baseId, document.id, document.title, text, config)
-    const { embeddingError: _staleError, ...rest } = document
+    // Mark the document incomplete so a crash mid-reindex is resumed on the
+    // next start (buildChunks persists each embedded batch; hash reuse makes
+    // the resume re-embed only what never landed).
+    await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
+    const { chunks, embeddingError } = await this.buildChunks(document.baseId, document.id, document.title, text, config, undefined, batch => store.putChunkBatch(batch))
+    const { embeddingError: _staleError, incomplete: _staleIncomplete, ...rest } = document
     const next: KnowledgeDocument = {
       ...rest,
       rawText: text,
@@ -1210,13 +1243,19 @@ export class KnowledgeService extends Service {
       }
     }
     const docId = input.placeholderId ?? crypto.randomUUID()
+    const prior = input.placeholderId !== undefined ? store.getDocument(docId) : undefined
+    const createdAt = prior?.createdAt ?? Date.now()
     const pieces = chunkText(input.text, config.chunkSize, config.chunkOverlap, {
       smartChunk: config.smartChunk,
       separator: config.chunkSeparator,
     })
-    const { chunks, embeddingError } = await this.buildChunks(input.baseId, docId, input.title, input.text, config, pieces)
-    const prior = input.placeholderId !== undefined ? store.getDocument(docId) : undefined
-    const document: KnowledgeDocument = {
+    // Persist the document (with its source text) BEFORE embedding starts and
+    // mark it incomplete: a crash mid-embedding then leaves a recoverable
+    // record — startup recovery re-runs the embed with hash reuse, which only
+    // re-embeds the batches that never landed. Without this write a crash
+    // would leave either a raw placeholder (no text to rebuild from) or an
+    // old complete record, both losing the in-flight work.
+    const half: KnowledgeDocument = {
       id: docId,
       baseId: input.baseId,
       title: input.title,
@@ -1229,9 +1268,17 @@ export class KnowledgeService extends Service {
       rawText: input.text,
       charCount: input.text.length,
       tokenCount: estimateTokens(input.text),
+      chunkCount: 0,
+      incomplete: true,
+      createdAt,
+      updatedAt: Date.now(),
+    }
+    await store.putDocument(half)
+    const { chunks, embeddingError } = await this.buildChunks(input.baseId, docId, input.title, input.text, config, pieces, batch => store.putChunkBatch(batch))
+    const document: KnowledgeDocument = {
+      ...half,
       chunkCount: chunks.length,
       ...(embeddingError !== undefined ? { embeddingError } : {}),
-      createdAt: prior?.createdAt ?? Date.now(),
       updatedAt: Date.now(),
     }
     await store.putDocument(document)
@@ -1248,6 +1295,7 @@ export class KnowledgeService extends Service {
     text: string,
     config: KnowledgeConfig,
     pieces?: readonly ChunkPiece[],
+    onBatch?: (chunks: KnowledgeChunk[]) => Promise<void>,
   ): Promise<{ chunks: KnowledgeChunk[]; embeddingError?: string }> {
     const slices = pieces ?? chunkText(text, config.chunkSize, config.chunkOverlap, {
       smartChunk: config.smartChunk,
@@ -1289,14 +1337,22 @@ export class KnowledgeService extends Service {
             needTexts.push(chunkSearchText(chunks[i]))
           }
         }
-        if (need.length > 0) {
-          const vectors = await this.embedInBatches(needTexts, config, (done, total) => {
-            this.indexing.set(docId, { baseId, title, phase: 'embedding', total, progress: Math.round((done / total) * 100) })
-          })
-          for (let j = 0; j < need.length; j += 1) {
-            const index = need[j]
+        // Embed in batches and persist every finished batch as it lands: a
+        // crash mid-embedding then leaves each completed batch in the store
+        // (onBatch → putChunkBatch), so startup recovery resumes from the
+        // persisted state — hash reuse re-embeds only the missing batches.
+        for (let i = 0; i < need.length; i += config.embeddingBatchSize) {
+          const batch = need.slice(i, i + config.embeddingBatchSize)
+          const batchTexts = needTexts.slice(i, i + config.embeddingBatchSize)
+          const vectors = await this.embedTextsOnce(config, batchTexts)
+          const done: KnowledgeChunk[] = []
+          for (let j = 0; j < batch.length; j += 1) {
+            const index = batch[j]
             chunks[index] = { ...chunks[index], embedding: vectors[j], ...(key !== undefined ? { embeddingModel: key } : {}) }
+            done.push(chunks[index])
           }
+          if (onBatch !== undefined) await onBatch(done)
+          this.indexing.set(docId, { baseId, title, phase: 'embedding', total: need.length, progress: Math.round((Math.min(i + batch.length, need.length) / need.length) * 100) })
         }
       } catch (error) {
         embeddingError = error instanceof Error ? error.message : String(error)
@@ -1308,21 +1364,16 @@ export class KnowledgeService extends Service {
     return { chunks, embeddingError }
   }
 
-  private async embedInBatches(texts: string[], config: KnowledgeConfig, onProgress?: (done: number, total: number) => void): Promise<number[][]> {
-    const vectors: number[][] = []
-    for (let i = 0; i < texts.length; i += config.embeddingBatchSize) {
-      const batch = texts.slice(i, i + config.embeddingBatchSize)
-      const batchVectors = await embedTexts(
-        config.embeddingProvider,
-        config.embeddingBaseUrl,
-        config.embeddingModel,
-        config.embeddingApiKey,
-        batch,
-      )
-      vectors.push(...batchVectors)
-      onProgress?.(vectors.length, texts.length)
-    }
-    return vectors
+  /** Embed one batch through the configured provider (empty input → empty output). */
+  private async embedTextsOnce(config: KnowledgeConfig, texts: readonly string[]): Promise<number[][]> {
+    if (texts.length === 0) return []
+    return embedTexts(
+      config.embeddingProvider,
+      config.embeddingBaseUrl,
+      config.embeddingModel,
+      config.embeddingApiKey,
+      texts,
+    )
   }
 
   /** Bump the base's updatedAt so the data view's "更新于" stays meaningful. */

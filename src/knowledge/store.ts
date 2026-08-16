@@ -42,6 +42,12 @@ export interface Store {
   listChunks(baseId: string): KnowledgeChunk[]
   listChunksByDoc(docId: string, limit?: number, offset?: number): KnowledgeChunk[]
   putChunks(chunks: KnowledgeChunk[]): Promise<void>
+  /**
+   * Incrementally persist a batch of chunks WITHOUT clearing the document's
+   * other rows (the crash-recovery write path — each embedded batch lands
+   * here, so a mid-embedding crash keeps every completed batch).
+   */
+  putChunkBatch(chunks: KnowledgeChunk[]): Promise<void>
   deleteChunks(docId: string): Promise<void>
   /** Drop every chunk of a base in one operation (used by deleteBase). */
   deleteChunksByBase(baseId: string): Promise<void>
@@ -57,12 +63,18 @@ export interface Store {
   /** Per-doc chunk presence + embedding coverage in one pass (document lists). */
   docChunkStatus(baseId: string): { withChunks: Set<string>; missingEmbedding: Set<string> }
   /**
-   * Startup self-healing: remove documents an interrupted import left behind —
-   * non-directory items with no chunks whose last update predates this
-   * process's start (crashed placeholders / half-finished ingests). Returns
-   * how many were removed.
+   * Startup self-healing, returning:
+   * - `removed`: documents a crashed import left behind with nothing to
+   *   recover — non-directory items with no chunks AND no rawText whose last
+   *   update predates this process's start (pure placeholders / half-finished
+   *   ingests before the source text was persisted).
+   * - `resume`: documents that DO hold recoverable source text (rawText) but
+   *   whose chunk count disagrees with the store — a crash mid-embedding.
+   *   Their chunks are partially present (each embedded batch was persisted),
+   *   so re-running the embed with hash reuse completes them without
+   *   re-embedding finished batches. The caller re-indexes these.
    */
-  recoverInterruptedImports(startedAt: number): Promise<number>
+  recoverInterruptedImports(startedAt: number): Promise<{ removed: number; resume: string[] }>
   /** Aggregate chunk stats without loading chunk rows. */
   chunkStats(baseIds: readonly string[]): ChunkStats
   /** SQL-backed retrieval lanes (FTS5 + vector scan); absent on in-memory stores. */
@@ -112,10 +124,11 @@ export async function openStore(
       await migrateLegacyChunkFile(options?.legacyJsonPath ?? legacyChunkFilePath(), chunkDb, message => console.warn(message))
       const store = new DomainStore(domain, chunkDb)
       // Startup self-healing: drop documents a crashed import left behind
-      // (placeholders or half-finished records with no chunks), then reconcile
-      // stale chunkCount metadata.
-      const removed = await store.recoverInterruptedImports(Date.now())
-      if (removed > 0) console.warn(`dsh-knowledge: removed ${removed} incomplete import(s) left by an interrupted run`)
+      // (pure placeholders with no recoverable text), then reconcile stale
+      // chunkCount metadata. Resume candidates (rawText present, chunks
+      // partial) are re-indexed by the service after openStore returns.
+      const recovery = await store.recoverInterruptedImports(Date.now())
+      if (recovery.removed > 0) console.warn(`dsh-knowledge: removed ${recovery.removed} incomplete import(s) left by an interrupted run`)
       await store.reconcileChunkCounts()
       return store
     } catch (error) {
@@ -184,6 +197,10 @@ class DomainStore implements Store {
     this.chunkDb.putChunks(chunks)
   }
 
+  async putChunkBatch(chunks: KnowledgeChunk[]): Promise<void> {
+    this.chunkDb.putChunkBatch(chunks)
+  }
+
   async deleteChunks(docId: string): Promise<void> {
     this.chunkDb.deleteChunks(docId)
   }
@@ -200,15 +217,38 @@ class DomainStore implements Store {
     return this.chunkDb.chunkCountsByDoc(baseIds)
   }
 
-  async recoverInterruptedImports(startedAt: number): Promise<number> {
+  async recoverInterruptedImports(startedAt: number): Promise<{ removed: number; resume: string[] }> {
     const withChunks = new Set<string>()
     for (const base of this.listBases()) {
       for (const docId of this.chunkDb.docChunkStatus(base.id).withChunks) withChunks.add(docId)
     }
     let removed = 0
+    const resume: string[] = []
     for (const [id, doc] of [...this.documents.entries()]) {
       if (doc.sourceType === 'directory') continue
-      if (withChunks.has(id)) continue
+      // An `incomplete` document holds persisted rawText and (probably) some
+      // embedded batches — a crash mid-ingest. Recovery re-runs the embed:
+      // hash reuse (decision A4) re-embeds only the missing batches, so the
+      // resume is cheap. Distinguish it from a stale metadata count: the
+      // reconciliation pass that runs after this one would otherwise make the
+      // chunk count agree and hide the interrupted document forever.
+      if (doc.incomplete === true) {
+        if (doc.rawText !== undefined) resume.push(id)
+        continue
+      }
+      if (withChunks.has(id)) {
+        // Chunks exist and the document is not marked incomplete: a completed
+        // document (possibly with a recording embedding failure) — keep it.
+        continue
+      }
+      // No chunks at all and no incomplete marker: a pure placeholder whose
+      // source text was never persisted (crash before rawText landed) is
+      // unrecoverable; one that already holds rawText was interrupted between
+      // the document write and the first chunk batch — resume it.
+      if (doc.rawText !== undefined) {
+        if ((doc.updatedAt ?? doc.createdAt) < startedAt) resume.push(id)
+        continue
+      }
       // A completed document always has chunks (chunkText yields ≥1, even on
       // embedding failure); an item with none that predates this process was
       // left by a crash mid-import.
@@ -217,7 +257,7 @@ class DomainStore implements Store {
       await this.documents.delete(id)
       removed += 1
     }
-    return removed
+    return { removed, resume }
   }
 
   /**
@@ -355,6 +395,10 @@ class MemoryStore implements Store {
     for (const chunk of chunks) this.chunks.set(chunk.id, chunk)
   }
 
+  async putChunkBatch(chunks: KnowledgeChunk[]): Promise<void> {
+    for (const chunk of chunks) this.chunks.set(chunk.id, chunk)
+  }
+
   async deleteChunks(docId: string): Promise<void> {
     for (const [id, chunk] of this.chunks) {
       if (chunk.docId === docId) this.chunks.delete(id)
@@ -388,18 +432,27 @@ class MemoryStore implements Store {
     return counts
   }
 
-  async recoverInterruptedImports(startedAt: number): Promise<number> {
+  async recoverInterruptedImports(startedAt: number): Promise<{ removed: number; resume: string[] }> {
     const withChunks = new Set<string>()
     for (const chunk of this.chunks.values()) withChunks.add(chunk.docId)
     let removed = 0
+    const resume: string[] = []
     for (const [id, doc] of [...this.documents.entries()]) {
       if (doc.sourceType === 'directory') continue
+      if (doc.incomplete === true) {
+        if (doc.rawText !== undefined) resume.push(id)
+        continue
+      }
       if (withChunks.has(id)) continue
+      if (doc.rawText !== undefined) {
+        if ((doc.updatedAt ?? doc.createdAt) < startedAt) resume.push(id)
+        continue
+      }
       if ((doc.updatedAt ?? doc.createdAt) >= startedAt) continue
       this.documents.delete(id)
       removed += 1
     }
-    return removed
+    return { removed, resume }
   }
 
   docChunkStatus(baseId: string): { withChunks: Set<string>; missingEmbedding: Set<string> } {

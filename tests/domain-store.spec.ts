@@ -362,6 +362,78 @@ describe('ChunkDatabase (per-chunk SQL layout)', () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  it('persists embedded batches incrementally without clearing the document', async () => {
+    const dir = await tempDir()
+    try {
+      const db = new ChunkDatabase(join(dir, 'chunks.sqlite'))
+      const embedded = (id: string, docId: string, index: number, text: string, vector: number[]): KnowledgeChunk => ({
+        ...chunk(id, docId, 'b1', index, text),
+        context: 'doc',
+        embedding: vector,
+        embeddingModel: 'openai:m1',
+      })
+      // Two batches land over time (as if embedding ran in two chunks of work).
+      db.putChunkBatch([embedded('c1', 'd1', 0, 'alpha text', [1, 0, 0])])
+      db.putChunkBatch([embedded('c2', 'd1', 1, 'beta text', [0, 1, 0])])
+      // Both batches survive; no DELETE-then-INSERT wipe happened.
+      expect(db.listChunksByDoc('d1').map(c => c.id).sort()).toEqual(['c1', 'c2'])
+      // A later full replace still works after incremental batches.
+      db.putChunks([embedded('c9', 'd1', 0, 'gamma text', [0, 0, 1])])
+      expect(db.listChunksByDoc('d1').map(c => c.id)).toEqual(['c9'])
+      db.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports interrupted documents for resume instead of dropping them', async () => {
+    const dir = await tempDir()
+    try {
+      // Seed a crashed state: an incomplete document with rawText + one landed
+      // chunk batch, an incomplete document with no chunks yet, and a pure
+      // placeholder with neither text nor chunks.
+      {
+        const domain = fakeDomain()
+        const bases = domain.table('bases') as unknown as FakeTable<string, unknown>
+        const documents = domain.table('documents') as unknown as FakeTable<string, unknown>
+        await bases.put('b1', { id: 'b1', name: 'b1', description: '', createdAt: 1, updatedAt: 1 })
+        await documents.put('partial', { id: 'partial', baseId: 'b1', title: 'mid-embed', sourceType: 'file', rawText: 'full source text', charCount: 15, chunkCount: 0, incomplete: true, createdAt: 100, updatedAt: 100 })
+        await documents.put('rawonly', { id: 'rawonly', baseId: 'b1', title: 'text-ok', sourceType: 'file', rawText: 'text but no chunks yet', charCount: 23, chunkCount: 0, incomplete: true, createdAt: 200, updatedAt: 200 })
+        await documents.put('pure', { id: 'pure', baseId: 'b1', title: 'placeholder', sourceType: 'file', charCount: 0, chunkCount: 0, createdAt: 300, updatedAt: 300 })
+        const store = await openStore({ open: async () => domain } as unknown as StorageDomainFacility, {
+          chunkStorePath: join(dir, 'chunks.sqlite'),
+          legacyJsonPath: join(dir, 'missing.json'),
+        })
+        await store.putChunkBatch([{ ...chunk('c1', 'partial', 'b1', 0, 'first batch'), context: 'partial', embedding: [1, 0, 0], embeddingModel: 'openai:m1' }])
+        await store.close()
+      }
+      // Reopen at a later "process start": incomplete documents are reported
+      // for resume (kept, not dropped); the pure placeholder was already
+      // removed by openStore's own recovery pass (so a second pass reports
+      // zero removed and the same resume list).
+      const domain = fakeDomain()
+      const bases = domain.table('bases') as unknown as FakeTable<string, unknown>
+      const documents = domain.table('documents') as unknown as FakeTable<string, unknown>
+      await bases.put('b1', { id: 'b1', name: 'b1', description: '', createdAt: 1, updatedAt: 1 })
+      await documents.put('partial', { id: 'partial', baseId: 'b1', title: 'mid-embed', sourceType: 'file', rawText: 'full source text', charCount: 15, chunkCount: 0, incomplete: true, createdAt: 100, updatedAt: 100 })
+      await documents.put('rawonly', { id: 'rawonly', baseId: 'b1', title: 'text-ok', sourceType: 'file', rawText: 'text but no chunks yet', charCount: 23, chunkCount: 0, incomplete: true, createdAt: 200, updatedAt: 200 })
+      await documents.put('pure', { id: 'pure', baseId: 'b1', title: 'placeholder', sourceType: 'file', charCount: 0, chunkCount: 0, createdAt: 300, updatedAt: 300 })
+      const store = await openStore({ open: async () => domain } as unknown as StorageDomainFacility, {
+        chunkStorePath: join(dir, 'chunks.sqlite'),
+        legacyJsonPath: join(dir, 'missing.json'),
+      })
+      // openStore's recovery pass already dropped the pure placeholder.
+      expect(store.getDocument('pure')).toBeUndefined()
+      const recovery = await store.recoverInterruptedImports(Date.now())
+      expect(recovery.resume.sort()).toEqual(['partial', 'rawonly'])
+      expect(recovery.removed).toBe(0)
+      expect(store.getDocument('partial')).toBeDefined()
+      await store.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('DomainStore wiring', () => {
