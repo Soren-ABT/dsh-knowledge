@@ -1,4 +1,4 @@
-# dsh-knowledge-dsh的知识库插件
+# dsh-knowledge——dsh的知识库插件
 [**English**](./README.en.md) / [**中文**](./README.md)
 
 一个深度的**知识库系统**，作为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的独立、可开源 bundle 插件。提供知识库（含**分组**）与文档管理、文本分块、向量化（OpenAI 兼容 / Ollama / **本地模型** / 关键词降级）、检索，以及模型可见工具与浏览器管理面板。
