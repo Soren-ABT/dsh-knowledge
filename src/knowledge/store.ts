@@ -472,6 +472,10 @@ class MemoryStore implements Store {
   }
 
   async putChunks(chunks: KnowledgeChunk[]): Promise<void> {
+    // Mirror the SQLite store's replace semantics: drop the document's old
+    // rows, then insert the new bundle (a reindex must not leave stale chunks).
+    const docId = chunks.length > 0 ? chunks[0].docId : undefined
+    if (docId !== undefined) await this.deleteChunks(docId)
     for (const chunk of chunks) this.chunks.set(chunk.id, chunk)
   }
 

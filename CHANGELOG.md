@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.5 — URL snapshots with refresh
+
+URL documents now keep a persisted snapshot of the fetched text (Cherry's
+snapshot model): the base owns a stable copy, reindex re-reads it, and
+refresh re-fetches the page and updates the snapshot + index in place.
+
+- **Snapshot on import**: `addUrlDocument` persists the fetched text as
+  `<baseId>/<docId>.md` in the raw store (`rawFilePath`), so a URL document is
+  rebuildable from its snapshot and crash recovery covers the fetch/parse
+  window like any file import.
+- **Refresh**: `refreshUrlDocument` re-fetches the page; when the text (or
+  title) changed it overwrites the snapshot and re-indexes — hash reuse
+  re-embeds only the chunks that changed. An unchanged page or a failed fetch
+  leaves the current snapshot and index untouched; refresh never degrades.
+- **Surface**: `POST /knowledge/documents/:id/refresh`, the
+  `knowledge_refresh_url` tool (returns `changed: false` for no-op), and a
+  "刷新快照" action on URL document rows in the panel.
+- **Bug fix**: the in-memory store's `putChunks` now mirrors the SQLite
+  replace semantics (drop the document's old rows first) — a reindex in a
+  memory-backed profile no longer leaves stale chunks searchable.
+- Retrieval behavior is unchanged; eval baselines are identical.
+
 ## 0.2.4 — Raw source storage (Cherry's "import means copy")
 
 Uploaded file documents now keep their original bytes — Cherry's `raw/`

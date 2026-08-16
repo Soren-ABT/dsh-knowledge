@@ -347,6 +347,35 @@ export function apply(ctx: Context): void {
   }))
 
   ctx.tools.register(defineTool({
+    name: 'knowledge_refresh_url',
+    description: 'Re-fetch a URL document from its origin and update its snapshot in place. '
+      + 'Use when a page you imported earlier has changed and the knowledge base should reflect the new content. '
+      + 'Returns changed=false when the page is unchanged.',
+    parameters: {
+      documentId: { type: 'string', required: true, description: 'Id of the URL document to refresh.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          changed: { type: 'boolean', required: true },
+          title: { type: 'string', required: true },
+          chunkCount: { type: 'number', required: true },
+        },
+      },
+      render: (_args, value: { changed: boolean; title: string; chunkCount: number }) => [
+        { type: 'text', text: value.changed
+          ? `refreshed "${value.title}" (${value.chunkCount} chunks)`
+          : `"${value.title}" is unchanged` },
+      ],
+    },
+    async execute(args) {
+      return knowledge.refreshUrlDocument(args.documentId)
+    },
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'knowledge_stats',
     description: 'Report aggregate statistics for one knowledge base (or all bases when baseId is omitted): '
       + 'document, chunk, character, and token counts, and whether embeddings are present.',

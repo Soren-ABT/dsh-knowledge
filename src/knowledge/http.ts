@@ -267,6 +267,7 @@ async function route(
         return service.listChunks(documentId, readIntQuery(query, 'limit'), readIntQuery(query, 'offset'))
       }
       if (segments[2] === 'reindex' && method === 'POST') return service.reindexDocument(documentId)
+      if (segments[2] === 'refresh' && method === 'POST') return service.refreshUrlDocument(documentId)
       if (segments[2] === 'raw' && method === 'GET') {
         const raw = await service.getRawFile(documentId)
         if (raw === undefined) return undefined

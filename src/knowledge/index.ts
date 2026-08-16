@@ -645,13 +645,60 @@ export class KnowledgeService extends Service {
     const html = await fetchHtml(request.url)
     const extracted = extractFromHtml(html)
     if (extracted.text.trim().length === 0) throw new Error('URL returned no extractable text')
+    // Persist the fetched text as the URL's snapshot (Cherry's snapshot model:
+    // the base owns a stable copy; refresh re-fetches and overwrites it).
+    const docId = crypto.randomUUID()
+    const title = request.title?.trim() || extracted.title || request.url
+    let rawFilePath: string | undefined
+    if (store.raw !== undefined) {
+      rawFilePath = await store.raw.write(request.baseId, docId, '.md', encodeUtf8(extracted.text))
+    }
     return this.ingestDocument({
       baseId: request.baseId,
-      title: request.title?.trim() || extracted.title || request.url,
+      title,
       sourceType: 'url',
       url: request.url,
+      rawFilePath,
       text: extracted.text,
     })
+  }
+
+  /**
+   * Cherry-style URL refresh: re-fetch the page, and when its text changed,
+   * overwrite the snapshot and re-index the document (hash reuse re-embeds
+   * only the chunks that changed). A failed fetch or an unchanged page leaves
+   * the current snapshot and index untouched — refresh never degrades.
+   */
+  async refreshUrlDocument(id: string): Promise<{ changed: boolean; title: string; chunkCount: number }> {
+    const store = this.requireStore()
+    const document = store.getDocument(id)
+    if (document === undefined) throw new Error(`document not found: ${id}`)
+    if (document.sourceType !== 'url' || document.url === undefined) {
+      throw new Error(`document "${document.title}" is not a URL document`)
+    }
+    const html = await fetchHtml(document.url)
+    const extracted = extractFromHtml(html)
+    if (extracted.text.trim().length === 0) throw new Error('URL returned no extractable text')
+    const title = extracted.title.trim().length > 0 ? extracted.title.trim() : document.title
+    if (extracted.text === document.rawText && title === document.title) {
+      return { changed: false, title: document.title, chunkCount: document.chunkCount }
+    }
+    // Overwrite the snapshot (or persist a new one for pre-snapshot docs).
+    let rawFilePath = document.rawFilePath
+    if (store.raw !== undefined) {
+      const ext = rawFilePath !== undefined ? rawExtensionOf(rawFilePath) : '.md'
+      rawFilePath = await store.raw.write(document.baseId, document.id, ext, encodeUtf8(extracted.text))
+    }
+    const refreshed = await this.ingestDocument({
+      baseId: document.baseId,
+      title,
+      sourceType: 'url',
+      url: document.url,
+      rawFilePath,
+      text: extracted.text,
+      placeholderId: document.id,
+    })
+    return { changed: true, title: refreshed.title, chunkCount: refreshed.chunkCount }
   }
 
   async deleteDocument(id: string): Promise<void> {
@@ -1587,6 +1634,10 @@ function decodeBase64(value: string): Uint8Array {
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
   return bytes
+}
+
+function encodeUtf8(text: string): Uint8Array {
+  return new TextEncoder().encode(text)
 }
 
 /** A safe file extension (leading dot, alphanumeric) for the raw store, from an upload name. */

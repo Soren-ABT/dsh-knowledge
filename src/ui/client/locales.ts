@@ -47,6 +47,9 @@ export type KnowledgeKey =
   | 'reindex'
   | 'reindexButton'
   | 'reindexDone'
+  | 'refreshUrl'
+  | 'urlRefreshed'
+  | 'urlUnchanged'
   | 'chunks'
   | 'preview'
   | 'rawText'
@@ -236,6 +239,9 @@ export const zh: Record<KnowledgeKey, string> = {
   reindex: '重建索引',
   reindexButton: '重新索引',
   reindexDone: '已重建',
+  refreshUrl: '刷新快照',
+  urlRefreshed: '已刷新',
+  urlUnchanged: '页面无变化',
   chunks: '分块',
   preview: '预览',
   rawText: '原文',
@@ -423,6 +429,9 @@ export const en: Record<KnowledgeKey, string> = {
   reindex: 'Reindex',
   reindexButton: 'Reindex',
   reindexDone: 'reindexed',
+  refreshUrl: 'Refresh snapshot',
+  urlRefreshed: 'refreshed',
+  urlUnchanged: 'page unchanged',
   chunks: 'Chunks',
   preview: 'Preview',
   rawText: 'Raw text',

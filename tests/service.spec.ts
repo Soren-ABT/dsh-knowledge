@@ -461,4 +461,45 @@ describe('KnowledgeService', () => {
     const reindexed = await service.reindexDocument(doc.id)
     expect(reindexed.chunkCount).toBeGreaterThan(0)
   })
+
+  it('snapshots a URL and refreshes it when the page changes', async () => {
+    const http = await import('node:http')
+    const { AddressInfo } = await import('node:net')
+    let page = '<html><head><title>Live Page</title></head><body><p>first version text</p></body></html>'
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end(page)
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as AddressInfo).port
+    const url = `http://127.0.0.1:${port}/page`
+
+    const service = await mountService()
+    const base = await service.createBase({ name: 'urls' })
+    try {
+      const doc = await service.addUrlDocument({ baseId: base.id, url })
+      expect(doc.title).toBe('Live Page')
+      expect(doc.rawText).toContain('first version text')
+
+      // Refresh with an unchanged page: no-op.
+      const unchanged = await service.refreshUrlDocument(doc.id)
+      expect(unchanged.changed).toBe(false)
+
+      // Refresh with changed content: snapshot + index update.
+      page = '<html><head><title>Live Page</title></head><body><p>second version text</p></body></html>'
+      const changed = await service.refreshUrlDocument(doc.id)
+      expect(changed.changed).toBe(true)
+      expect(changed.chunkCount).toBeGreaterThan(0)
+      const after = service.listDocuments(base.id)[0]
+      expect(after.updatedAt).toBeGreaterThan(doc.updatedAt ?? 0)
+      // The index now holds the new content only.
+      const chunksAfter = service.listChunks(doc.id).map(c => c.text)
+      expect(chunksAfter.some(text => text.includes('second version'))).toBe(true)
+      expect(chunksAfter.some(text => text.includes('first version'))).toBe(false)
+      const result = await service.search({ query: 'second version', baseId: base.id })
+      expect(result.hits.length).toBeGreaterThan(0)
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
 })

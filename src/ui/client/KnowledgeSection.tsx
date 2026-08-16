@@ -542,6 +542,17 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     })
   }, [api, run, reloadDocuments, notify, t])
 
+  const refreshUrlDoc = useCallback(async (doc: DocumentSummary): Promise<void> => {
+    await run(async () => {
+      const result = await api.refreshUrlDocument(doc.id)
+      notify('success', result.changed
+        ? `${t('urlRefreshed')}: ${doc.title}`
+        : `${t('urlUnchanged')}: ${doc.title}`)
+      if (selectedDocId === doc.id) { setChunks([]); setRawText(null); setRawTextTruncated(false); setSelectedDocId(null) }
+      await reloadDocuments()
+    })
+  }, [api, run, reloadDocuments, notify, selectedDocId, t])
+
   // ── bulk selection ────────────────────────────────────────────────────────
 
   const checkedDocs = documents.filter(doc => checkedDocIds.has(doc.id))
@@ -730,6 +741,9 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       { key: 'preview', label: t('viewSource'), icon: <IconEye size={14} />, onSelect: () => void openDocument(doc.id, 'preview') },
       { key: 'chunks', label: t('viewChunks'), icon: <IconEye size={14} />, onSelect: () => void openDocument(doc.id, 'chunks') },
       { key: 'reindex', label: t('reindexButton'), icon: <IconRefresh size={14} />, onSelect: () => void reindexDoc(doc) },
+      ...(doc.sourceType === 'url'
+        ? [{ key: 'refresh-url', label: t('refreshUrl'), icon: <IconRefresh size={14} />, onSelect: () => void refreshUrlDoc(doc) }]
+        : []),
       { key: 'sep' },
       { key: 'delete', label: t('delete'), danger: true, onSelect: () => setDialog({ kind: 'confirmDeleteDoc', doc }) },
     ]
