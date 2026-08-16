@@ -84,7 +84,9 @@ export class RawFileStorage implements RawFileStore {
   }
 
   async deleteBase(baseId: string): Promise<void> {
-    await rm(join(this.root, baseId), { recursive: true, force: true })
+    // Validate through the same boundary as every other path: a crafted baseId
+    // (e.g. a tampered domain record) must never let `rm -rf` escape the root.
+    await rm(this.pathOf(baseId), { recursive: true, force: true })
   }
 }
 

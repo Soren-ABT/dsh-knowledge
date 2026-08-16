@@ -36,7 +36,16 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
     const url = new URL(req.url ?? '/', 'http://dsh.internal')
     const pathname = url.pathname
     const rel = pathname.slice('/knowledge'.length)
-    const segments = rel.split('/').filter(Boolean)
+    // Decode path segments so an encoded id (`%2F` in a filename, UTF-8 ids)
+    // resolves to the same string the JSON API uses. A decoded segment is
+    // never used as a filesystem path — only as a store key.
+    const segments = rel.split('/').filter(Boolean).map(segment => {
+      try {
+        return decodeURIComponent(segment)
+      } catch {
+        return segment
+      }
+    })
     const method = (req.method ?? 'GET').toUpperCase()
 
     const body = method === 'GET' ? undefined : await readJson(req)

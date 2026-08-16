@@ -231,12 +231,28 @@ interface ZipHandle {
   files: Record<string, { async(type: 'string'): Promise<string> }>
 }
 
+/** Cap on total uncompressed bytes accepted from an office archive (zip-bomb guard). */
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+
 async function loadZip(buffer: Uint8Array): Promise<ZipHandle> {
   const mod = await import('jszip')
   const JSZip = (mod.default ?? mod) as new () => { loadAsync(data: Uint8Array): Promise<ZipHandle> }
+  let zip: ZipHandle
   try {
-    return await new JSZip().loadAsync(buffer)
+    zip = await new JSZip().loadAsync(buffer)
   } catch (error) {
     throw new Error(`archive parsing failed: ${error instanceof Error ? error.message : String(error)}`)
   }
+  // Zip-bomb guard: reject archives whose declared uncompressed size exceeds
+  // the cap before any entry is inflated into memory. (JSZip's
+  // `_data.uncompressedSize` is internal; the entries' names + `_data` shape
+  // is not a public API, so probe via the loader object instead.)
+  const total = Object.values(zip.files).reduce((sum, entry) => {
+    const size = (entry as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize
+    return sum + (typeof size === 'number' && Number.isFinite(size) ? size : 0)
+  }, 0)
+  if (total > MAX_ARCHIVE_UNCOMPRESSED_BYTES) {
+    throw new Error(`archive too large to unpack (${Math.round(total / 1024 / 1024)} MB uncompressed)`)
+  }
+  return zip
 }

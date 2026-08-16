@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.11 — Security hardening (SSRF, path traversal, zip bombs)
+
+Audit-driven hardening of the import paths:
+
+- **SSRF guard on URL import**: `fetchHtml` now refuses non-http(s) protocols
+  and loopback / link-local / RFC1918 private hosts (`127.0.0.0/8`,
+  `10.x`, `172.16–31.x`, `192.168.x`, `169.254.x`, `0.x`, `localhost`,
+  `[::1]`, `metadata.google.internal`, …) before any request is sent. The
+  `knowledge_import_url` tool and the URL refresh path share the guard.
+- **Redirect re-validation**: fetch no longer follows redirects implicitly —
+  `httpFetch` accepts a `redirect: 'manual'` policy and `fetchHtml` walks up
+  to 5 hops itself, validating every hop's protocol and host. A public page
+  can no longer 302 to an internal address to bypass the check.
+- **Path-traversal depth**: `RawFileStorage.deleteBase` now validates its
+  `baseId` through the same boundary as every other raw path (a tampered
+  domain record could previously have driven `rm -rf` outside the raw root).
+- **Zip-bomb guard**: office archives (docx/pptx/xlsx/epub) whose declared
+  uncompressed size exceeds 256 MB are rejected before any entry is inflated.
+- **Route segment decoding**: `/knowledge/*` path segments are
+  `decodeURIComponent`-decoded so encoded ids resolve like the JSON API.
+- Retrieval behavior is unchanged; eval baselines are identical.
+
 ## 0.2.10 — Extended retrieval eval sets
 
 Two new real eval sets join the original 24 questions:

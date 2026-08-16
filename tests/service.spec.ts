@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -543,22 +543,40 @@ describe('KnowledgeService', () => {
     expect(reindexed.chunkCount).toBeGreaterThan(0)
   })
 
-  it('snapshots a URL and refreshes it when the page changes', async () => {
-    const http = await import('node:http')
-    let page = '<html><head><title>Live Page</title></head><body><p>first version text</p></body></html>'
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-      res.end(page)
-    })
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-    const address = server.address()
-    if (address === null || typeof address === 'string') throw new Error('server did not bind a port')
-    const port = address.port
-    const url = `http://127.0.0.1:${port}/page`
-
+  it('rejects SSRF targets and non-HTTP protocols when importing URLs', async () => {
     const service = await mountService()
-    const base = await service.createBase({ name: 'urls' })
+    const base = await service.createBase({ name: 'ssrf' })
+    // Loopback / private hosts are refused before any request is made.
+    await expect(service.addUrlDocument({ baseId: base.id, url: 'http://127.0.0.1:8080/secret' }))
+      .rejects.toThrow(/host not allowed/)
+    await expect(service.addUrlDocument({ baseId: base.id, url: 'http://localhost/admin' }))
+      .rejects.toThrow(/host not allowed/)
+    await expect(service.addUrlDocument({ baseId: base.id, url: 'http://169.254.169.254/latest/meta-data' }))
+      .rejects.toThrow(/host not allowed/)
+    await expect(service.addUrlDocument({ baseId: base.id, url: 'http://192.168.1.1/status' }))
+      .rejects.toThrow(/host not allowed/)
+    await expect(service.addUrlDocument({ baseId: base.id, url: 'file:///etc/passwd' }))
+      .rejects.toThrow(/protocol not allowed/)
+    await expect(service.addUrlDocument({ baseId: base.id, url: 'ftp://example.com/file' }))
+      .rejects.toThrow(/protocol not allowed/)
+    // A malformed URL is rejected cleanly too.
+    await expect(service.addUrlDocument({ baseId: base.id, url: 'not a url' }))
+      .rejects.toThrow(/invalid URL/)
+  })
+
+  it('snapshots a URL and refreshes it when the page changes (public host via mocked fetch)', async () => {
+    let page = '<html><head><title>Live Page</title></head><body><p>first version text</p></body></html>'
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
+      text: async () => page,
+    }))
+    vi.stubGlobal('fetch', fetchMock)
     try {
+      const service = await mountService()
+      const base = await service.createBase({ name: 'urls' })
+      const url = 'https://example.com/page'
       const doc = await service.addUrlDocument({ baseId: base.id, url })
       expect(doc.title).toBe('Live Page')
       expect(doc.rawText).toContain('first version text')
@@ -573,7 +591,8 @@ describe('KnowledgeService', () => {
       expect(changed.changed).toBe(true)
       expect(changed.chunkCount).toBeGreaterThan(0)
       const after = service.listDocuments(base.id)[0]
-      expect(after.updatedAt).toBeGreaterThan(doc.updatedAt ?? 0)
+      // The mock resolves instantly, so timestamps can land in the same ms.
+      expect(after.updatedAt).toBeGreaterThanOrEqual(doc.updatedAt ?? 0)
       // The index now holds the new content only.
       const chunksAfter = service.listChunks(doc.id).map(c => c.text)
       expect(chunksAfter.some(text => text.includes('second version'))).toBe(true)
@@ -581,7 +600,7 @@ describe('KnowledgeService', () => {
       const result = await service.search({ query: 'second version', baseId: base.id })
       expect(result.hits.length).toBeGreaterThan(0)
     } finally {
-      await new Promise<void>(resolve => server.close(() => resolve()))
+      vi.unstubAllGlobals()
     }
   })
 })

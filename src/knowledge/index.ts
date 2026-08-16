@@ -1755,17 +1755,70 @@ function rawExtensionOf(relativePath: string): string {
   return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : '.bin'
 }
 
+/** Hosts that must never be fetched by URL import — loopback, link-local,
+ *  and RFC1918 private ranges. Blocks the classic SSRF targets (metadata
+ *  endpoints, internal services); DNS-rebinding is outside this check (the
+ *  plugin trusts the host's resolver for public names). */
+const BLOCKED_URL_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '[::1]',
+  '[::]',
+  '0.0.0.0',
+  '169.254.169.254',
+  'metadata.google.internal',
+])
+
+function isBlockedUrlHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (BLOCKED_URL_HOSTS.has(host)) return true
+  // IPv4 private + link-local ranges, including `127.0.0.0/8` variants.
+  if (/^127\./.test(host)) return true
+  if (/^(10\.|192\.168\.)/.test(host)) return true
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true
+  if (/^169\.254\./.test(host)) return true
+  if (/^0\./.test(host)) return true
+  return false
+}
+
 async function fetchHtml(url: string): Promise<string> {
-  const response = await httpFetch(url, {
-    headers: { 'user-agent': 'dsh-knowledge/0.1 (+knowledge-base-import)' },
-    timeoutMs: 30000,
-  })
-  if (!response.ok) throw new Error(`URL fetch failed: HTTP ${response.status}`)
-  const contentType = (response.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase()
-  if (contentType !== '' && contentType !== 'text/html' && contentType !== 'application/xhtml+xml') {
-    throw new Error(`URL did not return HTML (content-type: ${contentType || 'unknown'})`)
+  // Manual redirect handling: `fetch` follows redirects by default, which
+  // would let a public page 302 to a loopback/private address and bypass the
+  // SSRF check below — every hop is validated here instead.
+  let current = url
+  for (let hop = 0; hop <= 5; hop += 1) {
+    let parsed: URL
+    try {
+      parsed = new URL(current)
+    } catch {
+      throw new Error(`invalid URL: ${current}`)
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(`URL protocol not allowed: ${parsed.protocol}`)
+    }
+    if (isBlockedUrlHost(parsed.hostname)) {
+      throw new Error(`URL host not allowed: ${parsed.hostname}`)
+    }
+    const response = await httpFetch(parsed.toString(), {
+      method: 'GET',
+      headers: { 'user-agent': 'dsh-knowledge/0.1 (+knowledge-base-import)' },
+      timeoutMs: 30000,
+      redirect: 'manual',
+    })
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      if (location === null) throw new Error(`URL redirect without Location (HTTP ${response.status})`)
+      current = new URL(location, parsed).toString()
+      continue
+    }
+    if (!response.ok) throw new Error(`URL fetch failed: HTTP ${response.status}`)
+    const contentType = (response.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase()
+    if (contentType !== '' && contentType !== 'text/html' && contentType !== 'application/xhtml+xml') {
+      throw new Error(`URL did not return HTML (content-type: ${contentType || 'unknown'})`)
+    }
+    return response.text()
   }
-  return response.text()
+  throw new Error('URL redirect limit exceeded')
 }
 
 const DIRECTORY_EXTENSIONS = new Set([
