@@ -6,14 +6,14 @@
 ## 它带来什么
 
 - **知识库与文档**：创建/删除/重命名知识库与文档；**分组管理**（新建/重命名/删除分组，侧边栏按分组折叠导航，知识库可在菜单中「移动到分组」）；**弹窗式添加文档（文本/文件/网页/目录四页签）**、多文件拖拽上传（≤20 个）、**目录导入**（递归扫描 txt/md/csv/html/json/pdf/docx/doc/pptx/ppt/xlsx/xls/epub 等，**导入为可下钻的文件夹树**）、URL 导入；**同名冲突「全部保留/替换」**、内容哈希去重；分块与原文预览；资料行显示 **✓ 就绪状态徽标、实时导入状态（解析中 / 嵌入中 NN%）与相对更新时间**，文件夹在任一后代处理时显示「导入中」；全部操作走正式对话框与 Toast 通知（无 window.prompt/confirm）。
-- **每库独立配置**：每个知识库可单独指定 embedding 提供方/模型（含**本地模型**）、**重排模型**、分块大小与 topK（Cherry Studio 式），未设置字段自动继承全局配置；改配置后一键重建索引（全库或单条资料）。
+- **每库独立配置**：每个知识库可单独指定 embedding 提供方/模型（含**本地模型**）、**重排模型**、分块大小与 topK，未设置字段自动继承全局配置；改配置后一键重建索引（全库或单条资料）。
 - **向量化与检索**：可插拔 embedding 提供方 —— 任意 OpenAI 兼容 `/embeddings` 端点（OpenAI、DeepSeek、SiliconFlow、本地网关…）、Ollama，或 **进程内本地模型（transformers.js，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX，无需联网服务）**；**混合检索**（BM25 + 向量 + Reciprocal Rank Fusion）、**重排模型（rerank，Jina/SiliconFlow/Cohere v2 风格 API）**、**MMR 结果去重**、检索模式（auto/hybrid/vector/lexical）与相似度阈值；未配置时自动退化关键词（CJK 二元组 + 拉丁词 BM25），零配置即可用；召回测试显示命中来源、相关度、双分数、**耗时**，并保留**检索历史**可一键重放。
 - **智能分块**：标题感知分块（保留 Markdown 标题路径），并将「文档标题 + 标题路径」作为上下文注入 embedding 与检索，显著提升召回。
 - **索引管理**：按当前配置**重建索引**（改分块大小 / 换 embedding 后一键重切 + 重向量化）、批量 embedding、统计（文档/分块/字符/Token 数、是否已向量化）。
 - **模型工具**：`knowledge_search`、`knowledge_list_bases`、`knowledge_create_base`、`knowledge_delete_base`、`knowledge_add_document`、`knowledge_list_documents`、`knowledge_delete_document`、`knowledge_import_url`、`knowledge_stats`、`knowledge_get_document`、`knowledge_read_document`（按字符区间分段阅读 / 正则定位）、`knowledge_reindex_base`。
-- **管理面板**：**不在设置内** —— 侧边栏底部（设置旁）的「知识库」入口打开工作区整页浮层，Cherry Studio 式布局：左侧搜索框 + **分组折叠导航** + 彩色头像知识库卡片（右键菜单：重命名/移动到分组/新建分组/删除），右侧统计芯片、**「更新于」时间**、添加文档弹窗、**表格化资料列表（勾选列 + 名称/类型/状态/更新时间 + 多选批量重建/批量删除）**、分块/原文预览、重建索引、检索测试（命中高亮 + 向量/关键词双分数 + 历史）、全局与每库设置弹窗（文档处理 / 嵌入模型 / 重排模型 / TopK / 高级设置）、Toast 通知、空状态与悬停动效。
-- **本地模型管理（设置内）**：设置 →「本地模型」页面（`settings.section` 插槽），Cherry Studio 式卡片：模型名称/说明、**就绪徽标**、**下载 / 重试 / 删除** 按钮、**实时下载进度条**；下载后即可在知识库设置里选用「本地模型」作为向量化方式。
-- **持久化**：业务状态（知识库/文档/运行时配置）经 DSH 官方 `storageDomain` seam 落盘（`json` 后端，默认随 `web` profile 提供）；**分块数据存于独立 SQLite 文件**（`<DSH_HOME>/storages/knowledge-chunks.sqlite`，可用 `chunkStorePath` 配置）——每分块一行、每次写入/删除为单条语句，不随数据量恶化；词法检索走 FTS5 三元组全文索引、向量检索查询时扫描存储的向量（Cherry Studio 同款姿态），启动不再全量载入内存。升级后首次启动自动完成旧数据迁移（幂等、去重）；无存储后端时自动降级为内存模式。
+- **管理面板**：**不在设置内** —— 侧边栏底部（设置旁）的「知识库」入口打开工作区整页浮层，布局：左侧搜索框 + **分组折叠导航** + 彩色头像知识库卡片（右键菜单：重命名/移动到分组/新建分组/删除），右侧统计芯片、**「更新于」时间**、添加文档弹窗、**表格化资料列表（勾选列 + 名称/类型/状态/更新时间 + 多选批量重建/批量删除）**、分块/原文预览、重建索引、检索测试（命中高亮 + 向量/关键词双分数 + 历史）、全局与每库设置弹窗（文档处理 / 嵌入模型 / 重排模型 / TopK / 高级设置）、Toast 通知、空状态与悬停动效。
+- **本地模型管理（设置内）**：设置 →「本地模型」页面（`settings.section` 插槽），卡片：模型名称/说明、**就绪徽标**、**下载 / 重试 / 删除** 按钮、**实时下载进度条**；下载后即可在知识库设置里选用「本地模型」作为向量化方式。
+- **持久化**：业务状态（知识库/文档/运行时配置）经 DSH 官方 `storageDomain` seam 落盘（`json` 后端，默认随 `web` profile 提供）；**分块数据存于独立 SQLite 文件**（`<DSH_HOME>/storages/knowledge-chunks.sqlite`，可用 `chunkStorePath` 配置）——每分块一行、每次写入/删除为单条语句，不随数据量恶化；词法检索走 FTS5 三元组全文索引、向量检索查询时扫描存储的向量，启动不再全量载入内存。升级后首次启动自动完成旧数据迁移（幂等、去重）；无存储后端时自动降级为内存模式。
 
 ## 架构
 
@@ -94,11 +94,11 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 
 分块数据不放在存储域 KV 里，而是独立 SQLite 文件：`web` profile 的 JSON 后端每次写记录都会重写整个单元文件，数据增长后删除/导入会变慢到秒级甚至分钟级；SQLite 让每次写入/删除都是单条语句，并提供 FTS5 三元组全文检索（BM25）与查询时向量扫描、有界读取——常驻内存不随语料增长。升级后首次启动会自动把旧 JSON 单元里的分块迁入 SQLite（幂等，中断产生的重复行自动去重）。
 
-> 以上所有字段均可在**每个知识库的设置面板**中单独覆盖（Cherry Studio 式：留空继承全局）；API Key 以明文保存在本地存储（与 Cherry Studio 一致）。
+> 以上所有字段均可在**每个知识库的设置面板**中单独覆盖（留空继承全局）；API Key 以明文保存在本地存储。
 
 ### 本地模型（进程内 embedding）
 
-选择 `embeddingProvider: local` 时，插件在 host 进程内用 `@huggingface/transformers`（+ onnxruntime）跑 embedding，**无需任何外部服务**。默认模型 `onnx-community/Qwen3-Embedding-0.6B-ONNX`（1024 维，Cherry Studio 同款），`embeddingModel` 可换成任意 Hugging Face 上的 ONNX embedding 仓库 id。首次使用会从 Hugging Face Hub 下载模型权重（默认缓存到 `$DSH_HOME/cache/dsh-knowledge/local-models`）；下载完成后后续导入与检索全程本地。**在设置 →「本地模型」页面可提前下载 / 取消 / 删除 / 重试**，并实时查看下载进度；知识库设置面板也会显示模型下载进度（下载中 % / 就绪 / 失败）；可用环境变量 `HF_ENDPOINT` 指向镜像加速下载。
+选择 `embeddingProvider: local` 时，插件在 host 进程内用 `@huggingface/transformers`（+ onnxruntime）跑 embedding，**无需任何外部服务**。默认模型 `onnx-community/Qwen3-Embedding-0.6B-ONNX`（1024 维），`embeddingModel` 可换成任意 Hugging Face 上的 ONNX embedding 仓库 id。首次使用会从 Hugging Face Hub 下载模型权重（默认缓存到 `$DSH_HOME/cache/dsh-knowledge/local-models`）；下载完成后后续导入与检索全程本地。**在设置 →「本地模型」页面可提前下载 / 取消 / 删除 / 重试**，并实时查看下载进度；知识库设置面板也会显示模型下载进度（下载中 % / 就绪 / 失败）；可用环境变量 `HF_ENDPOINT` 指向镜像加速下载。
 
 ## 召回效果实证（可复现）
 
@@ -117,7 +117,7 @@ node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId
 
 ## 使用
 
-1. 点击**侧边栏底部「知识库」按钮**（设置旁），打开 Cherry Studio 式整页面板 —— 不在设置内。
+1. 点击**侧边栏底部「知识库」按钮**（设置旁），打开整页面板 —— 不在设置内。
 2. 点「新建知识库」，选中后粘贴文本、拖拽上传 txt/md/pdf/docx，或导入网页 URL。
 3. 在「检索测试」里验证召回（可切换混合/向量/关键词模式与阈值）；点右上角「设置」配置向量化。
 4. 对 agent 说 *"用知识库里的内容回答…"*，模型会调用 `knowledge_search` 等 12 个工具。
@@ -144,7 +144,7 @@ pnpm run build    # esbuild → lib/（含 client bundle）
 
 - **模型下拉为建议式组合框，而非 provider 实时列表**：DSH 的 `ctx.llm` 只暴露对话模型（`listModels` 无 embedding 维度标记，且本插件的 embedding 端点/模型是独立配置）。设置面板因此用「内置精选建议 + 可输入自定义 id」的原生 datalist 组合框（嵌入 / 本地 / 重排三组建议）。
 - **导入为后台异步执行，但嵌入在宿主进程内联完成**：解析与分块有实时逐文件状态（解析中 / 嵌入中 NN%），向量化以批次内联运行而非独立 worker 队列；本地模型首次下载会阻塞到缓存完成（设置面板实时显示进度）。
-- **无 OCR / 无内置笔记编辑器**：图片与扫描版 PDF 无法提取文本（Cherry 依赖外部进程做 OCR，DSH 插件平台做不到）；笔记编辑请使用 DSH 自身。
+- **无 OCR / 无内置笔记编辑器**：图片与扫描版 PDF 无法提取文本（DSH 插件平台做不到--无法依赖外部进程做 OCR）；笔记编辑请使用 DSH 自身。
 
 ## 许可
 
