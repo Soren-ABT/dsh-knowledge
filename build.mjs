@@ -64,6 +64,7 @@ const hostExternal = [
   '@firecrawl/anydoc',
   '@huggingface/transformers',
   'onnxruntime-node',
+  'undici',
 ]
 
 const hostEntries = [

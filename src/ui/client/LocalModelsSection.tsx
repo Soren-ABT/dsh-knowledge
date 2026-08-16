@@ -25,6 +25,8 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const [models, setModels] = useState<LocalModelSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [mirror, setMirror] = useState('')
+  const [mirrorLoaded, setMirrorLoaded] = useState(false)
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -41,6 +43,24 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     const timer = window.setInterval(() => { void refresh() }, 1000)
     return () => window.clearInterval(timer)
   }, [refresh])
+
+  // Load the current mirror setting once.
+  useEffect(() => {
+    void api.getConfig().then(config => {
+      setMirror(config.hfEndpoint)
+      setMirrorLoaded(true)
+    }).catch(() => { setMirrorLoaded(true) })
+  }, [api])
+
+  const saveMirror = useCallback(async (): Promise<void> => {
+    setError(null)
+    try {
+      await api.setConfig({ hfEndpoint: mirror.trim() })
+      setMirror(mirror.trim())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [api, mirror])
 
   const download = useCallback(async (id: string): Promise<void> => {
     setBusyId(id)
@@ -83,6 +103,22 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     <div style={{ minWidth: 0 }}>
       <h2 style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{t('localModelsTitle')}</h2>
       <p style={{ marginTop: 4, marginBottom: 12, fontSize: 12, color: C.muted, lineHeight: 1.6 }}>{t('localModelsDesc')}</p>
+
+      {mirrorLoaded && (
+        <div style={{ marginBottom: 14, padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t('hfMirror')}</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              style={style.input}
+              placeholder="https://hf-mirror.com"
+              value={mirror}
+              onChange={(e) => setMirror(e.target.value)}
+            />
+            <button style={style.button} onClick={() => void saveMirror()}>{t('hfMirrorSave')}</button>
+          </div>
+          <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('hfMirrorHint')}</p>
+        </div>
+      )}
 
       {error !== null && <div style={{ ...style.error, marginBottom: 12 }}>{error}</div>}
 

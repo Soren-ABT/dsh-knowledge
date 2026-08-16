@@ -81,6 +81,7 @@ export const configOverridesSchema = z.object({
   similarityThreshold: z.number().gte(0).lte(1).optional(),
   mmrDiversity: z.number().gte(0).lte(1).optional(),
   embeddingBatchSize: z.number().int().gt(0).optional(),
+  hfEndpoint: z.string().optional(),
 })
 
 /** Partial runtime config stored in the domain global slot. */
@@ -101,6 +102,7 @@ export interface ConfigOverrides {
   similarityThreshold?: number
   mmrDiversity?: number
   embeddingBatchSize?: number
+  hfEndpoint?: string
 }
 
 export const knowledgeDomainSpec = defineDomain({

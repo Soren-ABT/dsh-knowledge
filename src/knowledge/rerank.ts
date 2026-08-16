@@ -5,6 +5,8 @@
  * @module dsh-knowledge/knowledge/rerank
  */
 
+import { httpFetch } from './net.js'
+
 export interface RerankCandidate {
   id: string
   text: string
@@ -24,7 +26,7 @@ export async function rerankCandidates(
   candidates: readonly RerankCandidate[],
 ): Promise<Map<string, number>> {
   const url = `${baseUrl.replace(/\/+$/, '')}/rerank`
-  const response = await fetch(url, {
+  const response = await httpFetch(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -36,6 +38,7 @@ export async function rerankCandidates(
       documents: candidates.map(candidate => candidate.text),
       top_n: candidates.length,
     }),
+    timeoutMs: 60000,
   })
   if (!response.ok) {
     throw new Error(`rerank request failed: HTTP ${response.status} ${await response.text()}`)

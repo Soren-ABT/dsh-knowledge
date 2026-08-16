@@ -29,6 +29,8 @@ export interface Config {
   embeddingBatchSize: number
   /** Local-model cache root; empty = `<DSH_HOME>/cache/dsh-knowledge/local-models`. */
   localModelCacheDir: string
+  /** Hugging Face endpoint override (mirror); empty = official hub / `HF_ENDPOINT` env. */
+  hfEndpoint: string
   /** Chunk SQLite file; empty = `<DSH_HOME>/storages/knowledge-chunks.sqlite`. */
   chunkStorePath: string
 }
@@ -51,6 +53,7 @@ export const Config: Schema<Config> = Schema.object({
   mmrDiversity: Schema.number().default(0),
   embeddingBatchSize: Schema.number().default(32),
   localModelCacheDir: Schema.string().default(''),
+  hfEndpoint: Schema.string().default(''),
   chunkStorePath: Schema.string().default(''),
 })
 
@@ -83,6 +86,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     similarityThreshold: clampNumber(overrides.similarityThreshold ?? config.similarityThreshold, 0, 1, 0),
     mmrDiversity: clampNumber(overrides.mmrDiversity ?? config.mmrDiversity, 0, 1, 0),
     embeddingBatchSize,
+    hfEndpoint: overrides.hfEndpoint ?? config.hfEndpoint,
   }
 }
 

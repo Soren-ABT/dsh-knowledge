@@ -30,6 +30,7 @@ const TEST_CONFIG: Config = {
   mmrDiversity: 0,
   embeddingBatchSize: 32,
   localModelCacheDir: '',
+  hfEndpoint: '',
   chunkStorePath: '',
 }
 

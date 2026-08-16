@@ -114,6 +114,8 @@ export interface KnowledgeConfig {
   readonly similarityThreshold: number
   readonly mmrDiversity: number
   readonly embeddingBatchSize: number
+  /** Hugging Face endpoint override (mirror); empty = official hub / `HF_ENDPOINT` env. */
+  readonly hfEndpoint: string
 }
 
 /** One ranked search result. */

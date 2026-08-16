@@ -14,10 +14,11 @@ import { chunkText } from './chunk.js'
 import type { ChunkPiece } from './chunk.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
 import type { ConfigOverrides } from './domain.js'
-import { DEFAULT_LOCAL_MODEL, embedTexts, getLocalModelStatus, setLocalModelCacheDir } from './embed.js'
+import { DEFAULT_LOCAL_MODEL, embedTexts, getLocalModelStatus, setHfEndpoint, setLocalModelCacheDir } from './embed.js'
 import type { LocalModelStatus } from './embed.js'
 import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, listLocalModels } from './localModels.js'
 import type { LocalModelSummary } from './localModels.js'
+import { httpFetch } from './net.js'
 import { knowledgeRoute } from './http.js'
 import { extractFromHtml, parseDocumentBuffer } from './parse.js'
 import { rank } from './retrieval.js'
@@ -125,6 +126,7 @@ export class KnowledgeService extends Service {
 
   protected async [Service.init](): Promise<void> {
     setLocalModelCacheDir(this.baseConfig.localModelCacheDir)
+    setHfEndpoint(this.baseConfig.hfEndpoint)
     const facility = this.ctx.get('storageDomain') as StorageDomainFacility | undefined
     this.store = await openStore(facility, { chunkStorePath: this.baseConfig.chunkStorePath })
     this.resolveStore()
@@ -162,7 +164,10 @@ export class KnowledgeService extends Service {
 
   async setConfig(overrides: ConfigOverrides): Promise<KnowledgeConfig> {
     await this.requireStore().setConfigOverrides(overrides)
-    return this.getConfig()
+    const resolved = this.getConfig()
+    // Reapply the mirror switch live, so the panel can change it without a restart.
+    setHfEndpoint(resolved.hfEndpoint)
+    return resolved
   }
 
   // ── invocation toggle ─────────────────────────────────────────────────────
@@ -1404,9 +1409,9 @@ function decodeBase64(value: string): Uint8Array {
 }
 
 async function fetchHtml(url: string): Promise<string> {
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(15000),
+  const response = await httpFetch(url, {
     headers: { 'user-agent': 'dsh-knowledge/0.1 (+knowledge-base-import)' },
+    timeoutMs: 30000,
   })
   if (!response.ok) throw new Error(`URL fetch failed: HTTP ${response.status}`)
   const contentType = (response.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase()

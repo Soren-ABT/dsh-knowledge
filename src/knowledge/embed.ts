@@ -9,12 +9,18 @@
 import { readdir, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { applyGlobalProxy, httpFetch, NETWORK_HINT } from './net.js'
 import type { EmbeddingProvider } from './types.js'
+
+// Route every global fetch (including transformers.js model downloads) through
+// the system proxy when HTTP(S)_PROXY is configured. Safe no-op otherwise.
+applyGlobalProxy()
 
 /** Default in-process model — the ONNX repo Cherry Studio ships. */
 export const DEFAULT_LOCAL_MODEL = 'onnx-community/Qwen3-Embedding-0.6B-ONNX'
 
 let cacheDirOverride: string | undefined
+let hfEndpointOverride: string | undefined
 
 /**
  * Override the local-model cache root from deployment config. An empty or
@@ -23,6 +29,18 @@ let cacheDirOverride: string | undefined
 export function setLocalModelCacheDir(dir: string | undefined): void {
   cacheDirOverride = dir !== undefined && dir.trim() !== ''
     ? resolve(expandHomePath(dir.trim()))
+    : undefined
+}
+
+/**
+ * Override the Hugging Face endpoint from deployment/runtime config — the
+ * mirror switch for networks that cannot reach huggingface.co directly
+ * (e.g. `https://hf-mirror.com`). An empty value falls back to the
+ * `HF_ENDPOINT` environment variable, then to the official hub.
+ */
+export function setHfEndpoint(url: string | undefined): void {
+  hfEndpointOverride = url !== undefined && url.trim() !== ''
+    ? url.trim().replace(/\/+$/, '')
     : undefined
 }
 
@@ -159,8 +177,10 @@ async function getLocalExtractor(modelId: string): Promise<LocalExtractor> {
 
 async function createLocalExtractor(modelId: string): Promise<LocalExtractor> {
   const transformers = (await import('@huggingface/transformers')) as unknown as TransformersModule
-  if (typeof process !== 'undefined' && process.env.HF_ENDPOINT && process.env.HF_ENDPOINT.trim() !== '') {
-    transformers.env.remoteHost = process.env.HF_ENDPOINT.trim()
+  const hfEndpoint = hfEndpointOverride
+    ?? (typeof process !== 'undefined' && process.env.HF_ENDPOINT !== undefined ? process.env.HF_ENDPOINT : undefined)
+  if (hfEndpoint !== undefined && hfEndpoint.trim() !== '') {
+    transformers.env.remoteHost = hfEndpoint.trim().replace(/\/+$/, '')
   }
   transformers.env.cacheDir = localModelCacheDir()
 
@@ -168,17 +188,22 @@ async function createLocalExtractor(modelId: string): Promise<LocalExtractor> {
   //    does not pin ~600MB — inference reloads from disk below (Cherry Studio style).
   if (!(await isLocalModelDownloaded(modelId))) {
     localModelStatus.set(modelId, { model: modelId, status: 'downloading', progress: 0, message: '' })
-    await transformers.pipeline('feature-extraction', modelId, {
-      dtype: 'q8',
-      progress_callback: (info: ProgressInfo): void => {
-        if (cancelledModels.has(modelId)) throw new Error('download cancelled')
-        const current = localModelStatus.get(modelId)
-        if (current === undefined) return
-        if (info.status === 'progress' && typeof info.progress === 'number') {
-          localModelStatus.set(modelId, { ...current, status: 'downloading', progress: info.progress })
-        }
-      },
-    })
+    try {
+      await transformers.pipeline('feature-extraction', modelId, {
+        dtype: 'q8',
+        progress_callback: (info: ProgressInfo): void => {
+          if (cancelledModels.has(modelId)) throw new Error('download cancelled')
+          const current = localModelStatus.get(modelId)
+          if (current === undefined) return
+          if (info.status === 'progress' && typeof info.progress === 'number') {
+            localModelStatus.set(modelId, { ...current, status: 'downloading', progress: info.progress })
+          }
+        },
+      })
+    } catch (error) {
+      const raw = error instanceof Error ? error.message : String(error)
+      throw new Error(`${raw} · ${NETWORK_HINT}`)
+    }
   }
 
   // 2. Load from the absolute cache directory: an absolute path is not a valid HF repo
@@ -203,13 +228,14 @@ async function embedOpenAI(
   texts: readonly string[],
 ): Promise<number[][]> {
   const url = `${trimBase(baseUrl)}/embeddings`
-  const response = await fetch(url, {
+  const response = await httpFetch(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
     },
     body: JSON.stringify({ model, input: texts }),
+    timeoutMs: 60000,
   })
   if (!response.ok) {
     throw new Error(`embedding request failed: HTTP ${response.status} ${await response.text()}`)
@@ -230,10 +256,11 @@ async function embedOllama(
 ): Promise<number[][]> {
   const base = trimBase(baseUrl)
   // Modern Ollama: POST /api/embed { model, input: [..] } -> { embeddings: [[..]] }
-  const response = await fetch(`${base}/api/embed`, {
+  const response = await httpFetch(`${base}/api/embed`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model, input: texts }),
+    timeoutMs: 60000,
   })
   if (response.ok) {
     const json = (await response.json()) as { embeddings?: number[][] }
@@ -242,10 +269,11 @@ async function embedOllama(
   // Legacy Ollama: one prompt at a time -> { embedding: [..] }
   const vectors: number[][] = []
   for (const text of texts) {
-    const legacy = await fetch(`${base}/api/embeddings`, {
+    const legacy = await httpFetch(`${base}/api/embeddings`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model, prompt: text }),
+      timeoutMs: 60000,
     })
     if (!legacy.ok) throw new Error(`ollama embedding failed: HTTP ${legacy.status} ${await legacy.text()}`)
     const json = (await legacy.json()) as { embedding?: number[] }

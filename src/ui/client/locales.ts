@@ -127,6 +127,9 @@ export type KnowledgeKey =
   | 'localModelRetry'
   | 'localModelRemove'
   | 'localModelCancel'
+  | 'hfMirror'
+  | 'hfMirrorHint'
+  | 'hfMirrorSave'
   | 'newGroup'
   | 'groupName'
   | 'renameGroup'
@@ -309,6 +312,9 @@ export const zh: Record<KnowledgeKey, string> = {
   localModelRetry: '重试',
   localModelRemove: '删除',
   localModelCancel: '取消',
+  hfMirror: 'Hugging Face 镜像站',
+  hfMirrorHint: '无法直连 huggingface.co 时填镜像地址（如 https://hf-mirror.com），立即生效；留空使用官方源或 HF_ENDPOINT 环境变量。',
+  hfMirrorSave: '保存',
   newGroup: '新建分组',
   groupName: '分组名称',
   renameGroup: '重命名分组',
@@ -489,6 +495,9 @@ export const en: Record<KnowledgeKey, string> = {
   localModelRetry: 'Retry',
   localModelRemove: 'Remove',
   localModelCancel: 'Cancel',
+  hfMirror: 'Hugging Face mirror',
+  hfMirrorHint: 'When huggingface.co is unreachable, set a mirror (e.g. https://hf-mirror.com); takes effect immediately. Empty = official hub or the HF_ENDPOINT env var.',
+  hfMirrorSave: 'Save',
   newGroup: 'New group',
   groupName: 'Group name',
   renameGroup: 'Rename group',

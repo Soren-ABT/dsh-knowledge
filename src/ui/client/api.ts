@@ -112,6 +112,7 @@ export interface KnowledgeConfig {
   similarityThreshold: number
   mmrDiversity: number
   embeddingBatchSize: number
+  hfEndpoint: string
 }
 
 export interface SearchHit {
