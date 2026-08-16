@@ -1014,6 +1014,16 @@ export class KnowledgeService extends Service {
           )
           queryVector = vector
         } catch (error) {
+          // A configured local model that cannot load (weights deleted, download
+          // failed) is a configuration problem, not a transient failure — surface
+          // it instead of silently degrading to lexical (the user believes hybrid
+          // is on). Remote providers still degrade on transient failures.
+          if (config.embeddingProvider === 'local') {
+            throw new Error(
+              `local embedding model is unavailable (${error instanceof Error ? error.message : String(error)}); `
+              + 'download it in Settings → Local Models, or switch the embedding provider',
+            )
+          }
           this.ctx.logger.warn(`knowledge: embedding failed, using lexical retrieval: ${error instanceof Error ? error.message : String(error)}`)
         }
       }
@@ -1088,6 +1098,13 @@ export class KnowledgeService extends Service {
         )
         queryVector = vector
       } catch (error) {
+        // See the lane path: a broken local model must not silently degrade.
+        if (config.embeddingProvider === 'local') {
+          throw new Error(
+            `local embedding model is unavailable (${error instanceof Error ? error.message : String(error)}); `
+            + 'download it in Settings → Local Models, or switch the embedding provider',
+          )
+        }
         this.ctx.logger.warn(`knowledge: embedding failed, using lexical retrieval: ${error instanceof Error ? error.message : String(error)}`)
       }
     }

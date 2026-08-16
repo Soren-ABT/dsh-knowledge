@@ -39,11 +39,11 @@ async function get(path) {
   return body.value
 }
 
-async function search(query, baseId, topK) {
+async function search(query, baseId, topK, mode) {
   const res = await fetch(`${BASE_URL}/knowledge/search`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query, ...(baseId ? { baseId } : {}), topK }),
+    body: JSON.stringify({ query, ...(baseId ? { baseId } : {}), topK, ...(mode ? { mode } : {}) }),
   })
   const body = await res.json()
   if (!res.ok || body.ok !== true) throw new Error(`search "${query}": ${body.error?.message ?? res.status}`)
@@ -58,6 +58,7 @@ if (!existsSync(setPath)) {
 const set = JSON.parse(readFileSync(setPath, 'utf8'))
 const defaultTopK = arg('topK', String(set.topK ?? 5))
 const forceBase = arg('base', undefined)
+const forceMode = arg('mode', undefined) // auto | hybrid | vector | lexical — compare modes on the same set
 
 const bases = await get('/bases')
 console.log(`knowledge bases: ${bases.map(b => `${b.name} (${b.id.slice(0, 8)}, ${b.chunkCount} chunks)`).join(' | ')}\n`)
@@ -70,7 +71,7 @@ let mrrSum = 0
 
 for (const question of set.questions) {
   const topK = Number(defaultTopK)
-  const result = await search(question.query, forceBase ?? question.baseId, topK)
+  const result = await search(question.query, forceBase ?? question.baseId, topK, forceMode)
   const titles = result.hits.map(hit => hit.documentTitle)
   const expected = question.expect ?? []
   const found = expected.filter(exp => titles.some(title => title.includes(exp)))
@@ -101,7 +102,7 @@ for (const row of rows) {
 
 const n = rows.length
 console.log('── summary ────────────────────────────────────────────────')
-console.log(`questions: ${n}`)
+console.log(`questions: ${n}${forceMode ? `  mode: ${forceMode}` : ''}${forceBase ? `  base: ${forceBase.slice(0, 8)}` : ''}`)
 console.log(`Hit@${defaultTopK}   : ${(hitSum / n).toFixed(3)} (${hitSum}/${n} questions surfaced an expected doc)`)
 console.log(`Recall@${defaultTopK}: ${recallDenominator > 0 ? (recallNumerator / recallDenominator).toFixed(3) : 'n/a'}`)
 console.log(`MRR@${defaultTopK}   : ${(mrrSum / n).toFixed(3)}`)

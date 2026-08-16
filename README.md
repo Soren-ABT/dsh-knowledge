@@ -100,6 +100,21 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 
 选择 `embeddingProvider: local` 时，插件在 host 进程内用 `@huggingface/transformers`（+ onnxruntime）跑 embedding，**无需任何外部服务**。默认模型 `onnx-community/Qwen3-Embedding-0.6B-ONNX`（1024 维，Cherry Studio 同款），`embeddingModel` 可换成任意 Hugging Face 上的 ONNX embedding 仓库 id。首次使用会从 Hugging Face Hub 下载模型权重（默认缓存到 `$DSH_HOME/cache/dsh-knowledge/local-models`）；下载完成后后续导入与检索全程本地。**在设置 →「本地模型」页面可提前下载 / 取消 / 删除 / 重试**，并实时查看下载进度；知识库设置面板也会显示模型下载进度（下载中 % / 就绪 / 失败）；可用环境变量 `HF_ENDPOINT` 指向镜像加速下载。
 
+## 召回效果实证（可复现）
+
+`scripts/` 内置一套可复现的评测基准：以真实数学建模问题为评测集（覆盖库内文档主题），按 Hit@k / Recall@k / MRR 计分：
+
+| 题型 | 纯词法 | 混合 | 纯向量 |
+| --- | --- | --- | --- |
+| 直答型（问题含主题词，14 题） | **0.929** | 0.857 | — |
+| 换说法型（问题不含主题词，10 题） | 0.600 | 0.900（MRR 0.575） | 0.900（**MRR 0.628**） |
+
+直答型问题纯词法已足够；本地模型向量的真实价值体现在换说法型问题——向量检索把 Hit@5 从 0.600 提升到 0.900。可对任意知识库复跑：
+
+```bash
+node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId> --mode hybrid
+```
+
 ## 使用
 
 1. 点击**侧边栏底部「知识库」按钮**（设置旁），打开 Cherry Studio 式整页面板 —— 不在设置内。

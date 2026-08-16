@@ -92,6 +92,21 @@ Every field can be overridden per base in the panel's Settings view (empty = inh
 
 With `embeddingProvider: local`, the host runs embeddings in-process via `@huggingface/transformers` (+ onnxruntime) — no external service needed. The default model is `onnx-community/Qwen3-Embedding-0.6B-ONNX` (1024 dims, same as Cherry Studio); set `embeddingModel` to any ONNX embedding repo id on Hugging Face. The first use downloads the weights from the Hub (cached under `$DSH_HOME/cache/dsh-knowledge/local-models`); later imports and searches run fully locally. Download / cancel / remove / retry in Settings → "Local Models", which shows live progress; `HF_ENDPOINT` can point at a mirror to speed up the download.
 
+## Retrieval quality (measured)
+
+A reproducible benchmark ships in `scripts/` — real mathematical-modeling questions over the imported corpus, scored by Hit@k / Recall@k / MRR:
+
+| Question style | Lexical | Hybrid | Vector |
+| --- | --- | --- | --- |
+| Direct (topic word present, 14 q) | **0.929** | 0.857 | — |
+| Rephrased (topic word absent, 10 q) | 0.600 | 0.900 (MRR 0.575) | 0.900 (**MRR 0.628**) |
+
+Direct questions (the document's topic word appears in the query) are already answered by lexical search; the local embedding model's real value shows on rephrased questions, where vector retrieval lifts Hit@5 from 0.600 to 0.900. Run the benchmark against any base:
+
+```bash
+node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId> --mode hybrid
+```
+
 ## Development
 
 Depends on the public DeepSeek Harness monorepo as a sibling checkout (`devDependencies` use `link:../dsh/...`):
