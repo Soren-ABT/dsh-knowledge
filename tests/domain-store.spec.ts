@@ -577,4 +577,87 @@ describe('DomainStore wiring', () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  it('persists raw source bytes, re-reads them on reindex, and cleans them on delete', async () => {
+    const dir = await tempDir()
+    try {
+      const domain = fakeDomain()
+      const store = await openStore({ open: async () => domain } as unknown as StorageDomainFacility, {
+        chunkStorePath: join(dir, 'chunks.sqlite'),
+        legacyJsonPath: join(dir, 'missing.json'),
+      })
+      expect(store.raw).toBeDefined()
+
+      // Upload a text file: the raw copy must exist next to the chunk store.
+      await store.putDocument({
+        id: 'd1',
+        baseId: 'b1',
+        title: 'notes.txt',
+        sourceType: 'file',
+        fileName: 'notes.txt',
+        rawFilePath: `${'b1'}/d1.txt`,
+        charCount: 3,
+        chunkCount: 1,
+        createdAt: 1,
+      })
+      await store.raw!.write('b1', 'd1', '.txt', new TextEncoder().encode('abc'))
+      await store.putChunks([{ id: 'c1', docId: 'd1', baseId: 'b1', index: 0, text: 'abc' }])
+
+      const bytes = await store.raw!.read('b1/d1.txt')
+      expect(new TextDecoder().decode(bytes!)).toBe('abc')
+
+      // Delete removes the raw file.
+      await store.raw!.delete('b1/d1.txt')
+      expect(await store.raw!.read('b1/d1.txt')).toBeNull()
+
+      // deleteBase removes the whole base's raw directory.
+      await store.raw!.write('b1', 'd1', '.txt', new TextEncoder().encode('abc'))
+      await store.raw!.deleteBase('b1')
+      expect(await store.raw!.read('b1/d1.txt')).toBeNull()
+      await store.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('resumes a placeholder that only holds a raw source file (crash before parse)', async () => {
+    const dir = await tempDir()
+    try {
+      // Seed a crashed state: a placeholder with rawFilePath + raw bytes but
+      // no rawText and no chunks (crash between the raw write and parse).
+      {
+        const domain = fakeDomain()
+        const bases = domain.table('bases') as unknown as FakeTable<string, unknown>
+        const documents = domain.table('documents') as unknown as FakeTable<string, unknown>
+        await bases.put('b1', { id: 'b1', name: 'b1', description: '', createdAt: 1, updatedAt: 1 })
+        await documents.put('rawonly', { id: 'rawonly', baseId: 'b1', title: 'notes.txt', sourceType: 'file', fileName: 'notes.txt', rawFilePath: 'b1/rawonly.txt', charCount: 0, chunkCount: 0, createdAt: 100, updatedAt: 100 })
+        const store = await openStore({ open: async () => domain } as unknown as StorageDomainFacility, {
+          chunkStorePath: join(dir, 'chunks.sqlite'),
+          legacyJsonPath: join(dir, 'missing.json'),
+        })
+        await store.raw!.write('b1', 'rawonly', '.txt', new TextEncoder().encode('hello from raw file'))
+        await store.close()
+      }
+      // Reopen: the raw-only placeholder must be reported for resume, not removed.
+      const domain = fakeDomain()
+      const bases = domain.table('bases') as unknown as FakeTable<string, unknown>
+      const documents = domain.table('documents') as unknown as FakeTable<string, unknown>
+      await bases.put('b1', { id: 'b1', name: 'b1', description: '', createdAt: 1, updatedAt: 1 })
+      await documents.put('rawonly', { id: 'rawonly', baseId: 'b1', title: 'notes.txt', sourceType: 'file', fileName: 'notes.txt', rawFilePath: 'b1/rawonly.txt', charCount: 0, chunkCount: 0, createdAt: 100, updatedAt: 100 })
+      const store = await openStore({ open: async () => domain } as unknown as StorageDomainFacility, {
+        chunkStorePath: join(dir, 'chunks.sqlite'),
+        legacyJsonPath: join(dir, 'missing.json'),
+      })
+      const recovery = await store.recoverInterruptedImports(Date.now())
+      expect(recovery.removed).toBe(0)
+      expect(recovery.resume).toContain('rawonly')
+      expect(store.getDocument('rawonly')).toBeDefined()
+      // The raw bytes are still readable for the resume path.
+      const bytes = await store.raw!.read('b1/rawonly.txt')
+      expect(new TextDecoder().decode(bytes!)).toBe('hello from raw file')
+      await store.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })

@@ -148,10 +148,11 @@ export class KnowledgeService extends Service {
   }
 
   /**
-   * Re-index documents a crash left mid-embedding. Each document holds its
-   * rawText and some persisted chunk batches; hash reuse (decision A4) makes
-   * this re-embed only the missing batches. Fire-and-forget: the service is
-   * already up; runs in the background so startup is not blocked.
+   * Re-index documents a crash left mid-import. Each document holds rawText
+   * and/or a persisted raw source file; hash reuse (decision A4) makes the
+   * re-embed re-embed only missing batches. A placeholder that only has the
+   * raw file (crash before/during parse) is re-parsed from source. Runs in
+   * the background so startup is not blocked.
    */
   private async resumeInterruptedDocuments(ids: readonly string[]): Promise<void> {
     const store = this.requireStore()
@@ -159,7 +160,30 @@ export class KnowledgeService extends Service {
       const doc = store.getDocument(id)
       if (doc === undefined || doc.sourceType === 'directory') continue
       try {
-        await this.reindexDocument(id)
+        if (doc.rawFilePath !== undefined && doc.rawText === undefined) {
+          // Crash before the text was persisted: rebuild from the raw copy.
+          const bytes = await store.raw?.read(doc.rawFilePath)
+          if (bytes === null || bytes === undefined || bytes.byteLength === 0) {
+            this.ctx.logger.warn(`knowledge: raw source missing for interrupted import "${doc.title}", dropping it`)
+            await store.deleteDocument(id)
+            continue
+          }
+          const text = await parseDocumentBuffer(bytes, doc.fileName ?? doc.title, doc.mimeType)
+          if (text.trim().length === 0) throw new Error('parsed document is empty')
+          await this.ingestDocument({
+            baseId: doc.baseId,
+            title: doc.title,
+            sourceType: 'file',
+            ...(doc.fileName !== undefined ? { fileName: doc.fileName } : {}),
+            ...(doc.mimeType !== undefined ? { mimeType: doc.mimeType } : {}),
+            ...(doc.parentDirectoryId !== undefined ? { parentDirectoryId: doc.parentDirectoryId } : {}),
+            placeholderId: doc.id,
+            rawFilePath: doc.rawFilePath,
+            text,
+          })
+        } else {
+          await this.reindexDocument(id)
+        }
       } catch (error) {
         this.ctx.logger.warn(`knowledge: resume of interrupted import failed for "${doc.title}": ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -258,7 +282,8 @@ export class KnowledgeService extends Service {
   }
 
   /** Cherry-style restore: re-embed every source document into a fresh base
-   *  (with the source's current config), returning the new base. */
+   *  (with the source's current config), returning the new base. Raw source
+   *  files are copied across so the restored base keeps the rebuild source. */
   async restoreBase(sourceBaseId: string, name: string): Promise<KnowledgeBase> {
     const store = this.requireStore()
     const source = store.getBase(sourceBaseId)
@@ -273,6 +298,16 @@ export class KnowledgeService extends Service {
       if (doc.sourceType === 'directory') continue
       const text = doc.rawText ?? reconstructFromChunks(store.listChunksByDoc(doc.id))
       if (text.trim().length === 0) continue
+      // Copy the original bytes into the restored base so reindex stays
+      // rebuildable from source there too (Cherry's restore carries raw/).
+      let rawFilePath: string | undefined
+      if (store.raw !== undefined && doc.rawFilePath !== undefined) {
+        const raw = await store.raw.read(doc.rawFilePath)
+        if (raw !== null) {
+          const ext = rawExtensionOf(doc.rawFilePath)
+          rawFilePath = await store.raw.write(base.id, crypto.randomUUID(), ext, raw)
+        }
+      }
       await this.ingestDocument({
         baseId: base.id,
         title: doc.title,
@@ -280,6 +315,7 @@ export class KnowledgeService extends Service {
         ...(doc.fileName !== undefined ? { fileName: doc.fileName } : {}),
         ...(doc.mimeType !== undefined ? { mimeType: doc.mimeType } : {}),
         ...(doc.url !== undefined ? { url: doc.url } : {}),
+        ...(rawFilePath !== undefined ? { rawFilePath } : {}),
         text,
       })
     }
@@ -291,6 +327,7 @@ export class KnowledgeService extends Service {
     if (store.getBase(id) === undefined) throw new Error(`knowledge base not found: ${id}`)
     // Two statements: the base record plus one chunk sweep by base id.
     await store.deleteChunksByBase(id)
+    await store.raw?.deleteBase(id)
     await store.deleteBase(id)
     // Keep the invocation scope clean: a deleted base id must not silently
     // narrow future searches to a base that no longer exists.
@@ -405,6 +442,7 @@ export class KnowledgeService extends Service {
       const existing = store.listDocuments(request.baseId).find(doc => doc.fileName === request.fileName)
       if (existing !== undefined) {
         await store.deleteChunks(existing.id)
+        if (existing.rawFilePath !== undefined) await store.raw?.delete(existing.rawFilePath)
         await store.deleteDocument(existing.id)
       }
     }
@@ -425,7 +463,17 @@ export class KnowledgeService extends Service {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }
-    await store.putDocument(placeholder)
+    // Persist the original bytes FIRST (Cherry's "import means copy"): the
+    // base keeps its own stable source copy, reindex can re-read and re-parse
+    // it, and a crash before/during parse is recoverable from the file
+    // instead of being a lost upload.
+    const rawFilePath = store.raw !== undefined
+      ? await store.raw.write(request.baseId, docId, safeRawExtension(request.fileName), decodeBase64(request.contentBase64))
+      : undefined
+    await store.putDocument({
+      ...placeholder,
+      ...(rawFilePath !== undefined ? { rawFilePath } : {}),
+    })
     this.indexing.set(docId, { baseId: request.baseId, title, phase: 'parsing', total: 0, progress: 0 })
     try {
       const bytes = decodeBase64(request.contentBase64)
@@ -439,11 +487,13 @@ export class KnowledgeService extends Service {
         ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
         ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
         placeholderId: docId,
+        rawFilePath,
         text,
       })
     } catch (error) {
       // A parse or duplicate failure removes the placeholder so an empty/broken
-      // file does not linger in the list.
+      // file does not linger in the list (the raw copy goes with it).
+      if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
       await store.deleteDocument(docId)
       this.indexing.delete(docId)
       throw error
@@ -624,6 +674,7 @@ export class KnowledgeService extends Service {
         if (child.parentDirectoryId === id) await this.deleteDocumentRecursive(child.id)
       }
     }
+    if (existing.rawFilePath !== undefined) await store.raw?.delete(existing.rawFilePath)
     await store.deleteChunks(id)
     await store.deleteDocument(id)
   }
@@ -641,17 +692,24 @@ export class KnowledgeService extends Service {
     const store = this.requireStore()
     const document = store.getDocument(id)
     if (document === undefined) throw new Error(`document not found: ${id}`)
-    const text = document.rawText ?? reconstructFromChunks(store.listChunksByDoc(id))
+    // Re-read and re-parse the original source when it was persisted (Cherry's
+    // `canKnowledgeItemRebuildSource`): a reindex after a parser upgrade gets
+    // the better extraction, and the raw copy is the stable rebuild source.
+    // Fall back to the persisted text (then to reconstructed chunks) when the
+    // file is gone or unreadable — a reindex must never wipe vectors for a
+    // source that cannot be rebuilt.
+    const text = await this.sourceTextOf(document)
     const config = this.getConfigFor(document.baseId)
     // Mark the document incomplete so a crash mid-reindex is resumed on the
     // next start (buildChunks persists each embedded batch; hash reuse makes
     // the resume re-embed only what never landed).
     await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
     const { chunks, embeddingError } = await this.buildChunks(document.baseId, document.id, document.title, text, config, undefined, batch => store.putChunkBatch(batch))
-    const { embeddingError: _staleError, incomplete: _staleIncomplete, ...rest } = document
+    const { embeddingError: _staleError, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = document
     const next: KnowledgeDocument = {
       ...rest,
       rawText: text,
+      contentHash: sha256(text),
       charCount: text.length,
       tokenCount: estimateTokens(text),
       chunkCount: chunks.length,
@@ -664,6 +722,27 @@ export class KnowledgeService extends Service {
     await store.putDocument(next)
     await this.touchBase(document.baseId)
     return next
+  }
+
+  /** Rebuild source text of a document: raw file first, then persisted text, then chunks. */
+  private async sourceTextOf(document: KnowledgeDocument): Promise<string> {
+    if (document.rawFilePath !== undefined) {
+      const store = this.requireStore()
+      const raw = await store.raw?.read(document.rawFilePath)
+      if (raw !== null && raw !== undefined && raw.byteLength > 0) {
+        try {
+          const text = await parseDocumentBuffer(raw, document.fileName ?? document.title, document.mimeType)
+          if (text.trim().length > 0) return text
+        } catch (error) {
+          this.ctx.logger.warn(`knowledge: re-parsing raw source failed, falling back to stored text: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      } else {
+        this.ctx.logger.warn(`knowledge: raw source file missing for "${document.title}", falling back to stored text`)
+      }
+    }
+    const text = document.rawText ?? reconstructFromChunks(this.requireStore().listChunksByDoc(document.id))
+    if (text.trim().length === 0) throw new Error(`document "${document.title}" has no source text to reindex`)
+    return text
   }
 
   async reindexBase(baseId: string): Promise<{ reindexed: number }> {
@@ -744,6 +823,7 @@ export class KnowledgeService extends Service {
     for (const id of ids) {
       const document = store.getDocument(id)
       if (document === undefined) continue
+      if (document.rawFilePath !== undefined) await store.raw?.delete(document.rawFilePath)
       await store.deleteChunks(id)
       await store.deleteDocument(id)
       touched.add(document.baseId)
@@ -887,6 +967,7 @@ export class KnowledgeService extends Service {
       sourceType: doc.sourceType,
       ...(doc.fileName !== undefined ? { fileName: doc.fileName } : {}),
       ...(doc.url !== undefined ? { url: doc.url } : {}),
+      ...(doc.rawFilePath !== undefined ? { rawFilePath: doc.rawFilePath } : {}),
       rawText: truncated ? rawText.slice(0, rawTextLimit) : rawText,
       ...(truncated ? { rawTextTruncated: true } : {}),
       charCount: doc.charCount,
@@ -895,6 +976,16 @@ export class KnowledgeService extends Service {
       createdAt: doc.createdAt,
       ...(opts?.includeChunks === false ? {} : { chunks: store.listChunksByDoc(id) }),
     }
+  }
+
+  /** Original source bytes of a file document (for the download route). */
+  async getRawFile(id: string): Promise<{ bytes: Uint8Array; fileName: string; mimeType?: string } | undefined> {
+    const store = this.requireStore()
+    const doc = store.getDocument(id)
+    if (doc === undefined || doc.rawFilePath === undefined) return undefined
+    const bytes = await store.raw?.read(doc.rawFilePath)
+    if (bytes === null || bytes === undefined) return undefined
+    return { bytes, fileName: doc.fileName ?? doc.title, mimeType: doc.mimeType }
   }
 
   /** Read one document's source text as a `[charStart, charEnd)` slice (kb_read read mode). */
@@ -1231,6 +1322,8 @@ export class KnowledgeService extends Service {
     url?: string
     parentDirectoryId?: string
     text: string
+    /** Base-relative path of the persisted original source bytes (file docs). */
+    rawFilePath?: string
     /** Pre-created placeholder id (already stored, shown while embedding). */
     placeholderId?: string
   }): Promise<KnowledgeDocument> {
@@ -1265,6 +1358,7 @@ export class KnowledgeService extends Service {
       ...(input.mimeType !== undefined ? { mimeType: input.mimeType } : {}),
       ...(input.url !== undefined ? { url: input.url } : {}),
       ...(input.parentDirectoryId !== undefined ? { parentDirectoryId: input.parentDirectoryId } : {}),
+      ...(input.rawFilePath !== undefined ? { rawFilePath: input.rawFilePath } : {}),
       contentHash,
       rawText: input.text,
       charCount: input.text.length,
@@ -1493,6 +1587,18 @@ function decodeBase64(value: string): Uint8Array {
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
   return bytes
+}
+
+/** A safe file extension (leading dot, alphanumeric) for the raw store, from an upload name. */
+function safeRawExtension(fileName: string): string {
+  const ext = extname(fileName).toLowerCase()
+  return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : '.bin'
+}
+
+/** The extension of a stored raw file path (`.../<docId><ext>`). */
+function rawExtensionOf(relativePath: string): string {
+  const ext = extname(relativePath).toLowerCase()
+  return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : '.bin'
 }
 
 async function fetchHtml(url: string): Promise<string> {

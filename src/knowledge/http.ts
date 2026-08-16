@@ -45,11 +45,33 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
       writeJson(res, 404, { ok: false, error: { code: 'not-found', message: `no route for ${method} ${pathname}` } })
       return
     }
+    if (isRawDownload(value)) {
+      const { bytes, fileName, mimeType } = value
+      res.writeHead(200, {
+        'content-type': mimeType ?? 'application/octet-stream',
+        'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        'content-length': String(bytes.byteLength),
+      })
+      res.end(Buffer.from(bytes))
+      return
+    }
     writeJson(res, 200, { ok: true, value })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     writeJson(res, 500, { ok: false, error: { code: 'error', message } })
   }
+}
+
+/** Marker for a binary download response (the raw-file route). */
+interface RawDownload {
+  rawDownload: true
+  bytes: Uint8Array
+  fileName: string
+  mimeType?: string
+}
+
+function isRawDownload(value: unknown): value is RawDownload {
+  return typeof value === 'object' && value !== null && (value as RawDownload).rawDownload === true
 }
 
 async function route(
@@ -245,6 +267,11 @@ async function route(
         return service.listChunks(documentId, readIntQuery(query, 'limit'), readIntQuery(query, 'offset'))
       }
       if (segments[2] === 'reindex' && method === 'POST') return service.reindexDocument(documentId)
+      if (segments[2] === 'raw' && method === 'GET') {
+        const raw = await service.getRawFile(documentId)
+        if (raw === undefined) return undefined
+        return { rawDownload: true, ...raw }
+      }
     }
     return undefined
   }

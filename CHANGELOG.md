@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.4 — Raw source storage (Cherry's "import means copy")
+
+Uploaded file documents now keep their original bytes — Cherry's `raw/`
+material store, adapted to the plugin layout: `<chunkStoreDir>/knowledge-raw/
+<baseId>/<docId><ext>`, with the base-relative path recorded on the document
+(`rawFilePath`).
+
+- **Import means copy**: the base owns a stable copy of every uploaded file;
+  deleting the document removes it, `deleteBase` sweeps the whole base's
+  directory, and restore copies the bytes across so a restored base stays
+  rebuildable from source.
+- **Reindex from source**: `reindexDocument` re-reads and re-parses the raw
+  bytes first (a parser upgrade now actually improves extraction on reindex),
+  falling back to the stored text and then to reconstructed chunks when the
+  file is gone — a reindex never wipes vectors for an unrebuildable source.
+  This is Cherry's `canKnowledgeItemRebuildSource` posture, made simpler by
+  the plugin's atomic overwrite writes (no delete-then-rebuild window).
+- **Crash recovery from the file**: a placeholder that only holds a raw file
+  (crash before/during parse) is now resumed from source instead of dropped —
+  the same recoverability Cherry gets from its `raw/` copy.
+- **Download route**: `GET /knowledge/documents/:id/raw` streams the original
+  bytes (attachment, original mime type).
+- Retrieval behavior is unchanged; eval baselines are identical.
+
 ## 0.2.3 — Sibling-chunk context on search hits
 
 Each search hit now carries its surrounding chunks (`siblingContext`,

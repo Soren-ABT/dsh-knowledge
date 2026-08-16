@@ -56,6 +56,7 @@ const documentSchema = z.object({
   url: z.string().optional(),
   parentDirectoryId: z.string().optional(),
   contentHash: z.string().optional(),
+  rawFilePath: z.string().optional(),
   rawText: z.string().optional(),
   charCount: z.number().int().gte(0),
   tokenCount: z.number().int().gte(0).optional(),

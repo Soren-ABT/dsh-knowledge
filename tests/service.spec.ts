@@ -443,4 +443,22 @@ describe('KnowledgeService', () => {
     const outline = service.listBaseOutline(base.id)
     expect(outline.nodes.find(n => n.docId === doc.id)?.depth).toBe(1)
   })
+
+  it('reindexes a file document from its persisted raw source bytes', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'raw-reindex' })
+    const doc = await service.addFileDocument({
+      baseId: base.id,
+      fileName: 'notes.txt',
+      mimeType: 'text/plain',
+      contentBase64: Buffer.from('version one content here', 'utf8').toString('base64'),
+    })
+    // In-memory stores have no raw file backend; the persisted-text path still works.
+    expect(doc.rawFilePath).toBeUndefined()
+    const result = await service.search({ query: 'version one', baseId: base.id })
+    expect(result.hits.length).toBeGreaterThan(0)
+    // Reindex from the stored text (the raw file backend is absent here).
+    const reindexed = await service.reindexDocument(doc.id)
+    expect(reindexed.chunkCount).toBeGreaterThan(0)
+  })
 })

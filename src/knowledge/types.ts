@@ -65,6 +65,13 @@ export interface KnowledgeDocument {
   readonly parentDirectoryId?: string
   /** SHA-256 of the source text, for duplicate detection. */
   readonly contentHash?: string
+  /**
+   * Base-relative path of the document's original source bytes in the raw
+   * store (`<baseId>/<docId><ext>`, under `<chunkStoreDir>/knowledge-raw`).
+   * Present for file documents whose bytes were persisted at import; reindex
+   * re-reads and re-parses this source instead of only reusing rawText.
+   */
+  readonly rawFilePath?: string
   /** Original source text, retained so the document can be re-chunked. */
   readonly rawText?: string
   /** Raw character count of the source text (before chunking). */
@@ -218,6 +225,8 @@ export interface DocumentDetail {
   readonly sourceType: DocumentSourceType
   readonly fileName?: string
   readonly url?: string
+  /** Base-relative path of the persisted original source bytes (file docs). */
+  readonly rawFilePath?: string
   readonly rawText?: string
   /** True when `rawText` was capped to `rawTextLimit` to keep the payload bounded. */
   readonly rawTextTruncated?: boolean

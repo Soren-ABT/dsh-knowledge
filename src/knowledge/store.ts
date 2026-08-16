@@ -10,6 +10,8 @@
  */
 
 import type { Domain, DomainSpec } from '@deepseek-ai/dsh-storage-domain'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { dirname, extname, join } from 'node:path'
 import { knowledgeDomainSpec, TABLES } from './domain.js'
 import type { ConfigOverrides } from './domain.js'
 import { ChunkDatabase, hashEmbeddingText, legacyChunkFilePath, migrateLegacyChunkFile, resolveChunkStorePath, searchTextOf } from './chunkdb.js'
@@ -26,6 +28,64 @@ export interface ChunkStats {
   dimensions?: number
   /** Distinct embedding-model tags on embedded chunks (count per base+model). */
   embeddingModelCounts: Array<{ baseId: string; model: string; count: number }>
+}
+
+/**
+ * Original source bytes of uploaded documents (Cherry's `raw/` material store):
+ * "import means copy" — the base keeps its own stable copy, and reindex can
+ * re-read + re-parse the source instead of only reusing the persisted text.
+ * Stored under `<chunkStorePath dir>/knowledge-raw/<baseId>/<docId><ext>`.
+ */
+export interface RawFileStore {
+  /** Persist one document's source bytes; returns the base-relative path. */
+  write(baseId: string, docId: string, ext: string, bytes: Uint8Array): Promise<string>
+  /** Read a document's source bytes back (null when absent). */
+  read(relativePath: string): Promise<Uint8Array | null>
+  /** Remove one document's source file by its stored relative path (missing = no-op). */
+  delete(relativePath: string): Promise<void>
+  /** Remove every source file of a base. */
+  deleteBase(baseId: string): Promise<void>
+}
+
+/** Filesystem-backed {@link RawFileStore}. */
+export class RawFileStorage implements RawFileStore {
+  constructor(private readonly root: string) {}
+
+  private pathOf(relativePath: string): string {
+    const resolved = join(this.root, relativePath)
+    // The relative path is always built from uuid segments + a sanitized ext;
+    // assert it stays inside the root regardless.
+    const rel = relativePath.replace(/\\/g, '/')
+    if (rel === '..' || rel.startsWith('../') || rel.includes('/../') || resolved.startsWith(this.root) === false) {
+      throw new Error(`unsafe raw file path: ${relativePath}`)
+    }
+    return resolved
+  }
+
+  async write(baseId: string, docId: string, ext: string, bytes: Uint8Array): Promise<string> {
+    const relativePath = `${baseId}/${docId}${ext}`
+    const full = this.pathOf(relativePath)
+    await mkdir(dirname(full), { recursive: true })
+    await writeFile(full, bytes)
+    return relativePath
+  }
+
+  async read(relativePath: string): Promise<Uint8Array | null> {
+    try {
+      return await readFile(this.pathOf(relativePath))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
+
+  async delete(relativePath: string): Promise<void> {
+    await rm(this.pathOf(relativePath), { force: true })
+  }
+
+  async deleteBase(baseId: string): Promise<void> {
+    await rm(join(this.root, baseId), { recursive: true, force: true })
+  }
 }
 
 export interface Store {
@@ -67,20 +127,19 @@ export interface Store {
   /**
    * Startup self-healing, returning:
    * - `removed`: documents a crashed import left behind with nothing to
-   *   recover — non-directory items with no chunks AND no rawText whose last
-   *   update predates this process's start (pure placeholders / half-finished
-   *   ingests before the source text was persisted).
-   * - `resume`: documents that DO hold recoverable source text (rawText) but
-   *   whose chunk count disagrees with the store — a crash mid-embedding.
-   *   Their chunks are partially present (each embedded batch was persisted),
-   *   so re-running the embed with hash reuse completes them without
-   *   re-embedding finished batches. The caller re-indexes these.
+   *   recover — non-directory items with no chunks, no rawText AND no raw
+   *   source file whose last update predates this process's start.
+   * - `resume`: documents that hold recoverable material — rawText (crash
+   *   mid-embedding, chunks partial) or a persisted raw source file (crash
+   *   before/during parse) — re-indexed by the service after startup.
    */
   recoverInterruptedImports(startedAt: number): Promise<{ removed: number; resume: string[] }>
   /** Aggregate chunk stats without loading chunk rows. */
   chunkStats(baseIds: readonly string[]): ChunkStats
   /** SQL-backed retrieval lanes (FTS5 + vector scan); absent on in-memory stores. */
   readonly retrievalLane?: RetrievalLane
+  /** Original source bytes of uploaded documents (absent on in-memory stores). */
+  readonly raw?: RawFileStore
 
   getConfigOverrides(): ConfigOverrides
   setConfigOverrides(overrides: ConfigOverrides): Promise<void>
@@ -122,9 +181,13 @@ export async function openStore(
   if (facility !== undefined) {
     try {
       const domain = await facility.open(knowledgeDomainSpec)
-      const chunkDb = new ChunkDatabase(resolveChunkStorePath(options?.chunkStorePath))
+      const chunkStorePath = resolveChunkStorePath(options?.chunkStorePath)
+      const chunkDb = new ChunkDatabase(chunkStorePath)
       await migrateLegacyChunkFile(options?.legacyJsonPath ?? legacyChunkFilePath(), chunkDb, message => console.warn(message))
-      const store = new DomainStore(domain, chunkDb)
+      // Original source bytes live next to the chunk store (Cherry's `raw/`
+      // material store): `<chunkStoreDir>/knowledge-raw`.
+      const raw = new RawFileStorage(join(dirname(chunkStorePath), 'knowledge-raw'))
+      const store = new DomainStore(domain, chunkDb, raw)
       // Startup self-healing: drop documents a crashed import left behind
       // (pure placeholders with no recoverable text), then reconcile stale
       // chunkCount metadata. Resume candidates (rawText present, chunks
@@ -145,6 +208,7 @@ class DomainStore implements Store {
   constructor(
     private readonly domain: Domain<typeof knowledgeDomainSpec>,
     private readonly chunkDb: ChunkDatabase,
+    private readonly rawStore: RawFileStorage,
   ) {}
 
   private get bases() {
@@ -239,7 +303,7 @@ class DomainStore implements Store {
       // reconciliation pass that runs after this one would otherwise make the
       // chunk count agree and hide the interrupted document forever.
       if (doc.incomplete === true) {
-        if (doc.rawText !== undefined) resume.push(id)
+        if (doc.rawText !== undefined || doc.rawFilePath !== undefined) resume.push(id)
         continue
       }
       if (withChunks.has(id)) {
@@ -247,11 +311,11 @@ class DomainStore implements Store {
         // document (possibly with a recording embedding failure) — keep it.
         continue
       }
-      // No chunks at all and no incomplete marker: a pure placeholder whose
-      // source text was never persisted (crash before rawText landed) is
-      // unrecoverable; one that already holds rawText was interrupted between
-      // the document write and the first chunk batch — resume it.
-      if (doc.rawText !== undefined) {
+      // No chunks at all and no incomplete marker: a placeholder whose source
+      // was never persisted (crash before the raw write or before rawText
+      // landed) is unrecoverable; one that already holds rawText or a raw
+      // source file was interrupted mid-import — resume it.
+      if (doc.rawText !== undefined || doc.rawFilePath !== undefined) {
         if ((doc.updatedAt ?? doc.createdAt) < startedAt) resume.push(id)
         continue
       }
@@ -290,6 +354,10 @@ class DomainStore implements Store {
 
   get retrievalLane(): RetrievalLane {
     return this.chunkDb
+  }
+
+  get raw(): RawFileStore {
+    return this.rawStore
   }
 
   getConfigOverrides(): ConfigOverrides {
@@ -452,11 +520,11 @@ class MemoryStore implements Store {
     for (const [id, doc] of [...this.documents.entries()]) {
       if (doc.sourceType === 'directory') continue
       if (doc.incomplete === true) {
-        if (doc.rawText !== undefined) resume.push(id)
+        if (doc.rawText !== undefined || doc.rawFilePath !== undefined) resume.push(id)
         continue
       }
       if (withChunks.has(id)) continue
-      if (doc.rawText !== undefined) {
+      if (doc.rawText !== undefined || doc.rawFilePath !== undefined) {
         if ((doc.updatedAt ?? doc.createdAt) < startedAt) resume.push(id)
         continue
       }
