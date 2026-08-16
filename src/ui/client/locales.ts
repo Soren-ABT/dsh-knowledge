@@ -75,6 +75,8 @@ export type KnowledgeKey =
   | 'mmrDiversity'
   | 'rrfVectorWeight'
   | 'rrfVectorWeightHint'
+  | 'siblingChunks'
+  | 'siblingChunksHint'
   | 'batchSize'
   | 'stats'
   | 'statsDocs'
@@ -262,6 +264,8 @@ export const zh: Record<KnowledgeKey, string> = {
   mmrDiversity: '结果多样性（MMR，0=关）',
   rrfVectorWeight: '向量融合权重',
   rrfVectorWeightHint: '混合检索中向量 lane 的相对权重（0.1–5，1=均衡；语义问题可调大）',
+  siblingChunks: '上下文拼接',
+  siblingChunksHint: '每个命中结果附带相邻分块的数量（0–3，0=关；让回答获得完整段落上下文）',
   batchSize: 'embedding 批大小',
   stats: '统计',
   statsDocs: '文档',
@@ -447,6 +451,8 @@ export const en: Record<KnowledgeKey, string> = {
   mmrDiversity: 'Diversity (MMR, 0=off)',
   rrfVectorWeight: 'Vector fusion weight',
   rrfVectorWeightHint: 'Relative weight of the vector lane in hybrid fusion (0.1–5, 1=balanced; raise for semantic questions)',
+  siblingChunks: 'Context stitching',
+  siblingChunksHint: 'Neighbouring chunks (±) attached to each hit (0–3, 0=off; gives answers the full paragraph)',
   batchSize: 'Embedding batch size',
   stats: 'Stats',
   statsDocs: 'docs',

@@ -30,6 +30,7 @@ const TEST_CONFIG: Config = {
   mmrDiversity: 0,
   rrfVectorWeight: 1,
   embeddingBatchSize: 32,
+  siblingChunks: 1,
   localModelCacheDir: '',
   hfEndpoint: '',
   chunkStorePath: '',
@@ -381,6 +382,29 @@ describe('ChunkDatabase (per-chunk SQL layout)', () => {
       // A later full replace still works after incremental batches.
       db.putChunks([embedded('c9', 'd1', 0, 'gamma text', [0, 0, 1])])
       expect(db.listChunksByDoc('d1').map(c => c.id)).toEqual(['c9'])
+      db.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('fetches a bounded index range around a hit (sibling context)', async () => {
+    const dir = await tempDir()
+    try {
+      const db = new ChunkDatabase(join(dir, 'chunks.sqlite'))
+      db.putChunks([
+        chunk('c0', 'd1', 'b1', 0, 'zero'),
+        chunk('c1', 'd1', 'b1', 1, 'one'),
+        chunk('c2', 'd1', 'b1', 2, 'two'),
+        chunk('c3', 'd1', 'b1', 3, 'three'),
+        chunk('c4', 'd2', 'b1', 0, 'other doc'),
+      ])
+      // Radius 1 around index 2 → [1..3], reading order, other docs excluded.
+      const around = db.listChunksByIndexRange('d1', 1, 3)
+      expect(around.map(c => c.id)).toEqual(['c1', 'c2', 'c3'])
+      // Range clamps to the document's edges (no neighbours at index 0 radius 0).
+      expect(db.listChunksByIndexRange('d1', 0, 0).map(c => c.id)).toEqual(['c0'])
+      expect(db.listChunksByIndexRange('d1', 0, 1).map(c => c.id)).toEqual(['c0', 'c1'])
       db.close()
     } finally {
       await rm(dir, { recursive: true, force: true })

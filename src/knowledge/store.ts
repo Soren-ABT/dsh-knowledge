@@ -41,6 +41,8 @@ export interface Store {
 
   listChunks(baseId: string): KnowledgeChunk[]
   listChunksByDoc(docId: string, limit?: number, offset?: number): KnowledgeChunk[]
+  /** Chunks of one document whose index falls in `[fromIdx, toIdx]` (sibling context around a search hit). */
+  listChunksByIndexRange(docId: string, fromIdx: number, toIdx: number): KnowledgeChunk[]
   putChunks(chunks: KnowledgeChunk[]): Promise<void>
   /**
    * Incrementally persist a batch of chunks WITHOUT clearing the document's
@@ -191,6 +193,10 @@ class DomainStore implements Store {
 
   listChunksByDoc(docId: string, limit?: number, offset?: number): KnowledgeChunk[] {
     return this.chunkDb.listChunksByDoc(docId, limit, offset)
+  }
+
+  listChunksByIndexRange(docId: string, fromIdx: number, toIdx: number): KnowledgeChunk[] {
+    return this.chunkDb.listChunksByIndexRange(docId, fromIdx, toIdx)
   }
 
   async putChunks(chunks: KnowledgeChunk[]): Promise<void> {
@@ -389,6 +395,12 @@ class MemoryStore implements Store {
     const start = offset ?? 0
     const count = limit ?? chunks.length
     return chunks.slice(start, start + count)
+  }
+
+  listChunksByIndexRange(docId: string, fromIdx: number, toIdx: number): KnowledgeChunk[] {
+    return [...this.chunks.values()]
+      .filter(chunk => chunk.docId === docId && chunk.index >= fromIdx && chunk.index <= toIdx)
+      .sort((a, b) => a.index - b.index)
   }
 
   async putChunks(chunks: KnowledgeChunk[]): Promise<void> {

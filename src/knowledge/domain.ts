@@ -33,6 +33,7 @@ export const baseConfigSchema = z.object({
   mmrDiversity: z.number().gte(0).lte(1).optional(),
   rrfVectorWeight: z.number().gte(0.1).lte(5).optional(),
   embeddingBatchSize: z.number().int().gt(0).optional(),
+  siblingChunks: z.number().int().gte(0).lte(3).optional(),
 })
 
 const baseSchema = z.object({
@@ -59,6 +60,7 @@ const documentSchema = z.object({
   charCount: z.number().int().gte(0),
   tokenCount: z.number().int().gte(0).optional(),
   chunkCount: z.number().int().gte(0),
+  incomplete: z.boolean().optional(),
   embeddingError: z.string().optional(),
   createdAt: z.number(),
   updatedAt: z.number().optional(),
@@ -83,6 +85,7 @@ export const configOverridesSchema = z.object({
   mmrDiversity: z.number().gte(0).lte(1).optional(),
   rrfVectorWeight: z.number().gte(0.1).lte(5).optional(),
   embeddingBatchSize: z.number().int().gt(0).optional(),
+  siblingChunks: z.number().int().gte(0).lte(3).optional(),
   hfEndpoint: z.string().optional(),
 })
 
@@ -105,6 +108,7 @@ export interface ConfigOverrides {
   mmrDiversity?: number
   rrfVectorWeight?: number
   embeddingBatchSize?: number
+  siblingChunks?: number
   hfEndpoint?: string
 }
 

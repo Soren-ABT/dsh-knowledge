@@ -26,6 +26,7 @@ export interface BaseConfig {
   mmrDiversity?: number
   rrfVectorWeight?: number
   embeddingBatchSize?: number
+  siblingChunks?: number
 }
 
 export interface BaseSummary {
@@ -114,6 +115,7 @@ export interface KnowledgeConfig {
   mmrDiversity: number
   rrfVectorWeight: number
   embeddingBatchSize: number
+  siblingChunks: number
   hfEndpoint: string
 }
 
@@ -125,6 +127,7 @@ export interface SearchHit {
   heading?: string
   index: number
   text: string
+  siblingContext?: string
   score: number
   vectorScore?: number
   lexicalScore?: number

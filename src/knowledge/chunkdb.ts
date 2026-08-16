@@ -268,6 +268,15 @@ export class ChunkDatabase implements RetrievalLane {
     return (rows as unknown as ChunkRow[]).map(rowToChunk)
   }
 
+  /** Chunks of one document whose index falls in `[fromIdx, toIdx]` — the
+   *  sibling context around a search hit, fetched with one bounded SQL query. */
+  listChunksByIndexRange(docId: string, fromIdx: number, toIdx: number): KnowledgeChunk[] {
+    const rows = this.db.prepare(
+      `SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk WHERE doc_id = ? AND idx >= ? AND idx <= ? ORDER BY idx`,
+    ).all(docId, fromIdx, toIdx) as unknown as ChunkRow[]
+    return rows.map(rowToChunk)
+  }
+
   /** Actual chunk count per document, for reconciling stale document metadata. */
   chunkCountsByDoc(baseIds: readonly string[]): Map<string, number> {
     const scope = [...baseIds]

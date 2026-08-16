@@ -29,6 +29,8 @@ export interface Config {
   /** Relative weight of the vector lane in RRF hybrid fusion (0.1–5, 1 = balanced). */
   rrfVectorWeight: number
   embeddingBatchSize: number
+  /** Neighbouring chunks (±) attached to each search hit as context (0–3). */
+  siblingChunks: number
   /** Local-model cache root; empty = `<DSH_HOME>/cache/dsh-knowledge/local-models`. */
   localModelCacheDir: string
   /** Hugging Face endpoint override (mirror); empty = official hub / `HF_ENDPOINT` env. */
@@ -55,6 +57,7 @@ export const Config: Schema<Config> = Schema.object({
   mmrDiversity: Schema.number().default(0),
   rrfVectorWeight: Schema.number().default(1),
   embeddingBatchSize: Schema.number().default(32),
+  siblingChunks: Schema.number().default(1),
   localModelCacheDir: Schema.string().default(''),
   hfEndpoint: Schema.string().default(''),
   chunkStorePath: Schema.string().default(''),
@@ -73,6 +76,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
   const topK = clampInt(overrides.topK ?? config.topK, 1, 50, 6)
   const embeddingBatchSize = clampInt(overrides.embeddingBatchSize ?? config.embeddingBatchSize, 1, 512, 32)
   const rrfVectorWeight = clampNumber(overrides.rrfVectorWeight ?? config.rrfVectorWeight, 0.1, 5, 1)
+  const siblingChunks = clampInt(overrides.siblingChunks ?? config.siblingChunks, 0, 3, 1)
   return {
     embeddingProvider: overrides.embeddingProvider ?? config.embeddingProvider,
     embeddingBaseUrl: overrides.embeddingBaseUrl ?? config.embeddingBaseUrl,
@@ -91,6 +95,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     mmrDiversity: clampNumber(overrides.mmrDiversity ?? config.mmrDiversity, 0, 1, 0),
     rrfVectorWeight,
     embeddingBatchSize,
+    siblingChunks,
     hfEndpoint: overrides.hfEndpoint ?? config.hfEndpoint,
   }
 }
@@ -125,6 +130,7 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     mmrDiversity: clampNumber(baseConfig.mmrDiversity ?? resolved.mmrDiversity, 0, 1, 0),
     rrfVectorWeight: clampNumber(baseConfig.rrfVectorWeight ?? resolved.rrfVectorWeight, 0.1, 5, 1),
     embeddingBatchSize: clampInt(baseConfig.embeddingBatchSize ?? resolved.embeddingBatchSize, 1, 512, 32),
+    siblingChunks: clampInt(baseConfig.siblingChunks ?? resolved.siblingChunks, 0, 3, 1),
   }
 }
 

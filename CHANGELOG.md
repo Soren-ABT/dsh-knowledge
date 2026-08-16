@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.3 — Sibling-chunk context on search hits
+
+Each search hit now carries its surrounding chunks (`siblingContext`,
+±`siblingChunks` in the same document, in reading order, heading-prefixed) —
+the full paragraph a RAG answer needs, instead of a bare chunk that often
+cuts a sentence mid-way. Cherry Studio returns only the single chunk body,
+so this is an enhancement over the reference implementation.
+
+- **New setting `siblingChunks`** (0–3, default 1, 0 = off) in Settings and
+  per-base config: how many neighbouring chunks (±) to attach to each hit.
+- **One bounded SQL query** per hit (`listChunksByIndexRange`) — no full
+  document scan, works on the SQLite-backed store and the in-memory fallback.
+- **Exposed everywhere the hit is**: `SearchResult.hits[].siblingContext` in
+  the HTTP API, the `knowledge_search` tool schema, its text render (context
+  before the hit, `>>>` marker), and the browser panel types.
+- Retrieval ranking is untouched; eval baselines are identical.
+
 ## 0.2.2 — Crash-resumable imports (lightweight recoverable indexing)
 
 A crash mid-embedding no longer loses the document. `ingestDocument` now

@@ -1202,6 +1202,7 @@ export class KnowledgeService extends Service {
           ...(chunk.heading !== undefined ? { heading: chunk.heading } : {}),
           index: chunk.index,
           text: chunk.text,
+          ...(config.siblingChunks > 0 ? { siblingContext: siblingContextOf(store, chunk, config.siblingChunks) } : {}),
           score: hit.score,
           ...(hit.vectorScore !== undefined ? { vectorScore: hit.vectorScore } : {}),
           ...(hit.lexicalScore !== undefined ? { lexicalScore: hit.lexicalScore } : {}),
@@ -1433,6 +1434,24 @@ function reconstructFromChunks(chunks: KnowledgeChunk[]): string {
     .sort((a, b) => a.index - b.index)
     .map(chunk => chunk.text)
     .join('\n\n')
+}
+
+/**
+ * Sibling context of a search hit: the `radius` chunks before and after it in
+ * the same document, in reading order, each prefixed with its heading path so
+ * the caller can see where the excerpt sits. Empty when the chunk has no
+ * neighbours. This is the "full paragraph" a RAG answer needs — a bare chunk
+ * often cuts a sentence mid-way, and the neighbouring chunks carry the rest.
+ */
+function siblingContextOf(store: Store, chunk: KnowledgeChunk, radius: number): string {
+  const neighbours = store.listChunksByIndexRange(chunk.docId, chunk.index - radius, chunk.index + radius)
+  const parts: string[] = []
+  for (const sibling of neighbours) {
+    if (sibling.id === chunk.id) continue
+    const heading = sibling.heading !== undefined ? `[${sibling.heading}] ` : ''
+    parts.push(`${heading}${sibling.text}`)
+  }
+  return parts.join('\n\n')
 }
 
 function clampInt(value: number, min: number, max: number, fallback: number): number {

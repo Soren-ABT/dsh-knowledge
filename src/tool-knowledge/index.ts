@@ -63,6 +63,7 @@ export function apply(ctx: Context): void {
                 heading: { type: 'string' },
                 index: { type: 'number', required: true },
                 text: { type: 'string', required: true },
+                siblingContext: { type: 'string', description: 'Neighbouring chunks (±siblingChunks) around this hit in the same document, in reading order — the full paragraph the excerpt sits in.' },
                 score: { type: 'number', required: true },
                 vectorScore: { type: 'number' },
                 lexicalScore: { type: 'number' },
@@ -73,8 +74,12 @@ export function apply(ctx: Context): void {
       },
       render: (_args, value: SearchResult) => {
         if (value.hits.length === 0) return [{ type: 'text', text: `no matches for "${value.query}"` }]
-        const lines = value.hits.map((hit, i) =>
-          `[${i + 1}] (score ${hit.score.toFixed(3)}) ${hit.documentTitle}: ${hit.text}`)
+        const lines = value.hits.map((hit, i) => {
+          const excerpt = hit.siblingContext !== undefined && hit.siblingContext.length > 0
+            ? `${hit.siblingContext}\n>>> ${hit.text}`
+            : hit.text
+          return `[${i + 1}] (score ${hit.score.toFixed(3)}) ${hit.documentTitle}: ${excerpt}`
+        })
         return [{ type: 'text', text: `${value.hits.length} result(s) for "${value.query}" (${value.mode}):\n${lines.join('\n')}` }]
       },
     },

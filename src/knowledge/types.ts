@@ -31,6 +31,8 @@ export interface BaseConfig {
   /** Relative weight of the vector lane in RRF hybrid fusion (0.1–5, 1 = balanced). */
   readonly rrfVectorWeight?: number
   readonly embeddingBatchSize?: number
+  /** How many neighbouring chunks (±) to attach to each search hit as context (0–3, 0 = off). */
+  readonly siblingChunks?: number
 }
 
 /** One knowledge base (a namespace of documents). */
@@ -124,6 +126,8 @@ export interface KnowledgeConfig {
   /** Relative weight of the vector lane in RRF hybrid fusion (0.1–5, 1 = balanced). */
   readonly rrfVectorWeight: number
   readonly embeddingBatchSize: number
+  /** How many neighbouring chunks (±) to attach to each search hit as context (0–3, 0 = off). */
+  readonly siblingChunks: number
   /** Hugging Face endpoint override (mirror); empty = official hub / `HF_ENDPOINT` env. */
   readonly hfEndpoint: string
 }
@@ -137,6 +141,10 @@ export interface SearchHit {
   readonly heading?: string
   readonly index: number
   readonly text: string
+  /** Surrounding chunks (±`siblingChunks`) of the hit, concatenated as
+   *  context — the full paragraph the hit sits in. Empty when the document
+   *  has no neighbours or sibling context is disabled. */
+  readonly siblingContext?: string
   readonly score: number
   readonly vectorScore?: number
   readonly lexicalScore?: number

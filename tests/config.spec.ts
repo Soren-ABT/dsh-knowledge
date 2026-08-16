@@ -20,6 +20,7 @@ const base: Config = {
   mmrDiversity: 0,
   rrfVectorWeight: 1,
   embeddingBatchSize: 32,
+  siblingChunks: 1,
   localModelCacheDir: '',
   hfEndpoint: '',
   chunkStorePath: '',

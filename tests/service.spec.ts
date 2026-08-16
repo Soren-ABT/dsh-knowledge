@@ -25,6 +25,7 @@ const DEFAULT_CONFIG: Config = {
   mmrDiversity: 0,
   rrfVectorWeight: 1,
   embeddingBatchSize: 32,
+  siblingChunks: 1,
   localModelCacheDir: '',
   hfEndpoint: '',
   chunkStorePath: '',
@@ -74,6 +75,32 @@ describe('KnowledgeService', () => {
     const methods = chunks.find(c => c.text === 'body text here')
     expect(methods?.heading).toBe('Intro > Methods')
     expect(methods?.context).toBe('guide > Intro > Methods')
+  })
+
+  it('attaches sibling chunks as context around a search hit', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'siblings' })
+    // Three paragraph blocks → three chunks (smart chunking splits on blanks).
+    await service.addTextDocument({
+      baseId: base.id,
+      title: 'report',
+      content: 'first paragraph about costs\n\nsecond paragraph about revenue targets\n\nthird paragraph about profits',
+    })
+    const result = await service.search({ query: 'revenue', baseId: base.id })
+    expect(result.hits.length).toBeGreaterThan(0)
+    const hit = result.hits[0]
+    expect(hit.text).toContain('revenue')
+    // Sibling context carries the surrounding paragraphs (default radius 1),
+    // in reading order, without the hit's own text.
+    expect(hit.siblingContext).toBeDefined()
+    expect(hit.siblingContext).toContain('first paragraph')
+    expect(hit.siblingContext).toContain('third paragraph')
+    expect(hit.siblingContext).not.toContain('revenue')
+
+    // Radius 0 disables the context.
+    await service.setConfig({ siblingChunks: 0 })
+    const without = await service.search({ query: 'revenue', baseId: base.id })
+    expect(without.hits[0].siblingContext).toBeUndefined()
   })
 
   it('rejects duplicate content within a base', async () => {

@@ -211,6 +211,20 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
           </Section>
         )}
 
+        {/* 上下文拼接 */}
+        <Section title={t('siblingChunks')} hint={t('siblingChunksHint')}>
+          <Slider
+            value={values.siblingChunks}
+            min={0}
+            max={3}
+            step={1}
+            onChange={(v) => patch({ siblingChunks: v })}
+            minLabel="0"
+            maxLabel="3"
+            format={(v) => String(v)}
+          />
+        </Section>
+
         {/* 高级设置 */}
         <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
           <button style={style.accordionHeader} onClick={() => setAdvancedOpen(v => !v)}>
