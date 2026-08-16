@@ -10,7 +10,7 @@
 - **向量化与检索**：可插拔 embedding 提供方 —— 任意 OpenAI 兼容 `/embeddings` 端点（OpenAI、DeepSeek、SiliconFlow、本地网关…）、Ollama，或 **进程内本地模型（transformers.js，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX，无需联网服务）**；**混合检索**（BM25 + 向量 + Reciprocal Rank Fusion）、**重排模型（rerank，Jina/SiliconFlow/Cohere v2 风格 API）**、**MMR 结果去重**、检索模式（auto/hybrid/vector/lexical）与相似度阈值；未配置时自动退化关键词（CJK 二元组 + 拉丁词 BM25），零配置即可用；召回测试显示命中来源、相关度、双分数、**耗时**，并保留**检索历史**可一键重放。
 - **智能分块**：标题感知分块（保留 Markdown 标题路径），并将「文档标题 + 标题路径」作为上下文注入 embedding 与检索，显著提升召回。
 - **索引管理**：按当前配置**重建索引**（改分块大小 / 换 embedding 后一键重切 + 重向量化）、批量 embedding、统计（文档/分块/字符/Token 数、是否已向量化）。
-- **模型工具**：`knowledge_search`、`knowledge_list_bases`、`knowledge_create_base`、`knowledge_delete_base`、`knowledge_add_document`、`knowledge_list_documents`、`knowledge_delete_document`、`knowledge_import_url`、`knowledge_stats`、`knowledge_get_document`、`knowledge_reindex_base`。
+- **模型工具**：`knowledge_search`、`knowledge_list_bases`、`knowledge_create_base`、`knowledge_delete_base`、`knowledge_add_document`、`knowledge_list_documents`、`knowledge_delete_document`、`knowledge_import_url`、`knowledge_stats`、`knowledge_get_document`、`knowledge_read_document`（按字符区间分段阅读 / 正则定位）、`knowledge_reindex_base`。
 - **管理面板**：**不在设置内** —— 侧边栏底部（设置旁）的「知识库」入口打开工作区整页浮层，Cherry Studio 式布局：左侧搜索框 + **分组折叠导航** + 彩色头像知识库卡片（右键菜单：重命名/移动到分组/新建分组/删除），右侧统计芯片、**「更新于」时间**、添加文档弹窗、**表格化资料列表（勾选列 + 名称/类型/状态/更新时间 + 多选批量重建/批量删除）**、分块/原文预览、重建索引、检索测试（命中高亮 + 向量/关键词双分数 + 历史）、全局与每库设置弹窗（文档处理 / 嵌入模型 / 重排模型 / TopK / 高级设置）、Toast 通知、空状态与悬停动效。
 - **本地模型管理（设置内）**：设置 →「本地模型」页面（`settings.section` 插槽），Cherry Studio 式卡片：模型名称/说明、**就绪徽标**、**下载 / 重试 / 删除** 按钮、**实时下载进度条**；下载后即可在知识库设置里选用「本地模型」作为向量化方式。
 - **持久化**：业务状态（知识库/文档/运行时配置）经 DSH 官方 `storageDomain` seam 落盘（`json` 后端，默认随 `web` profile 提供）；**分块数据存于独立 SQLite 文件**（`<DSH_HOME>/storages/knowledge-chunks.sqlite`，可用 `chunkStorePath` 配置）——每分块一行、每次写入/删除为单条语句，不随数据量恶化；词法检索走 FTS5 三元组全文索引、向量检索查询时扫描存储的向量（Cherry Studio 同款姿态），启动不再全量载入内存。升级后首次启动自动完成旧数据迁移（幂等、去重）；无存储后端时自动降级为内存模式。
@@ -22,7 +22,7 @@
 | 插件 | 平台 | 职责 |
 |---|---|---|
 | `knowledge`（`ctx.knowledge`） | host | 核心引擎：存储域、分块、embedding、检索、`/knowledge/*` HTTP 服务 |
-| `tool-knowledge` | host | 11 个模型工具，消费 `ctx.knowledge` |
+| `tool-knowledge` | host | 12 个模型工具，消费 `ctx.knowledge` |
 | `ui-knowledge` | client | 侧边栏底部入口（`sidebar.footer.action`）+ 工作区整页浮层（`shell.overlay`），Cherry Studio 式布局 |
 
 数据模型（`storageDomain` 声明领域 `knowledge`，version 0）：
@@ -105,7 +105,7 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 1. 点击**侧边栏底部「知识库」按钮**（设置旁），打开 Cherry Studio 式整页面板 —— 不在设置内。
 2. 点「新建知识库」，选中后粘贴文本、拖拽上传 txt/md/pdf/docx，或导入网页 URL。
 3. 在「检索测试」里验证召回（可切换混合/向量/关键词模式与阈值）；点右上角「设置」配置向量化。
-4. 对 agent 说 *"用知识库里的内容回答…"*，模型会调用 `knowledge_search` 等 11 个工具。
+4. 对 agent 说 *"用知识库里的内容回答…"*，模型会调用 `knowledge_search` 等 12 个工具。
 
 ## 开发
 
