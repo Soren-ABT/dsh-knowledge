@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.10 — Extended retrieval eval sets
+
+Two new real eval sets join the original 24 questions:
+
+- **`scripts/eval-extra.json`** (16 questions, base 11): covers documents the
+  original set did not touch (偏最小二乘回归 / 随机模拟与系统仿真 /
+  微分方程建模), plus harder variants of covered topics (Little 定律, 生灭过程,
+  CR 一致性检验, 0-1 背包, Kruskal, 允许缺货, Leslie 矩阵, EDD 规则, …).
+  Baseline: hybrid Hit@5 0.938 vs lexical 0.778 — the vector lane bridges
+  another +0.16 over the extra questions. Two stub documents with 0 chunks
+  (计算机仿真 / 数学建模算法, empty imports) are noted in the set and not
+  tested; the Leslie question is a known semantic gap (the term never appears
+  in the 差分方程 document).
+- **`scripts/eval-base22.json`** (6 questions, base 22): retrieval of the
+  writing-guide documents (math-model-writing) and data corpora (oil.csv /
+  holidays_events.csv / ensemble_log.txt). The three writing questions hit
+  1.0 in every mode; the three data questions fail in every mode — a real
+  property of tabular/CSV retrieval (numeric cells carry no semantic text),
+  kept as a documented known gap.
+
+No runtime behavior changed.
+
 ## 0.2.9 — Space reclamation after large deletes (Cherry's reclaimSpace)
 
 Deleting documents no longer leaves the freed pages stranded in the chunk
