@@ -140,6 +140,12 @@ export interface Store {
   readonly retrievalLane?: RetrievalLane
   /** Original source bytes of uploaded documents (absent on in-memory stores). */
   readonly raw?: RawFileStore
+  /**
+   * Return space a large delete freed back to the OS (Cherry's
+   * `reclaimSpace`): WAL checkpoint, threshold-gated VACUUM + FTS optimize.
+   * Absent on in-memory stores.
+   */
+  readonly reclaimSpace?: () => { vacuumed: boolean; reclaimedBytes: number }
 
   getConfigOverrides(): ConfigOverrides
   setConfigOverrides(overrides: ConfigOverrides): Promise<void>
@@ -358,6 +364,10 @@ class DomainStore implements Store {
 
   get raw(): RawFileStore {
     return this.rawStore
+  }
+
+  reclaimSpace(): { vacuumed: boolean; reclaimedBytes: number } {
+    return this.chunkDb.reclaimSpace()
   }
 
   getConfigOverrides(): ConfigOverrides {

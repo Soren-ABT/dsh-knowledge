@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.9 — Space reclamation after large deletes (Cherry's reclaimSpace)
+
+Deleting documents no longer leaves the freed pages stranded in the chunk
+store file. `ChunkDatabase.reclaimSpace` mirrors Cherry's `reclaimSpace` +
+driver thresholds:
+
+- **WAL checkpoint first** (cheap; folds the delete's committed frees into
+  the main file so `freelist_count` reflects them).
+- **Threshold-gated VACUUM**: only when the freelist is ≥20% of the file AND
+  ≥8 MB — a small delete never pays for a whole-file rewrite whose pages a
+  later index would reuse anyway.
+- **FTS 'optimize' before the VACUUM**: the external-content trigram index
+  only TOMBSTONES its rows on delete; the dead segment blobs linger in the
+  shadow table, which VACUUM cannot reclaim on its own.
+- **Reclaim after delete**: `deleteBase`, `deleteDocument`, and
+  `deleteDocuments` call it synchronously; the thresholds keep the common
+  case a no-op. Memory-backed stores skip it.
+- Retrieval behavior is unchanged; eval baselines are identical.
+
 ## 0.2.8 — Multi-model local embedding registry
 
 The Settings → Local Models page now offers five download-ready in-process

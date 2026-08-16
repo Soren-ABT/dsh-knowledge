@@ -45,6 +45,15 @@ function dshHome(): string {
 /** Max bound parameters per reuse query (SQLite's limit is ~999; Cherry uses 500). */
 const EMBEDDING_HASH_QUERY_BATCH = 500
 
+/**
+ * VACUUM only when the freelist is BOTH a large share of the file AND a
+ * meaningful byte count (Cherry's thresholds): a tiny delete must not pay for
+ * a whole-file rewrite whose freed pages a later index would reuse anyway.
+ * Below either bound, reclaim just truncates the WAL (cheap, returns nothing).
+ */
+const VACUUM_MIN_FREELIST_RATIO = 0.2
+const VACUUM_MIN_FREED_BYTES = 8 * 1024 * 1024
+
 // ── FTS query compilation (trigram tokenizer) ────────────────────────────────
 
 /** Tokens a trigram index can MATCH: whole words (≥3 chars) and CJK trigram windows. */
@@ -384,6 +393,44 @@ export class ChunkDatabase implements RetrievalLane {
 
   deleteChunksByBase(baseId: string): void {
     this.db.prepare('DELETE FROM chunk WHERE base_id = ?').run(baseId)
+  }
+
+  /**
+   * Return space a large delete freed back to the OS (Cherry's
+   * `KnowledgeIndexStore.reclaimSpace` + driver thresholds). Best-effort:
+   * - Checkpoint first — cheap, and folds the delete's committed frees into
+   *   the main file so `freelist_count` reflects them.
+   * - VACUUM only when the freelist is a large share of the file AND a
+   *   meaningful byte count; below either bound it just truncates the WAL.
+   * - The external-content FTS only TOMBSTONES its trigram rows on delete (via
+   *   the chunk delete trigger); the dead segment blobs linger in the shadow
+   *   table, which VACUUM cannot reclaim on its own. 'optimize' merges and
+   *   drops them, gated behind the same threshold so a small delete never pays
+   *   the whole-index segment merge.
+   * - VACUUM rewrites into the WAL, so checkpoint again to release it.
+   */
+  reclaimSpace(): { vacuumed: boolean; reclaimedBytes: number } {
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    const pageSize = this.readPragmaInt('page_size')
+    const pageCount = this.readPragmaInt('page_count')
+    const freelist = this.readPragmaInt('freelist_count')
+    const ratio = pageCount > 0 ? freelist / pageCount : 0
+    if (ratio < VACUUM_MIN_FREELIST_RATIO || freelist * pageSize < VACUUM_MIN_FREED_BYTES) {
+      return { vacuumed: false, reclaimedBytes: 0 }
+    }
+    this.db.exec(`INSERT INTO chunk_fts(chunk_fts) VALUES('optimize')`)
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    this.db.exec('VACUUM')
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    const pageCountAfter = this.readPragmaInt('page_count')
+    return { vacuumed: true, reclaimedBytes: Math.max(0, pageCount - pageCountAfter) * pageSize }
+  }
+
+  private readPragmaInt(pragma: string): number {
+    const row = this.db.prepare(`PRAGMA ${pragma}`).get() as Record<string, unknown> | undefined
+    if (row === undefined) return 0
+    const value = Object.values(row)[0]
+    return typeof value === 'number' ? value : Number(value ?? 0)
   }
 
   /**

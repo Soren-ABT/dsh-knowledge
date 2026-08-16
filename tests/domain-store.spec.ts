@@ -690,4 +690,39 @@ describe('DomainStore wiring', () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  it('reclaims space after a large delete and keeps FTS search working', async () => {
+    const dir = await tempDir()
+    try {
+      const db = new ChunkDatabase(join(dir, 'chunks.sqlite'))
+      // Fill with enough real text so the file grows past the 8 MB VACUUM
+      // threshold, then delete most of it.
+      const big = 'reclaimable paragraph content '.repeat(900)
+      const docs: KnowledgeChunk[] = []
+      for (let d = 0; d < 30; d += 1) {
+        for (let i = 0; i < 20; i += 1) {
+          docs.push(chunk(`c${d}-${i}`, `d${d}`, 'b1', i, `${big} doc ${d} chunk ${i}`))
+        }
+      }
+      db.putChunks(docs)
+      // Small delete: below the threshold → no VACUUM, cheap no-op.
+      db.deleteChunks('d0')
+      const small = db.reclaimSpace()
+      expect(small.vacuumed).toBe(false)
+
+      // Large delete: most documents go → the threshold is crossed.
+      for (let d = 1; d < 28; d += 1) db.deleteChunks(`d${d}`)
+      const outcome = db.reclaimSpace()
+      expect(outcome.vacuumed).toBe(true)
+      expect(outcome.reclaimedBytes).toBeGreaterThan(0)
+
+      // FTS still answers after the optimize + VACUUM.
+      const result = await db.lexical('reclaimable', ['b1'], 10)
+      expect(result.total).toBe(40) // d28 + d29 remain (d0..d27 deleted)
+      expect(result.hits[0].id.startsWith('c29-') || result.hits[0].id.startsWith('c28-')).toBe(true)
+      db.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })

@@ -326,6 +326,9 @@ export class KnowledgeService extends Service {
     await store.deleteChunksByBase(id)
     await store.raw?.deleteBase(id)
     await store.deleteBase(id)
+    // A whole-base delete frees a large chunk of pages; hand them back to the
+    // OS (threshold-gated, so a small base never pays for a VACUUM).
+    this.reclaimAfterDelete()
     // Keep the invocation scope clean: a deleted base id must not silently
     // narrow future searches to a base that no longer exists.
     const enabled = store.getEnabledBaseIds()
@@ -705,6 +708,16 @@ export class KnowledgeService extends Service {
     await this.deleteDocumentRecursive(id)
     // One updatedAt write per delete, not per descendant.
     await this.touchBase(existing.baseId)
+    this.reclaimAfterDelete()
+  }
+
+  /** Threshold-gated space reclamation after a delete (Cherry's reclaimSpace). */
+  private reclaimAfterDelete(): void {
+    const store = this.requireStore()
+    const outcome = store.reclaimSpace?.()
+    if (outcome !== undefined && outcome.vacuumed) {
+      this.ctx.logger.info(`knowledge: reclaimed ${outcome.reclaimedBytes} bytes after delete`)
+    }
   }
 
   /** Delete one document (recursing into directory containers), one write per item. */
@@ -894,6 +907,7 @@ export class KnowledgeService extends Service {
     }
     // One updatedAt write per affected base, not per document.
     for (const baseId of touched) await this.touchBase(baseId)
+    this.reclaimAfterDelete()
     return { deleted }
   }
 
