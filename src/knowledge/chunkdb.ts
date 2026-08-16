@@ -79,6 +79,19 @@ function extractShortTerms(query: string): string[] {
   return [...new Set(words)]
 }
 
+/**
+ * SQL fragment + params narrowing a chunk query to a document subset, or
+ * `null` when unrestricted. Bounded to SQLite's parameter limit (500/batch).
+ */
+function docFilterSql(docIds: readonly string[] | undefined, column: string): { sql: string; params: string[] } | null {
+  if (docIds === undefined || docIds.length === 0) return null
+  const batch = docIds.slice(0, EMBEDDING_HASH_QUERY_BATCH)
+  return {
+    sql: ` AND ${column} IN (${batch.map(() => '?').join(',')})`,
+    params: [...batch],
+  }
+}
+
 const UNSEGMENTED_SCRIPT = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}]/u
 
 /** `%`-wrapped LIKE pattern matching `token` as a literal substring. */
@@ -130,9 +143,9 @@ export interface LaneResult {
 
 export interface RetrievalLane {
   /** FTS5 BM25 hits over the scope (score normalized into [0, 1)). */
-  lexical(query: string, baseIds: readonly string[], limit: number): Promise<LaneResult>
+  lexical(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[]): Promise<LaneResult>
   /** Brute-force cosine hits over the scope's stored vectors. */
-  vector(embedding: readonly number[], baseIds: readonly string[], limit: number): Promise<LaneResult>
+  vector(embedding: readonly number[], baseIds: readonly string[], limit: number, docIds?: readonly string[]): Promise<LaneResult>
 }
 
 /** The chunk store: bounded SQL reads, single-transaction writes. */
@@ -450,23 +463,25 @@ export class ChunkDatabase implements RetrievalLane {
 
   // ── retrieval lanes ────────────────────────────────────────────────────────
 
-  async lexical(query: string, baseIds: readonly string[], limit: number): Promise<LaneResult> {
+  async lexical(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[]): Promise<LaneResult> {
     const scope = [...baseIds]
     if (scope.length === 0) return { total: 0, hits: [] }
+    const docFilter = docFilterSql(docIds, 'c.doc_id')
     const placeholders = scope.map(() => '?').join(',')
-    const total = (this.db.prepare(`SELECT COUNT(*) AS c FROM chunk WHERE base_id IN (${placeholders})`).get(...scope) as { c: number }).c
+    const scopeSql = `c.base_id IN (${placeholders})${docFilter?.sql ?? ''}`
+    const params: Array<string | number> = [...scope, ...(docFilter?.params ?? [])]
+    const total = (this.db.prepare(`SELECT COUNT(*) AS c FROM chunk c WHERE ${scopeSql}`).get(...params) as { c: number }).c
     if (total === 0) return { total: 0, hits: [] }
 
     const shortTerms = extractShortTerms(query)
     const likeFilters = shortTerms.map(() => `(c.search_text LIKE ? ESCAPE '\\')`).join(' AND ')
-    const params: Array<string | number> = [...scope]
     if (needsLikeFallback(query)) {
       // Nothing trigram-indexable (e.g. a bare two-character CJK term): a pure
       // LIKE scan — bm25() has no MATCH context here, so no FTS join at all.
       const pattern = toLikePattern(query.trim())
       const sql = `
         SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk c
-        WHERE c.base_id IN (${placeholders}) AND (c.search_text LIKE ? ESCAPE '\\' OR c.context LIKE ? ESCAPE '\\')
+        WHERE ${scopeSql} AND (c.search_text LIKE ? ESCAPE '\\' OR c.context LIKE ? ESCAPE '\\')
         ORDER BY c.rowid
         LIMIT ?
       `
@@ -478,7 +493,7 @@ export class ChunkDatabase implements RetrievalLane {
     const sql = `
       SELECT ${ChunkDatabase.SELECT_COLUMNS}, bm25(chunk_fts) AS fts_score
       FROM chunk_fts JOIN chunk c ON c.rowid = chunk_fts.rowid
-      WHERE c.base_id IN (${placeholders}) AND chunk_fts MATCH ?
+      WHERE ${scopeSql} AND chunk_fts MATCH ?
       ${likeFilters !== '' ? `AND ${likeFilters}` : ''}
       ORDER BY fts_score ASC
       LIMIT ?
@@ -491,13 +506,16 @@ export class ChunkDatabase implements RetrievalLane {
     return { total, hits }
   }
 
-  async vector(embedding: readonly number[], baseIds: readonly string[], limit: number): Promise<LaneResult> {
+  async vector(embedding: readonly number[], baseIds: readonly string[], limit: number, docIds?: readonly string[]): Promise<LaneResult> {
     const scope = [...baseIds]
     if (scope.length === 0) return { total: 0, hits: [] }
+    const docFilter = docFilterSql(docIds, 'doc_id')
     const placeholders = scope.map(() => '?').join(',')
+    const scopeSql = `base_id IN (${placeholders})${docFilter?.sql ?? ''}`
+    const params: Array<string | number> = [...scope, ...(docFilter?.params ?? [])]
     const rows = this.db.prepare(
-      `SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk WHERE base_id IN (${placeholders}) AND embedding IS NOT NULL`,
-    ).all(...scope) as unknown as ChunkRow[]
+      `SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk WHERE ${scopeSql} AND embedding IS NOT NULL`,
+    ).all(...params) as unknown as ChunkRow[]
     const scored: LaneHit[] = []
     for (const row of rows) {
       const vector = decodeEmbedding(row.embedding)

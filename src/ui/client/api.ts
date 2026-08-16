@@ -389,7 +389,20 @@ export class KnowledgeApi {
     return this.call('GET', `/documents/${encodeURIComponent(documentId)}/chunks${query}`)
   }
 
-  search(request: { query: string; baseId?: string; topK?: number; mode?: SearchMode; threshold?: number }): Promise<SearchResult> {
+  search(request: {
+    query: string
+    baseId?: string
+    topK?: number
+    mode?: SearchMode
+    threshold?: number
+    filter?: {
+      docIds?: string[]
+      titleIncludes?: string
+      sourceTypes?: string[]
+      updatedAfter?: number
+      updatedBefore?: number
+    }
+  }): Promise<SearchResult> {
     return this.call('POST', '/search', request)
   }
 }

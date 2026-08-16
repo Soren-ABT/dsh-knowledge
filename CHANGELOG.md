@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.7 — Metadata-filtered search
+
+Search can now be narrowed to a document subset by metadata — a capability
+neither Cherry Studio's search nor the reference implementation offers
+(Cherry's `metadata` is output-only; its search is scoped by base alone).
+
+- **`filter` on search requests**: `docIds`, `titleIncludes` (case-insensitive
+  substring), `sourceTypes` (file / text / url / directory), and
+  `updatedAfter` / `updatedBefore` (epoch ms) — all optional, ANDed.
+- **Resolved once into a doc-id allow-list** shared by both retrieval paths:
+  the SQL lanes push `doc_id IN (...)` into the FTS5 / vector queries (bounded
+  to SQLite's parameter limit), and the in-memory fallback filters candidates.
+  A filter that matches nothing returns zero hits.
+- **Exposed** in the `knowledge_search` tool parameters (`docIds`,
+  `titleIncludes`, `sourceTypes`, `updatedAfter`, `updatedBefore`), the HTTP
+  `/search` route, and the browser panel types.
+- Retrieval ranking is untouched; eval baselines are identical.
+
 ## 0.2.6 — Directory subtree operations (Cherry's outermost-root folding)
 
 Batch operations now understand the directory tree. `deleteDocuments` and

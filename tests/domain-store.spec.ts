@@ -411,6 +411,36 @@ describe('ChunkDatabase (per-chunk SQL layout)', () => {
     }
   })
 
+  it('narrows both lanes to a document subset (metadata filter)', async () => {
+    const dir = await tempDir()
+    try {
+      const db = new ChunkDatabase(join(dir, 'chunks.sqlite'))
+      const embedded = (id: string, docId: string, text: string, vector: number[]): KnowledgeChunk => ({
+        ...chunk(id, docId, 'b1', 0, text),
+        embedding: vector,
+        embeddingModel: 'm1',
+      })
+      db.putChunks([
+        embedded('c1', 'd1', 'alpha queuing theory text', [1, 0, 0]),
+        embedded('c2', 'd2', 'beta queuing theory text', [0.9, 0.1, 0]),
+        embedded('c3', 'd3', 'gamma queuing theory text', [0.8, 0.2, 0]),
+      ])
+      // Lexical lane with docIds: only d2's chunk is visible.
+      const lex = await db.lexical('queuing', ['b1'], 10, ['d2'])
+      expect(lex.total).toBe(1)
+      expect(lex.hits[0].id).toBe('c2')
+      // Vector lane with docIds: only d1 + d3 are scanned.
+      const vec = await db.vector([1, 0, 0], ['b1'], 10, ['d1', 'd3'])
+      expect(vec.hits.map(h => h.id)).toEqual(['c1', 'c3'])
+      // No docIds = unrestricted (existing behavior).
+      const all = await db.lexical('queuing', ['b1'], 10)
+      expect(all.total).toBe(3)
+      db.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('reports interrupted documents for resume instead of dropping them', async () => {
     const dir = await tempDir()
     try {

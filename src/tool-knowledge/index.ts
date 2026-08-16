@@ -38,6 +38,11 @@ export function apply(ctx: Context): void {
       baseId: { type: 'string', description: 'Optional knowledge base id to restrict the search to.' },
       topK: { type: 'number', description: 'Optional number of results (default from config).' },
       mode: { type: 'string', description: 'Optional search mode: auto, hybrid, vector, or lexical.' },
+      docIds: { type: 'array', items: { type: 'string' }, description: 'Optional document ids to restrict the search to.' },
+      titleIncludes: { type: 'string', description: 'Optional case-insensitive substring filter on the document title (e.g. "排队论").' },
+      sourceTypes: { type: 'array', items: { type: 'string' }, description: 'Optional source types to restrict to: file, text, url, directory.' },
+      updatedAfter: { type: 'number', description: 'Optional epoch-ms lower bound on the document update time.' },
+      updatedBefore: { type: 'number', description: 'Optional epoch-ms upper bound on the document update time.' },
     },
     output: {
       schema: {
@@ -88,12 +93,19 @@ export function apply(ctx: Context): void {
       if (args.baseId !== undefined && scope !== undefined && !scope.includes(args.baseId)) {
         throw new Error(`knowledge base "${args.baseId}" is not enabled; enabled bases: ${scope.join(', ') || '(none)'}`)
       }
+      const filter: Record<string, unknown> = {}
+      if (args.docIds !== undefined && args.docIds.length > 0) filter.docIds = args.docIds
+      if (args.titleIncludes !== undefined && args.titleIncludes.trim() !== '') filter.titleIncludes = args.titleIncludes
+      if (args.sourceTypes !== undefined && args.sourceTypes.length > 0) filter.sourceTypes = args.sourceTypes
+      if (args.updatedAfter !== undefined) filter.updatedAfter = args.updatedAfter
+      if (args.updatedBefore !== undefined) filter.updatedBefore = args.updatedBefore
       return knowledge.search({
         query: args.query,
         ...(args.baseId !== undefined ? { baseId: args.baseId } : {}),
         ...(args.baseId === undefined && scope !== undefined ? { baseIds: scope } : {}),
         ...(args.topK !== undefined ? { topK: args.topK } : {}),
         ...(args.mode !== undefined ? { mode: args.mode as SearchResult['mode'] } : {}),
+        ...(Object.keys(filter).length > 0 ? { filter } : {}),
       })
     },
   }))

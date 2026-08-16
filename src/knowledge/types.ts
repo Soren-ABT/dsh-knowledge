@@ -288,6 +288,20 @@ export interface ImportUrlRequest {
   readonly title?: string
 }
 
+/** Metadata filters narrowing a search to a subset of documents (all optional, ANDed). */
+export interface SearchFilter {
+  /** Restrict to these document ids. */
+  readonly docIds?: readonly string[]
+  /** Case-insensitive substring match on the document title. */
+  readonly titleIncludes?: string
+  /** Restrict to these source types (file / text / url / directory). */
+  readonly sourceTypes?: readonly DocumentSourceType[]
+  /** Only documents updated at or after this epoch millisecond. */
+  readonly updatedAfter?: number
+  /** Only documents updated at or before this epoch millisecond. */
+  readonly updatedBefore?: number
+}
+
 /** Payload for a search. */
 export interface SearchRequest {
   readonly query: string
@@ -298,6 +312,8 @@ export interface SearchRequest {
   readonly mode?: SearchMode
   readonly threshold?: number
   readonly mmr?: boolean
+  /** Metadata filters narrowing the search to a subset of documents. */
+  readonly filter?: SearchFilter
 }
 
 /** Result of a search. */

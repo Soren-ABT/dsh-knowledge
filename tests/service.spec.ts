@@ -229,6 +229,31 @@ describe('KnowledgeService', () => {
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0)
   })
 
+  it('narrows search by document metadata filters', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'filters' })
+    const a = await service.addTextDocument({ baseId: base.id, title: '排队论讲义', content: '排队论的队长和等待时间分析' })
+    const b = await service.addTextDocument({ baseId: base.id, title: '蒙特卡洛笔记', content: '排队论的随机模拟方法' })
+    const c = await service.addTextDocument({ baseId: base.id, title: '英语词汇', content: 'vocabulary for queuing theory' })
+
+    // titleIncludes narrows to one document.
+    const byTitle = await service.search({ query: '排队论', baseId: base.id, filter: { titleIncludes: '蒙特卡洛' } })
+    expect(byTitle.hits.length).toBeGreaterThan(0)
+    expect(byTitle.hits.every(hit => hit.docId === b.id)).toBe(true)
+
+    // docIds restrict to the explicit set.
+    const byIds = await service.search({ query: '排队论', baseId: base.id, filter: { docIds: [a.id, c.id] } })
+    expect(byIds.hits.every(hit => hit.docId === a.id || hit.docId === c.id)).toBe(true)
+
+    // sourceTypes: 'text' matches all three; a nonexistent type matches none.
+    const byType = await service.search({ query: '排队论', baseId: base.id, filter: { sourceTypes: ['file'] } })
+    expect(byType.hits).toHaveLength(0)
+
+    // updatedAfter excludes everything when the documents are old.
+    const byTime = await service.search({ query: '排队论', baseId: base.id, filter: { updatedAfter: Date.now() + 1000 } })
+    expect(byTime.hits).toHaveLength(0)
+  })
+
   it('replaces a same-name file entry when conflict is replace', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'conflict' })

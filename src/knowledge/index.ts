@@ -901,6 +901,42 @@ export class KnowledgeService extends Service {
   }
 
   /**
+   * Resolve the request's metadata filter into a document-id allow-list, or
+   * `undefined` when no filter is present (unrestricted search). A filter that
+   * matches nothing yields an empty set, so the caller returns no hits.
+   */
+  private resolveSearchFilter(request: SearchRequest): Set<string> | undefined {
+    const filter = request.filter
+    if (filter === undefined) return undefined
+    const { docIds, titleIncludes, sourceTypes, updatedAfter, updatedBefore } = filter
+    const hasDocIds = docIds !== undefined && docIds.length > 0
+    const hasTitle = titleIncludes !== undefined && titleIncludes.trim().length > 0
+    const hasTypes = sourceTypes !== undefined && sourceTypes.length > 0
+    const hasTime = updatedAfter !== undefined || updatedBefore !== undefined
+    if (!hasDocIds && !hasTitle && !hasTypes && !hasTime) return undefined
+
+    const store = this.requireStore()
+    const scope = request.baseId !== undefined
+      ? [request.baseId]
+      : request.baseIds !== undefined && request.baseIds.length > 0
+        ? [...request.baseIds]
+        : store.listBases().map(base => base.id)
+    const title = hasTitle ? filter!.titleIncludes!.trim().toLowerCase() : undefined
+    const allowed = new Set<string>()
+    for (const baseId of scope) {
+      for (const doc of store.listDocuments(baseId)) {
+        if (hasDocIds && !docIds!.includes(doc.id)) continue
+        if (title !== undefined && !doc.title.toLowerCase().includes(title)) continue
+        if (hasTypes && !sourceTypes!.includes(doc.sourceType)) continue
+        if (updatedAfter !== undefined && (doc.updatedAt ?? doc.createdAt) < updatedAfter) continue
+        if (updatedBefore !== undefined && (doc.updatedAt ?? doc.createdAt) > updatedBefore) continue
+        allowed.add(doc.id)
+      }
+    }
+    return allowed
+  }
+
+  /**
    * Fold a set of selected document ids to its outermost roots (Cherry's
    * `getOutermostSelectedItemIds`): ids that are descendants of another
    * selected id are dropped, so a directory plus one of its children in the
@@ -1206,6 +1242,10 @@ export class KnowledgeService extends Service {
     const topK = clampInt(request.topK ?? config.topK, 1, 50, 6)
     const threshold = request.threshold ?? config.similarityThreshold
 
+    // Metadata filters narrow the search to a subset of documents. Resolved
+    // once here into a docId allow-list shared by both retrieval paths.
+    const filterDocIds = this.resolveSearchFilter(request)
+
     const lane = store.retrievalLane
     if (lane !== undefined) {
       const scope = request.baseId !== undefined
@@ -1242,11 +1282,12 @@ export class KnowledgeService extends Service {
       }
 
       const useVector = queryVector !== undefined && requestedMode !== 'lexical'
+      const filterList = filterDocIds !== undefined ? [...filterDocIds] : undefined
       let ranked: RankedHit[] = []
       const byId = new Map<string, KnowledgeChunk>()
       let total = 0
       if (useVector) {
-        const vec = await lane.vector(queryVector!, scope, poolSize)
+        const vec = await lane.vector(queryVector!, scope, poolSize, filterList)
         total = Math.max(total, vec.total)
         for (const hit of vec.hits) byId.set(hit.id, hit)
         if (requestedMode === 'vector') {
@@ -1254,7 +1295,7 @@ export class KnowledgeService extends Service {
         } else {
           // Hybrid/auto: fuse both lanes with Reciprocal Rank Fusion; the
           // vector lane carries the configured relative weight.
-          const lex = await lane.lexical(query, scope, poolSize)
+          const lex = await lane.lexical(query, scope, poolSize, filterList)
           total = Math.max(total, lex.total)
           for (const hit of lex.hits) if (!byId.has(hit.id)) byId.set(hit.id, hit)
           const vectorOrder = vec.hits.map(hit => hit.id)
@@ -1272,7 +1313,7 @@ export class KnowledgeService extends Service {
           }))
         }
       } else {
-        const lex = await lane.lexical(query, scope, poolSize)
+        const lex = await lane.lexical(query, scope, poolSize, filterList)
         total = lex.total
         for (const hit of lex.hits) byId.set(hit.id, hit)
         ranked = lex.hits.map(hit => ({ id: hit.id, score: hit.score, lexicalScore: hit.score }))
@@ -1287,11 +1328,12 @@ export class KnowledgeService extends Service {
       return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, total, startedAt)
     }
 
-    const chunks = request.baseId !== undefined
+    const chunks = (request.baseId !== undefined
       ? store.listChunks(request.baseId)
       : request.baseIds !== undefined && request.baseIds.length > 0
         ? request.baseIds.flatMap(id => store.listChunks(id))
-        : store.listBases().flatMap(base => store.listChunks(base.id))
+        : store.listBases().flatMap(base => store.listChunks(base.id)))
+      .filter(chunk => filterDocIds === undefined || filterDocIds.has(chunk.docId))
     if (chunks.length === 0) return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] }
 
     const byId = new Map(chunks.map(chunk => [chunk.id, chunk]))
