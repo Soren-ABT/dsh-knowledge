@@ -1,0 +1,18 @@
+{
+  "topK": 5,
+  "_comment": "Copy this file to scripts/eval-questions.json and replace with real questions. expect entries are document-title substrings (e.g. '排队论' matches 排队论.pdf).",
+  "questions": [
+    {
+      "query": "偏微分方程的数值解法有哪些",
+      "expect": ["偏微分方程的数值解"]
+    },
+    {
+      "query": "作业车间调度问题的定义",
+      "expect": ["作业计划"]
+    },
+    {
+      "query": "排队论的基本概念",
+      "expect": ["排队论"]
+    }
+  ]
+}
