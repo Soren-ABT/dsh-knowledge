@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.8 — Multi-model local embedding registry
+
+The Settings → Local Models page now offers five download-ready in-process
+models instead of one, and each model gets the pooling strategy its family
+requires — Cherry Studio's `pooling.ts` posture, previously hardcoded to
+Qwen3's last-token pooling.
+
+- **Registry**: `onnx-community/Qwen3-Embedding-0.6B-ONNX` (1024-dim, zh,
+  last-token), `Xenova/bge-small-zh-v1.5` (512-dim, zh, CLS),
+  `Xenova/bge-small-en-v1.5` (384-dim, en, CLS), `Xenova/gte-small` (384-dim,
+  multilingual, mean), `Xenova/multilingual-e5-small` (384-dim, multilingual,
+  mean). Every entry is a real, downloadable transformers.js ONNX repo.
+- **Per-family pooling** (`poolingFor`): Qwen3 → last-token, BGE/BCE → CLS,
+  GTE/E5/unknown → mean — a BGE model previously produced wrong vectors under
+  the hardcoded last-token pooling.
+- **Suggestions synced**: the settings combobox's local list mirrors the
+  registry exactly, so every suggestion is actually downloadable.
+- The default model and its pooling are unchanged, so existing embeddings and
+  eval baselines are identical.
+
 ## 0.2.7 — Metadata-filtered search
 
 Search can now be narrowed to a document subset by metadata — a capability

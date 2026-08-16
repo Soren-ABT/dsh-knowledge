@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { resolveConfig } from '../src/knowledge/config.js'
 import type { Config } from '../src/knowledge/config.js'
+import { LOCAL_MODELS } from '../src/knowledge/localModels.js'
+import { poolingFor } from '../src/knowledge/embed.js'
+import { MODEL_SUGGESTIONS } from '../src/knowledge/index.js'
 
 const base: Config = {
   embeddingProvider: 'none',
@@ -31,7 +34,6 @@ describe('resolveConfig', () => {
     const { localModelCacheDir: _deploymentOnly, chunkStorePath: _chunkStorePath, ...expected } = base
     expect(resolveConfig(base, {})).toEqual(expected)
   })
-
   it('applies runtime overrides', () => {
     const resolved = resolveConfig(base, { embeddingProvider: 'openai', chunkSize: 1000, searchMode: 'hybrid', rerankModel: 'jina-reranker-v2-base-multilingual' })
     expect(resolved.embeddingProvider).toBe('openai')
@@ -44,5 +46,31 @@ describe('resolveConfig', () => {
     expect(resolveConfig(base, { chunkSize: 1 }).chunkSize).toBe(64)
     expect(resolveConfig(base, { topK: 10000 }).topK).toBe(50)
     expect(resolveConfig(base, { mmrDiversity: 5 }).mmrDiversity).toBe(1)
+  })
+})
+
+describe('local model registry', () => {
+  it('ships real, download-ready ONNX models with dimensions', () => {
+    // Every registry entry is a transformers.js-compatible ONNX repo; the
+    // settings suggestions mirror the registry exactly.
+    expect(LOCAL_MODELS.length).toBeGreaterThanOrEqual(3)
+    for (const model of LOCAL_MODELS) {
+      expect(model.id.length).toBeGreaterThan(0)
+      expect(model.dimensions).toBeGreaterThan(0)
+      expect(model.maxTokens).toBeGreaterThan(0)
+    }
+    expect(MODEL_SUGGESTIONS.local).toEqual(LOCAL_MODELS.map(model => model.id))
+    // The default local model stays the flagship Chinese-capable one.
+    expect(LOCAL_MODELS[0].id).toBe('onnx-community/Qwen3-Embedding-0.6B-ONNX')
+  })
+
+  it('picks the pooling strategy per model family (Cherry pooling.ts)', () => {
+    expect(poolingFor('onnx-community/Qwen3-Embedding-0.6B-ONNX')).toBe('last_token')
+    expect(poolingFor('Xenova/bge-small-zh-v1.5')).toBe('cls')
+    expect(poolingFor('Xenova/bge-small-en-v1.5')).toBe('cls')
+    expect(poolingFor('Xenova/gte-small')).toBe('mean')
+    expect(poolingFor('Xenova/multilingual-e5-small')).toBe('mean')
+    // Unknown ids fall back to the safest general choice.
+    expect(poolingFor('some/unknown-model')).toBe('mean')
   })
 })

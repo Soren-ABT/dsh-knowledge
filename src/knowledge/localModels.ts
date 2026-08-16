@@ -11,6 +11,10 @@ export interface LocalModelDescriptor {
   readonly name: string
   readonly kind: 'embedding'
   readonly subtitle: string
+  /** Embedding width the model produces (for the UI and dimension checks). */
+  readonly dimensions: number
+  /** Practical max input length in tokens (model context window). */
+  readonly maxTokens: number
 }
 
 export interface LocalModelSummary extends LocalModelDescriptor {
@@ -19,13 +23,51 @@ export interface LocalModelSummary extends LocalModelDescriptor {
   readonly message: string
 }
 
-/** The shipped in-process models (same ONNX repo Cherry Studio ships). */
+/**
+ * The shipped in-process models (transformers.js ONNX). All are real,
+ * downloadable ONNX repos; a model's pooling strategy lives in embed.ts
+ * (`poolingFor`), keyed by the same ids.
+ */
 export const LOCAL_MODELS: readonly LocalModelDescriptor[] = [
   {
     id: 'onnx-community/Qwen3-Embedding-0.6B-ONNX',
     name: 'Qwen3 Embedding 0.6B',
     kind: 'embedding',
-    subtitle: '1024 维 · 约 0.6B · 进程内推理（transformers.js）',
+    subtitle: '1024 维 · 中文强 · last-token 池化',
+    dimensions: 1024,
+    maxTokens: 32768,
+  },
+  {
+    id: 'Xenova/bge-small-zh-v1.5',
+    name: 'BGE Small zh v1.5',
+    kind: 'embedding',
+    subtitle: '512 维 · 中文检索 · CLS 池化',
+    dimensions: 512,
+    maxTokens: 512,
+  },
+  {
+    id: 'Xenova/bge-small-en-v1.5',
+    name: 'BGE Small en v1.5',
+    kind: 'embedding',
+    subtitle: '384 维 · 英文检索 · CLS 池化',
+    dimensions: 384,
+    maxTokens: 512,
+  },
+  {
+    id: 'Xenova/gte-small',
+    name: 'GTE Small',
+    kind: 'embedding',
+    subtitle: '384 维 · 多语言 · mean 池化',
+    dimensions: 384,
+    maxTokens: 512,
+  },
+  {
+    id: 'Xenova/multilingual-e5-small',
+    name: 'Multilingual E5 Small',
+    kind: 'embedding',
+    subtitle: '384 维 · 多语言 · CLS 池化',
+    dimensions: 384,
+    maxTokens: 512,
   },
 ]
 

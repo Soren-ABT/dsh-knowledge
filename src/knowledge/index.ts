@@ -16,7 +16,7 @@ import { Config, resolveConfig, resolveConfigFor } from './config.js'
 import type { ConfigOverrides } from './domain.js'
 import { DEFAULT_LOCAL_MODEL, embedTexts, getLocalModelStatus, setHfEndpoint, setLocalModelCacheDir } from './embed.js'
 import type { LocalModelStatus } from './embed.js'
-import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, listLocalModels } from './localModels.js'
+import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, listLocalModels, LOCAL_MODELS } from './localModels.js'
 import type { LocalModelSummary } from './localModels.js'
 import { httpFetch } from './net.js'
 import { knowledgeRoute } from './http.js'
@@ -77,12 +77,9 @@ export const MODEL_SUGGESTIONS = {
     'mxbai-embed-large',
     'snowflake-arctic-embed2',
   ],
-  local: [
-    'onnx-community/Qwen3-Embedding-0.6B-ONNX',
-    'BAAI/bge-m3',
-    'BAAI/bge-small-zh-v1.5',
-    'thenlper/gte-small',
-  ],
+  // Local models mirror the shipped registry (localModels.ts) — every entry is
+  // a real, downloadable transformers.js ONNX repo with a known pooling rule.
+  local: LOCAL_MODELS.map(model => model.id),
   rerank: [
     'jina-reranker-v2-base-multilingual',
     'BAAI/bge-reranker-v2-m3',

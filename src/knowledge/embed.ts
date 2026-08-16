@@ -146,6 +146,23 @@ export async function isLocalModelDownloaded(modelId: string): Promise<boolean> 
 
 type LocalExtractor = (texts: string[]) => Promise<number[][]>
 
+/**
+ * Per-model pooling strategy, mirroring Cherry Studio's `pooling.ts`: the
+ * model family decides how the token embeddings are collapsed into one vector.
+ * - Qwen3-Embedding → last-token pooling
+ * - BGE (small/base, zh/en) → CLS token pooling
+ * - GTE / E5 → mean pooling (transformers.js default)
+ * Unknown ids fall back to mean pooling, which is the safest general choice.
+ */
+export function poolingFor(modelId: string): 'last_token' | 'cls' | 'mean' {
+  const id = modelId.toLowerCase()
+  if (id.includes('qwen3')) return 'last_token'
+  if (id.includes('bge') || id.includes('bce')) return 'cls'
+  if (id.includes('e5')) return 'mean'
+  if (id.includes('gte')) return 'mean'
+  return 'mean'
+}
+
 async function embedLocal(modelId: string, texts: readonly string[]): Promise<number[][]> {
   const extractor = await getLocalExtractor(modelId)
   return extractor([...texts])
@@ -211,10 +228,11 @@ async function createLocalExtractor(modelId: string): Promise<LocalExtractor> {
   localModelStatus.set(modelId, { model: modelId, status: 'ready', progress: 100, message: '' })
   const pipeline = await transformers.pipeline('feature-extraction', join(localModelCacheDir(), modelId), { dtype: 'q8' })
   return async (texts: string[]): Promise<number[][]> => {
-    // Qwen3-Embedding expects last-token pooling; transformers.js does the
-    // slice + L2-normalize in one step (matches Cherry Studio's pooling.ts).
-    // One batched forward pass: the pipeline returns a [batch, dim] Tensor.
-    const output = await pipeline(texts, { pooling: 'last_token', normalize: true })
+    // Pooling depends on the model family (see poolingFor) — Qwen3 takes the
+    // last token, BGE takes the CLS token, GTE/E5 take the mean. transformers.js
+    // slices + L2-normalizes in one step (matches Cherry Studio's pooling.ts).
+    const pooling = poolingFor(modelId)
+    const output = await pipeline(texts, { pooling, normalize: true })
     return output.tolist() as number[][]
   }
 }
