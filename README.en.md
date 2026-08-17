@@ -19,7 +19,7 @@ A **knowledge base system** as a standalone, open-source bundle plugin for [Deep
 
 ---
 
-## ✨ Features
+## Features
 
 - **Bases, groups & documents**: create/delete/rename bases, documents and **groups** (grouped sidebar navigation with collapsible sections, move-to-group, create/rename/delete group); add text, upload files (txt / md / csv / html / json / pdf / docx / **doc / pptx / ppt / xlsx / xls** / epub, drag-and-drop), import a URL or a whole **directory** (imported as a drillable folder tree); same-name **conflict resolution** (keep all / replace); content-hash dedup; chunk and raw-text preview; per-document **✓ ready badge, live import status**, and relative updated time. Imports run in the background — each file row appears the moment parsing starts, folders show importing while any descendant is processing, and errors surface as toasts.
 - **Per-base configuration**: each base can pick its own embedding provider/model (including the **local model**), **rerank model**, chunk size, and Top K — unset fields inherit the global config; reindex one document or the whole base after a config change.
@@ -33,7 +33,7 @@ A **knowledge base system** as a standalone, open-source bundle plugin for [Deep
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 One bundle mounts three plugin rows:
 
@@ -47,7 +47,7 @@ Data model: business state lives in the storage domain `knowledge` (version 0) �
 
 ---
 
-## 📦 Install
+## Install
 
 The package declares `dsh.bundle.patch`, so `dsh plugin add` registers it automatically:
 
@@ -74,7 +74,7 @@ Restart the web service for the host half and refresh the page for the client pa
 
 ---
 
-## 🖥️ Compatibility
+## Compatibility
 
 - **DSH version**: developed and verified against [deepseek-harness](https://github.com/deepseek-ai/DeepSeek-Harness) commit `47f943859b` (public npm-plugin-ecosystem era, 2026-08). Peer dependencies are declared as `*` (DSH's convention), so a newer DSH source checkout installs without resolution errors; if a newer DSH release breaks something, report an issue with the DSH commit you run.
 - **Node.js**: `^22.19.0 || >=24.0.0` (the same floor DSH itself requires — the chunk store uses Node's built-in `node:sqlite`, which DSH's own session storage also uses).
@@ -83,7 +83,7 @@ Restart the web service for the host half and refresh the page for the client pa
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Deployment defaults live in the `knowledge` row of `cordis.patch.yml`; the panel's Settings can override them at runtime (persisted in the storage domain):
 
@@ -110,13 +110,13 @@ Chunk data is stored in a dedicated SQLite file rather than the domain KV store:
 
 > Every field can be overridden per base in the panel's Settings view (empty = inherit global); API keys are stored in plain text on the local machine.
 
-### 🔌 Local (in-process) embeddings
+### Local (in-process) embeddings
 
 With `embeddingProvider: local`, the host runs embeddings in-process via `@huggingface/transformers` (+ onnxruntime) — no external service needed. The default model is `onnx-community/Qwen3-Embedding-0.6B-ONNX` (1024 dims); set `embeddingModel` to any ONNX embedding repo id on Hugging Face. The first use downloads the weights from the Hub (cached under `$DSH_HOME/cache/dsh-knowledge/local-models`); later imports and searches run fully locally. Download / cancel / remove / retry in Settings → "Local Models", which shows live progress; `HF_ENDPOINT` can point at a mirror to speed up the download.
 
 ---
 
-## 📊 Retrieval quality (measured)
+## Retrieval quality (measured)
 
 A reproducible benchmark ships in `scripts/` — real mathematical-modeling questions over the imported corpus, scored by Hit@k / Recall@k / MRR:
 
@@ -133,7 +133,7 @@ node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId
 
 ---
 
-## 🚀 Usage
+## Usage
 
 1. Click the **sidebar-foot "Knowledge" button** (beside Settings) to open the full-page panel — not inside Settings.
 2. Click "New base", then paste text, drag-and-drop txt/md/pdf/docx files, or import a URL.
@@ -142,7 +142,7 @@ node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId
 
 ---
 
-## 🛠️ Development
+## Development
 
 Depends on the public DeepSeek Harness monorepo as a sibling checkout (`devDependencies` use `link:../dsh/...`):
 
@@ -152,7 +152,7 @@ pnpm run check    # typecheck + test + build
 pnpm run build    # esbuild → lib/ (host entries + factory-form client bundle)
 ```
 
-## ✅ Verification
+## Verification
 
 - `pnpm test` — unit tests for chunking, retrieval, config, storage, and service level.
 - `pnpm run typecheck` — `tsc --noEmit`.
@@ -160,7 +160,7 @@ pnpm run build    # esbuild → lib/ (host entries + factory-form client bundle)
 
 ---
 
-## ⚠️ Known limitations
+## Known limitations
 
 - **Model pickers are suggestion comboboxes, not live provider lists**: DSH's `ctx.llm` only surfaces chat models (`listModels` carries no embedding-modality tag, and this plugin's embedding endpoint/model are configured independently). The settings panel therefore uses native datalist comboboxes (embedding / local / rerank suggestions) with free-text fallback for custom ids.
 - **Embedding is synchronous within an import**: parsing and chunking show live per-file status, but embedding runs inline in the host process (batched) rather than on a worker queue; the local model's first download also blocks until cached (the settings panel shows live progress).
@@ -168,6 +168,6 @@ pnpm run build    # esbuild → lib/ (host entries + factory-form client bundle)
 
 ---
 
-## 📄 License
+## License
 
 [MIT](LICENSE). Special thanks to [Cherry Studio](https://github.com/CherryHQ/cherry-studio): this project's UI and feature design draws its inspiration from Cherry Studio (AGPL-3.0), while the code is an independent implementation that contains none of its source. Also thanks to [dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness), [dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor), and [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin).
