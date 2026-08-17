@@ -1,6 +1,6 @@
 <div align="center">
 
-# 📚 dsh-knowledge
+# dsh-knowledge
 
 **A knowledge base plugin for DSH**
 
