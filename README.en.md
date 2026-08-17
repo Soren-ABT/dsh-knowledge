@@ -1,20 +1,39 @@
-# dsh-knowledge
-[**English**](./README.en.md) / [**中文**](./README.md)
+<div align="center">
+
+# 📚 dsh-knowledge
+
+**A knowledge base plugin for DSH**
+
+[**English**](./README.en.md) · [**中文**](./README.md)
+
+[![npm version](https://img.shields.io/npm/v/dsh-knowledge?color=cb3837&logo=npm)](https://www.npmjs.com/package/dsh-knowledge)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-knowledge?color=cb3837&logo=npm)](https://www.npmjs.com/package/dsh-knowledge)
+[![Node.js >= 22](https://img.shields.io/badge/node.js-%3E%3D22-brightgreen?logo=nodedotjs)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-node%3Asqlite-%23003B57?logo=sqlite)](https://www.sqlite.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 A **knowledge base system** as a standalone, open-source bundle plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH): bases (with **groups**) and documents, text chunking, embeddings (OpenAI-compatible / Ollama / **local model** / lexical fallback), retrieval, model-facing tools, and a browser management panel.
 
-## Features
+</div>
 
-- **Bases, groups & documents**: create/delete/rename bases, documents and **groups** (grouped sidebar navigation with collapsible sections, move-to-group, create/rename/delete group); add text, upload files (txt / md / csv / html / json / pdf / docx / **doc / pptx / ppt / xlsx / xls** / epub, drag-and-drop), import a URL or a whole **directory** (imported as a drillable folder tree); same-name **conflict resolution** (keep all / replace); content-hash dedup; chunk and raw-text preview; per-document **✓ ready badge, live import status (解析中 / 嵌入中 NN%)**, and relative updated time. Imports run in the background — each file row appears the moment parsing starts, folders show 导入中 while any descendant is processing, and errors surface as toasts.
+---
+
+## ✨ Features
+
+- **Bases, groups & documents**: create/delete/rename bases, documents and **groups** (grouped sidebar navigation with collapsible sections, move-to-group, create/rename/delete group); add text, upload files (txt / md / csv / html / json / pdf / docx / **doc / pptx / ppt / xlsx / xls** / epub, drag-and-drop), import a URL or a whole **directory** (imported as a drillable folder tree); same-name **conflict resolution** (keep all / replace); content-hash dedup; chunk and raw-text preview; per-document **✓ ready badge, live import status**, and relative updated time. Imports run in the background — each file row appears the moment parsing starts, folders show importing while any descendant is processing, and errors surface as toasts.
+- **Per-base configuration**: each base can pick its own embedding provider/model (including the **local model**), **rerank model**, chunk size, and Top K — unset fields inherit the global config; reindex one document or the whole base after a config change.
 - **Embeddings & retrieval**: pluggable providers — any OpenAI-compatible `/embeddings` endpoint, a local Ollama server, or an **in-process local model (transformers.js, default `onnx-community/Qwen3-Embedding-0.6B-ONNX`)** — with **hybrid retrieval** (BM25 + vector + Reciprocal Rank Fusion), **rerank** (Jina / SiliconFlow / Cohere v2 style APIs), **MMR diversity**, search modes (auto/hybrid/vector/lexical), and a score threshold. A lexical BM25 fallback (CJK bigram + latin word) keeps it working with zero configuration; the recall test shows per-hit scores, latency, and keeps a **replayable search history**.
 - **Smart chunking**: heading-aware chunking (preserves the Markdown heading path) with the document title + heading injected as retrieval context for better recall.
 - **Index management**: reindex on demand (re-chunk + re-embed after changing chunk size or the provider), batched embedding, and statistics (docs / chunks / chars / tokens / embedded).
 - **Model tools**: 12 tools — search, list/create/delete bases, add/list/delete documents, import URL, stats, get document, deep-read a document (paged text slices or regex grep), reindex.
-- **Management panel**: NOT in Settings — a sidebar-foot "Knowledge" action (beside Settings) opens a frame-wide Cherry Studio-style page: left grouped navigator with base cards, right content column with stat chips, an "updated at" header, add-source popover, a **table-style source list (checkbox + name/type/status/updated-at columns with multi-select bulk reindex/delete)**, per-base **设置** panel (document processing / embedding / rerank / Top K / advanced), recall test, and toasts.
+- **Management panel**: NOT in Settings — a sidebar-foot "Knowledge" action (beside Settings) opens a frame-wide Cherry Studio-style page: left grouped navigator with base cards, right content column with stat chips, an "updated at" header, add-source popover, a **table-style source list (checkbox + name/type/status/updated-at columns with multi-select bulk reindex/delete)**, per-base settings panel (document processing / embedding / rerank / Top K / advanced), recall test, and toasts.
 - **Local model manager (in Settings)**: a Settings → "Local Models" page (via the `settings.section` slot) with Cherry Studio-style cards: model name/subtitle, a ready badge, download / retry / remove actions, and a live download progress bar. Downloaded models are selectable as the embedding provider in a base's settings.
-- **Persistence**: business state (bases, documents, runtime config) is durable via DSH's `storageDomain` seam (the `json` backend shipped by the `web` profile); **chunks live in a dedicated SQLite file** (`<DSH_HOME>/storages/knowledge-chunks.sqlite`, configurable via `chunkStorePath`) so put/delete stay O(1) as data grows — one row per chunk, embeddings as float32 BLOBs. Lexical search runs an FTS5 trigram index and the vector lane scans stored vectors at query time (Cherry Studio's posture); nothing loads into memory at open, so resident memory does not scale with the corpus. One-time migrations on first start after upgrade convert the legacy JSON unit and the previous bundle layout. Falls back to in-memory when no storage backend is available.
+- **Persistence**: business state (bases, documents, runtime config) is durable via DSH's `storageDomain` seam (the `json` backend shipped by the `web` profile); **chunks live in a dedicated SQLite file** (`<DSH_HOME>/storages/knowledge-chunks.sqlite`, configurable via `chunkStorePath`) so put/delete stay O(1) as data grows — one row per chunk, embeddings as float32 BLOBs. Lexical search runs an FTS5 trigram index and the vector lane scans stored vectors at query time; nothing loads into memory at open, so resident memory does not scale with the corpus. One-time migrations on first start after upgrade convert the legacy JSON unit and the previous bundle layout. Falls back to in-memory when no storage backend is available.
 
-## Architecture
+---
+
+## 🏗️ Architecture
 
 One bundle mounts three plugin rows:
 
@@ -26,7 +45,9 @@ One bundle mounts three plugin rows:
 
 Data model: business state lives in the storage domain `knowledge` (version 0) — `bases` and `documents` tables plus a global slot for runtime config overrides; chunks (each may carry an `embedding` vector) live in the plugin-owned SQLite chunk store, one row per chunk.
 
-## Install
+---
+
+## 📦 Install
 
 The package declares `dsh.bundle.patch`, so `dsh plugin add` registers it automatically:
 
@@ -49,19 +70,20 @@ dsh plugin --profile <name> add ./dsh-knowledge-0.1.0.tgz
 
 Restart the web service for the host half and refresh the page for the client panel.
 
-> The plugin installs at the **profile level** (`dsh plugin` runs pnpm inside the
-> profile directory), so the same three commands work identically whether DSH
-> was installed from npm or run from a fresh source checkout — no plugin
-> source, checkout links, or DSH builds are involved.
+> The plugin installs at the **profile level** (`dsh plugin` runs pnpm inside the profile directory), so the same three commands work identically whether DSH was installed from npm or run from a fresh source checkout — no plugin source, checkout links, or DSH builds are involved.
 
-## Compatibility
+---
+
+## 🖥️ Compatibility
 
 - **DSH version**: developed and verified against [deepseek-harness](https://github.com/deepseek-ai/DeepSeek-Harness) commit `47f943859b` (public npm-plugin-ecosystem era, 2026-08). Peer dependencies are declared as `*` (DSH's convention), so a newer DSH source checkout installs without resolution errors; if a newer DSH release breaks something, report an issue with the DSH commit you run.
 - **Node.js**: `^22.19.0 || >=24.0.0` (the same floor DSH itself requires — the chunk store uses Node's built-in `node:sqlite`, which DSH's own session storage also uses).
 - **Platforms**: Windows / macOS / Linux x64+arm64. Legacy `.doc` / `.ppt` / `.xls` parsing uses `@firecrawl/anydoc` (per-platform native binaries); everything else is pure JS.
 - **First-run network**: enabling `embeddingProvider: local` downloads model weights from Hugging Face on first use (cache under `localModelCacheDir`); set `HF_ENDPOINT` to a mirror if needed.
 
-## Configuration
+---
+
+## ⚙️ Configuration
 
 Deployment defaults live in the `knowledge` row of `cordis.patch.yml`; the panel's Settings can override them at runtime (persisted in the storage domain):
 
@@ -84,15 +106,17 @@ Deployment defaults live in the `knowledge` row of `cordis.patch.yml`; the panel
 | `localModelCacheDir`                             | `''`    | local-model cache root; empty = `<DSH_HOME>/cache/dsh-knowledge/local-models` (`~/.dsh` when `DSH_HOME` is unset) |
 | `chunkStorePath`                                 | `''`    | chunk SQLite file; empty = `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
 
-Chunk data is stored in a dedicated SQLite file rather than the domain KV store: on the `web` profile's JSON backend every record write rewrites the whole unit file, which made deletion and import cost seconds-to-minutes as data grew. The SQLite store makes each put/delete a single statement, FTS5 trigram full-text search (BM25) plus a brute-force vector scan at query time, and bounded reads — resident memory does not grow with the corpus. A one-time migration on first start after an upgrade moves chunks out of a legacy JSON unit into the SQLite store (idempotent, keeps a `.bak`-free in-place conversion; duplicate rows from interrupted migrations are dropped).
+Chunk data is stored in a dedicated SQLite file rather than the domain KV store: on the `web` profile's JSON backend every record write rewrites the whole unit file, which made deletion and import cost seconds-to-minutes as data grew. The SQLite store makes each put/delete a single statement, FTS5 trigram full-text search (BM25) plus a brute-force vector scan at query time, and bounded reads — resident memory does not grow with the corpus. A one-time migration on first start after an upgrade moves chunks out of a legacy JSON unit into the SQLite store (idempotent; duplicate rows from interrupted migrations are dropped).
 
-Every field can be overridden per base in the panel's Settings view (empty = inherit global).
+> Every field can be overridden per base in the panel's Settings view (empty = inherit global); API keys are stored in plain text on the local machine.
 
-### Local (in-process) embeddings
+### 🔌 Local (in-process) embeddings
 
-With `embeddingProvider: local`, the host runs embeddings in-process via `@huggingface/transformers` (+ onnxruntime) — no external service needed. The default model is `onnx-community/Qwen3-Embedding-0.6B-ONNX` (1024 dims, same as Cherry Studio); set `embeddingModel` to any ONNX embedding repo id on Hugging Face. The first use downloads the weights from the Hub (cached under `$DSH_HOME/cache/dsh-knowledge/local-models`); later imports and searches run fully locally. Download / cancel / remove / retry in Settings → "Local Models", which shows live progress; `HF_ENDPOINT` can point at a mirror to speed up the download.
+With `embeddingProvider: local`, the host runs embeddings in-process via `@huggingface/transformers` (+ onnxruntime) — no external service needed. The default model is `onnx-community/Qwen3-Embedding-0.6B-ONNX` (1024 dims); set `embeddingModel` to any ONNX embedding repo id on Hugging Face. The first use downloads the weights from the Hub (cached under `$DSH_HOME/cache/dsh-knowledge/local-models`); later imports and searches run fully locally. Download / cancel / remove / retry in Settings → "Local Models", which shows live progress; `HF_ENDPOINT` can point at a mirror to speed up the download.
 
-## Retrieval quality (measured)
+---
+
+## 📊 Retrieval quality (measured)
 
 A reproducible benchmark ships in `scripts/` — real mathematical-modeling questions over the imported corpus, scored by Hit@k / Recall@k / MRR:
 
@@ -107,7 +131,18 @@ Direct questions (the document's topic word appears in the query) are already an
 node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId> --mode hybrid
 ```
 
-## Development
+---
+
+## 🚀 Usage
+
+1. Click the **sidebar-foot "Knowledge" button** (beside Settings) to open the full-page panel — not inside Settings.
+2. Click "New base", then paste text, drag-and-drop txt/md/pdf/docx files, or import a URL.
+3. Verify recall in the "Recall test" (switch hybrid/vector/lexical modes and the threshold); configure embeddings via the Settings button in the top-right.
+4. Tell the agent *"answer using the knowledge base"* — it will call tools like `knowledge_search`.
+
+---
+
+## 🛠️ Development
 
 Depends on the public DeepSeek Harness monorepo as a sibling checkout (`devDependencies` use `link:../dsh/...`):
 
@@ -117,12 +152,22 @@ pnpm run check    # typecheck + test + build
 pnpm run build    # esbuild → lib/ (host entries + factory-form client bundle)
 ```
 
-## Known limitations
+## ✅ Verification
+
+- `pnpm test` — unit tests for chunking, retrieval, config, storage, and service level.
+- `pnpm run typecheck` — `tsc --noEmit`.
+- `pnpm run build` — host ESM entries + browser factory-form client bundle + type declarations.
+
+---
+
+## ⚠️ Known limitations
 
 - **Model pickers are suggestion comboboxes, not live provider lists**: DSH's `ctx.llm` only surfaces chat models (`listModels` carries no embedding-modality tag, and this plugin's embedding endpoint/model are configured independently). The settings panel therefore uses native datalist comboboxes (embedding / local / rerank suggestions) with free-text fallback for custom ids.
 - **Embedding is synchronous within an import**: parsing and chunking show live per-file status, but embedding runs inline in the host process (batched) rather than on a worker queue; the local model's first download also blocks until cached (the settings panel shows live progress).
 - **No OCR / no built-in note editor**: images and scanned PDFs yield no text (Cherry outsources OCR to external processors, which a DSH plugin cannot); note editing stays in DSH.
 
-## License
+---
+
+## 📄 License
 
 [MIT](LICENSE). Special thanks to [Cherry Studio](https://github.com/CherryHQ/cherry-studio): this project's UI and feature design draws its inspiration from Cherry Studio (AGPL-3.0), while the code is an independent implementation that contains none of its source. Also thanks to [dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness), [dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor), and [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin).
