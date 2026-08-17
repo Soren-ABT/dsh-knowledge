@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.12 — Remove real eval sets (privacy)
+
+The four real evaluation sets (`eval-questions.json`, `eval-rephrase.json`,
+`eval-extra.json`, `eval-base22.json`) were built from private study
+materials, so they are removed from the repo and its history. The runner
+(`scripts/eval-retrieval.mjs`) and the example template
+(`scripts/eval-questions.example.json`) remain, so anyone can build their own
+sets. Run `node scripts/eval-retrieval.mjs --file your-set.json --base <id>`.
+
 ## 0.2.11 — Security hardening (SSRF, path traversal, zip bombs)
 
 Audit-driven hardening of the import paths:
