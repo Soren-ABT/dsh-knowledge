@@ -1,6 +1,6 @@
 <div align="center">
 
-# 📚 dsh-knowledge
+#  dsh-knowledge
 
 **DSH 的知识库插件**
 
