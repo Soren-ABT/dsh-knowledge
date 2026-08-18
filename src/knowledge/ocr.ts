@@ -34,18 +34,60 @@ export interface OcrModelStatus {
 const OCR_LANGUAGES = ['chi_sim', 'chi_tra', 'eng'] as const
 type OcrLanguage = (typeof OCR_LANGUAGES)[number]
 
-/** Mirror order: jsdelivr npm mirror (reachable in CN), official tessdata, backstop. */
-const LANG_SOURCES: ReadonlyArray<(lang: OcrLanguage) => string> = [
-  lang => `https://cdn.jsdelivr.net/npm/@tesseract.js-data/${lang}/4.0.0_best_int/${lang}.traineddata.gz`,
-  lang => `https://tessdata.projectnaptha.com/4.0.0/${lang}.traineddata.gz`,
+/**
+ * PaddleOCR engine (Cherry's local OCR) — PP-OCRv5 mobile: full Chinese
+ * dictionary (18383 entries incl. 15k+ CJK). PP-OCRv6's ONNX repos ship a
+ * symbol-only dict (no CJK), so v5 mobile is the practical Chinese-capable
+ * choice; det 4.8MB + rec 16.5MB + dict ≈ 21MB total.
+ */
+interface OcrModelFile {
+  url: string
+  fileName: string
+  minBytes: number
+}
+
+const PPOCR_FILES: readonly OcrModelFile[] = [
+  {
+    url: 'https://hf-mirror.com/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/main/inference.onnx',
+    fileName: 'ppocrv5_det.onnx',
+    minBytes: 1_000_000,
+  },
+  {
+    url: 'https://hf-mirror.com/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/main/inference.onnx',
+    fileName: 'ppocrv5_rec.onnx',
+    minBytes: 1_000_000,
+  },
+  {
+    url: 'https://hf-mirror.com/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/main/inference.yml',
+    fileName: 'ppocrv5_dict.txt',
+    minBytes: 10_000,
+  },
 ]
 
 function ocrCacheDir(): string {
   return join(localModelCacheDir(), 'ocr')
 }
 
-function traineddataPath(lang: OcrLanguage): string {
-  return join(ocrCacheDir(), `${lang}.traineddata`)
+function ppocrPath(fileName: string): string {
+  return join(ocrCacheDir(), fileName)
+}
+
+/** Parse a PaddleOCR inference.yml `character_dict` block (list of `- 'x'` / `- x` lines). */
+export function parseCharacterDict(yml: string): string[] {
+  const lines = yml.split('\n')
+  const idx = lines.findIndex(line => line.trim() === 'character_dict:')
+  if (idx < 0) return []
+  const chars: string[] = []
+  for (let i = idx + 1; i < lines.length; i += 1) {
+    // Note: no trim() on the value — the CJK full-width space (U+3000) is a
+    // legitimate dictionary entry and trim() would strip it.
+    const stripped = lines[i].replace(/^\s+/, '')
+    if (!stripped.startsWith('- ')) break
+    let value = stripped.slice(2)
+    if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1)
+    chars.push(value)
+  }
+  return chars
 }
 
 // ── status / download management (settings panel) ────────────────────────────
@@ -58,13 +100,11 @@ export function getOcrModelStatus(): OcrModelStatus {
 }
 
 /**
- * Whether every shipped OCR language is on disk and complete (both the
- * inflated .traineddata and the .gz Tesseract reads) — the parse fallback gate.
+ * Whether the PaddleOCR engine is fully on disk (det + rec weights + parsed
+ * dictionary) — the parse fallback gate.
  */
 export function isOcrReady(): boolean {
-  return OCR_LANGUAGES.every(lang =>
-    existsSync(traineddataPath(lang)) && existsSync(`${traineddataPath(lang)}.gz`)
-  )
+  return PPOCR_FILES.every(file => existsSync(ppocrPath(file.fileName)))
 }
 
 function setOcrStatus(status: OcrModelStatus): void {
@@ -72,19 +112,16 @@ function setOcrStatus(status: OcrModelStatus): void {
 }
 
 /**
- * Download all OCR languages with aggregate progress; idempotent per file and
- * coalesced (concurrent callers share one in-flight download — Cherry's
- * LocalModelDownloadService.inFlight).
+ * Download the PaddleOCR engine files with aggregate progress; idempotent per
+ * file and coalesced (concurrent callers share one in-flight download —
+ * Cherry's LocalModelDownloadService.inFlight). The dictionary is parsed out
+ * of the recognition model's inference.yml (Cherry's dictTextFromInferenceYml).
  */
 export async function downloadOcrModels(): Promise<OcrModelStatus> {
   if (ocrDownloadInFlight !== null) return ocrDownloadInFlight
   const run = (async () => {
     await mkdir(ocrCacheDir(), { recursive: true })
-    // Same completeness probe as isOcrReady(): a stale cache holding only the
-    // inflated copy (pre-.gz layout) must be re-downloaded, not skipped.
-    const missing = OCR_LANGUAGES.filter(lang =>
-      !existsSync(traineddataPath(lang)) || !existsSync(`${traineddataPath(lang)}.gz`)
-    )
+    const missing = PPOCR_FILES.filter(file => !existsSync(ppocrPath(file.fileName)))
     if (missing.length === 0) {
       setOcrStatus({ status: 'ready', progress: 100, message: '' })
       return getOcrModelStatus()
@@ -92,11 +129,11 @@ export async function downloadOcrModels(): Promise<OcrModelStatus> {
     setOcrStatus({ status: 'downloading', progress: 0, message: '' })
     let done = 0
     try {
-      for (const lang of missing) {
-        await downloadLanguage(lang, (fraction) => {
+      for (const file of missing) {
+        await downloadModelFile(file, (fraction) => {
           setOcrStatus({
             status: 'downloading',
-            progress: Math.round(((done + fraction) / OCR_LANGUAGES.length) * 100),
+            progress: Math.round(((done + fraction) / PPOCR_FILES.length) * 100),
             message: '',
           })
         })
@@ -106,7 +143,7 @@ export async function downloadOcrModels(): Promise<OcrModelStatus> {
     } catch (error) {
       setOcrStatus({
         status: 'error',
-        progress: Math.round((done / OCR_LANGUAGES.length) * 100),
+        progress: Math.round((done / PPOCR_FILES.length) * 100),
         message: error instanceof Error ? error.message : String(error),
       })
       throw error
@@ -129,33 +166,31 @@ export async function removeOcrModels(): Promise<void> {
 }
 
 /**
- * Download one language's traineddata.gz through the mirror chain and gunzip
- * it. Both copies are written atomically (tmp + rename, Cherry's fetchToFile
- * posture) so a failed download never leaves a half-written file that the
- * readiness probe could mistake for a complete model.
+ * Download one engine file atomically (tmp + rename, Cherry's fetchToFile
+ * posture). The dictionary entry (inference.yml) is parsed into its text file.
  */
-async function downloadLanguage(lang: OcrLanguage, onProgress: (fraction: number) => void): Promise<void> {
-  let lastError: unknown
-  for (const buildUrl of LANG_SOURCES) {
-    try {
-      const url = buildUrl(lang)
-      const response = await httpFetch(url, { timeoutMs: 120000 })
-      if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`)
-      const gz = new Uint8Array(await response.arrayBuffer())
-      // A mirror error page / LFS pointer is tiny — reject on size before inflating.
-      if (gz.length < 100_000) throw new Error(`traineddata from ${url} too small (${gz.length} bytes)`)
-      const data = gunzipSync(gz)
-      await writeFile(`${traineddataPath(lang)}.tmp`, data)
-      await writeFile(`${traineddataPath(lang)}.gz.tmp`, gz)
-      await rename(`${traineddataPath(lang)}.tmp`, traineddataPath(lang))
-      await rename(`${traineddataPath(lang)}.gz.tmp`, `${traineddataPath(lang)}.gz`)
-      onProgress(1)
-      return
-    } catch (error) {
-      lastError = error
-    }
+async function downloadModelFile(file: OcrModelFile, onProgress: (fraction: number) => void): Promise<void> {
+  const response = await httpFetch(file.url, { timeoutMs: 240000 })
+  if (!response.ok) throw new Error(`HTTP ${response.status} for ${file.url}`)
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  if (bytes.length < file.minBytes) {
+    throw new Error(`${file.url} too small (${bytes.length} bytes) — mirror error page?`)
   }
-  throw lastError instanceof Error ? lastError : new Error(`failed to download OCR language ${lang}`)
+  const dest = ppocrPath(file.fileName)
+  if (file.fileName.endsWith('.txt')) {
+    // Dictionary: the downloaded bytes are the recognition model's
+    // inference.yml — parse the character_dict block out of it.
+    const chars = parseCharacterDict(new TextDecoder('utf-8').decode(bytes))
+    if (chars.length < 1000 || !chars.some(ch => /[\u4e00-\u9fff]/.test(ch))) {
+      throw new Error(`character_dict in inference.yml looks incomplete (${chars.length} entries, no CJK)`)
+    }
+    // Leading blank line = CTC blank token (Cherry's dictionary format).
+    await writeFile(`${dest}.tmp`, `\n${chars.join('\n')}\n`)
+  } else {
+    await writeFile(`${dest}.tmp`, Buffer.from(bytes))
+  }
+  await rename(`${dest}.tmp`, dest)
+  onProgress(1)
 }
 
 // ── recognition pipeline ─────────────────────────────────────────────────────
@@ -234,7 +269,7 @@ function recognizePng(png: Buffer): Promise<string> {
       resolve: (text) => { clearTimeout(timer); resolve(text) },
       reject: (error) => { clearTimeout(timer); reject(error) },
     })
-    ensureOcrWorker().postMessage({ id, type: 'ocr', png, langPath: ocrCacheDir() })
+    ensureOcrWorker().postMessage({ id, type: 'ocr', png, modelDir: ocrCacheDir() })
   })
 }
 
@@ -524,7 +559,7 @@ export function postprocessOcrText(text: string): string {
   return text.replace(/([\u4e00-\u9fff\u3400-\u4dbf])\s+(?=[\u4e00-\u9fff\u3400-\u4dbf])/g, '$1')
 }
 
-/** List languages currently on disk (settings panel detail). */
+/** List engine files currently on disk (settings panel detail). */
 export async function listOcrLanguages(): Promise<Array<{ lang: string; ready: boolean }>> {
   let files: string[] = []
   try {
@@ -532,6 +567,6 @@ export async function listOcrLanguages(): Promise<Array<{ lang: string; ready: b
   } catch {
     // no cache yet
   }
-  const onDisk = new Set(files.filter(name => name.endsWith('.traineddata')))
-  return OCR_LANGUAGES.map(lang => ({ lang, ready: onDisk.has(`${lang}.traineddata`) }))
+  const onDisk = new Set(files)
+  return PPOCR_FILES.map(file => ({ lang: file.fileName, ready: onDisk.has(file.fileName) }))
 }

@@ -67,6 +67,11 @@ const hostExternal = [
   'pdfjs-dist',
   'tesseract.js',
   'tesseract.js-core',
+  'ppu-paddle-ocr',
+  'ppu-ocv',
+  '@napi-rs/canvas',
+  '@techstark/opencv-js',
+  'onnxruntime-node',
   'undici',
 ]
 
