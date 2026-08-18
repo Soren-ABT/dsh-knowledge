@@ -1194,7 +1194,10 @@ export class KnowledgeService extends Service {
   }
 
   downloadOcr(): Promise<OcrModelStatus> {
-    return downloadOcrModels()
+    // The OCR models come from a Hugging Face endpoint; honor the configured
+    // hfEndpoint mirror (default hf-mirror.com) so overseas users can point
+    // the download at huggingface.co.
+    return downloadOcrModels(this.baseConfig.hfEndpoint)
   }
 
   deleteOcr(): Promise<{ deleted: true }> {

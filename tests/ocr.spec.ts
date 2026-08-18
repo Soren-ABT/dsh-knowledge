@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { deflateSync } from 'node:zlib'
 import { parseDocumentBuffer } from '../src/knowledge/parse.js'
-import { ocrPdfText, postprocessOcrText, prepareForOcr, rgbaToPng } from '../src/knowledge/ocr.js'
+import {
+  buildOcrUrl,
+  DEFAULT_OCR_MIRROR,
+  ocrPdfText,
+  postprocessOcrText,
+  prepareForOcr,
+  rgbaToPng,
+} from '../src/knowledge/ocr.js'
 
 /** Build a "scanned" PDF: one page embedding a grayscale raster (no text layer). */
 function makeScannedPdf(width: number, height: number): Buffer {
@@ -89,5 +96,22 @@ describe('OCR text post-processing', () => {
   it('collapses spaces between CJK glyphs but keeps inter-word spaces', () => {
     expect(postprocessOcrText('中 文 测 试 OCR 12345\n')).toBe('中文测试 OCR 12345\n')
     expect(postprocessOcrText('hello world 中文 测试')).toBe('hello world 中文测试')
+  })
+})
+
+describe('OCR model download mirror (hfEndpoint)', () => {
+  const repoPath = '/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/main/inference.onnx'
+
+  it('defaults to the China-friendly hf-mirror.com when no endpoint is configured', () => {
+    expect(buildOcrUrl(undefined, repoPath)).toBe(`${DEFAULT_OCR_MIRROR}${repoPath}`)
+    expect(buildOcrUrl('', repoPath)).toBe(`${DEFAULT_OCR_MIRROR}${repoPath}`)
+  })
+
+  it('honors the configured endpoint for overseas users', () => {
+    expect(buildOcrUrl('https://huggingface.co', repoPath)).toBe(`https://huggingface.co${repoPath}`)
+  })
+
+  it('strips trailing slashes from the configured endpoint', () => {
+    expect(buildOcrUrl('https://huggingface.co/', repoPath)).toBe(`https://huggingface.co${repoPath}`)
   })
 })

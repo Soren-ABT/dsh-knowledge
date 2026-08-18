@@ -85,7 +85,6 @@
     "@firecrawl/anydoc": "^0.1.9",
     "@huggingface/transformers": "^3.7.0",
     "@napi-rs/canvas": "^1.0.6",
-    "@napi-rs/canvas-win32-x64-msvc": "^1.0.6",
     "jszip": "^3.10.1",
     "mammoth": "^1.8.0",
     "onnxruntime-node": "^1.27.0",
@@ -98,15 +97,8 @@
     "undici": "^7.0.0",
     "word-extractor": "^1.0.4"
   },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-host-webserver": "*",
-    "@deepseek-ai/dsh-storage": "*",
-    "@deepseek-ai/dsh-storage-domain": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*",
-    "react": "^18.2.0",
-    "zod": "*"
+  "optionalDependencies": {
+    "@napi-rs/canvas-win32-x64-msvc": "^1.0.6"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "link:../dsh/vendor/cordis",

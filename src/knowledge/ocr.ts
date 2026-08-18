@@ -39,26 +39,39 @@ type OcrLanguage = (typeof OCR_LANGUAGES)[number]
  * dictionary (18383 entries incl. 15k+ CJK). PP-OCRv6's ONNX repos ship a
  * symbol-only dict (no CJK), so v5 mobile is the practical Chinese-capable
  * choice; det 4.8MB + rec 16.5MB + dict ≈ 21MB total.
+ *
+ * Files are fetched from a Hugging Face endpoint so users outside China can
+ * point the download at huggingface.co via the shared `hfEndpoint` setting
+ * (default mirror: hf-mirror.com, the China-friendly HF mirror).
  */
 interface OcrModelFile {
-  url: string
+  /** Repo-relative path on the Hugging Face endpoint, e.g. `/owner/repo/resolve/main/file`. */
+  repoPath: string
   fileName: string
   minBytes: number
 }
 
+export const DEFAULT_OCR_MIRROR = 'https://hf-mirror.com'
+
+/** Join a configured HF endpoint with an OCR model's repo path (Cherry model mirror posture). */
+export function buildOcrUrl(mirror: string | undefined, repoPath: string): string {
+  const base = (mirror === undefined || mirror.trim() === '' ? DEFAULT_OCR_MIRROR : mirror).trim().replace(/\/+$/, '')
+  return `${base}${repoPath}`
+}
+
 const PPOCR_FILES: readonly OcrModelFile[] = [
   {
-    url: 'https://hf-mirror.com/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/main/inference.onnx',
+    repoPath: '/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/main/inference.onnx',
     fileName: 'ppocrv5_det.onnx',
     minBytes: 1_000_000,
   },
   {
-    url: 'https://hf-mirror.com/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/main/inference.onnx',
+    repoPath: '/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/main/inference.onnx',
     fileName: 'ppocrv5_rec.onnx',
     minBytes: 1_000_000,
   },
   {
-    url: 'https://hf-mirror.com/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/main/inference.yml',
+    repoPath: '/PaddlePaddle/PP-OCRv5_mobile_rec_onnx/resolve/main/inference.yml',
     fileName: 'ppocrv5_dict.txt',
     minBytes: 10_000,
   },
@@ -116,8 +129,11 @@ function setOcrStatus(status: OcrModelStatus): void {
  * file and coalesced (concurrent callers share one in-flight download —
  * Cherry's LocalModelDownloadService.inFlight). The dictionary is parsed out
  * of the recognition model's inference.yml (Cherry's dictTextFromInferenceYml).
+ *
+ * @param mirror - optional HF endpoint override (the `hfEndpoint` setting);
+ *   defaults to the China-friendly hf-mirror.com.
  */
-export async function downloadOcrModels(): Promise<OcrModelStatus> {
+export async function downloadOcrModels(mirror?: string): Promise<OcrModelStatus> {
   if (ocrDownloadInFlight !== null) return ocrDownloadInFlight
   const run = (async () => {
     await mkdir(ocrCacheDir(), { recursive: true })
@@ -130,7 +146,7 @@ export async function downloadOcrModels(): Promise<OcrModelStatus> {
     let done = 0
     try {
       for (const file of missing) {
-        await downloadModelFile(file, (fraction) => {
+        await downloadModelFile(file, buildOcrUrl(mirror, file.repoPath), (fraction) => {
           setOcrStatus({
             status: 'downloading',
             progress: Math.round(((done + fraction) / PPOCR_FILES.length) * 100),
@@ -169,12 +185,12 @@ export async function removeOcrModels(): Promise<void> {
  * Download one engine file atomically (tmp + rename, Cherry's fetchToFile
  * posture). The dictionary entry (inference.yml) is parsed into its text file.
  */
-async function downloadModelFile(file: OcrModelFile, onProgress: (fraction: number) => void): Promise<void> {
-  const response = await httpFetch(file.url, { timeoutMs: 240000 })
-  if (!response.ok) throw new Error(`HTTP ${response.status} for ${file.url}`)
+async function downloadModelFile(file: OcrModelFile, url: string, onProgress: (fraction: number) => void): Promise<void> {
+  const response = await httpFetch(url, { timeoutMs: 240000 })
+  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`)
   const bytes = new Uint8Array(await response.arrayBuffer())
   if (bytes.length < file.minBytes) {
-    throw new Error(`${file.url} too small (${bytes.length} bytes) — mirror error page?`)
+    throw new Error(`${url} too small (${bytes.length} bytes) — mirror error page?`)
   }
   const dest = ppocrPath(file.fileName)
   if (file.fileName.endsWith('.txt')) {

@@ -21,27 +21,31 @@
 
 ## 它带来什么
 
-- **知识库与文档**：创建/删除/重命名知识库与文档；**分组管理**（新建/重命名/删除分组，侧边栏按分组折叠导航，知识库可在菜单中「移动到分组」）；**弹窗式添加文档（文本/文件/网页/目录四页签）**、多文件拖拽上传（≤20 个）、**目录导入**（递归扫描 txt/md/csv/html/json/pdf/docx/doc/pptx/ppt/xlsx/xls/epub 等，**导入为可下钻的文件夹树**）、URL 导入；**同名冲突「全部保留/替换」**、内容哈希去重；分块与原文预览；资料行显示 **✓ 就绪状态徽标、实时导入状态（解析中 / 嵌入中 NN%）与相对更新时间**，文件夹在任一后代处理时显示「导入中」；全部操作走正式对话框与 Toast 通知（无 window.prompt/confirm）。
+- **知识库与文档**：创建/删除/重命名知识库与文档；**分组管理**（新建/重命名/删除分组，侧边栏按分组折叠导航，知识库可在菜单中「移动到分组」）；**弹窗式添加文档（文本/文件/网页/目录四页签）**、多文件拖拽上传（单次 ≤20 个，**5 路并发后台导入池**，可同时丢多批）、**目录导入**（递归扫描 txt/md/csv/html/json/pdf/docx/doc/pptx/ppt/xlsx/xls/epub 等，**导入为可下钻的文件夹树**）、URL 导入；**同名冲突「全部保留/替换」**、内容哈希去重；**文档预览**（PDF 内嵌查看器 + 文本/分块预览，超大文件自动截断）；资料行显示 **✓ 就绪状态徽标、实时导入状态（解析中 / 嵌入中 NN%）与相对更新时间**，文件夹在任一后代处理时显示「导入中」；全部操作走正式对话框与 Toast 通知（无 window.prompt/confirm）。
+- **扫描件 OCR（本地引擎）**：扫描版 PDF 与图片自动走 **PaddleOCR PP-OCRv5**（约 21MB 模型，含 1.8 万字符中文词典，设置 → 本地模型一键下载），识别失败自动回退 Tesseract；**1-bit 位图（JBIG2/CCITT 传真式扫描件）也能正确识别**；识别文本照常分块、向量化、可检索。
 - **每库独立配置**：每个知识库可单独指定 embedding 提供方/模型（含**本地模型**）、**重排模型**、分块大小与 topK，未设置字段自动继承全局配置；改配置后一键重建索引（全库或单条资料）。
+- **可选 MinerU 远程文档处理**：PDF 可交给 [MinerU](https://github.com/opendatalab/MinerU) 服务解析（公式、表格、版式还原成 Markdown），知识库设置里填入 MinerU API Key（全局或每库覆盖）即可；未配置时自动走本地解析链路。
 - **向量化与检索**：可插拔 embedding 提供方 —— 任意 OpenAI 兼容 `/embeddings` 端点（OpenAI、DeepSeek、SiliconFlow、本地网关…）、Ollama，或 **进程内本地模型（transformers.js，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX，无需联网服务）**；**混合检索**（BM25 + 向量 + Reciprocal Rank Fusion）、**重排模型（rerank，Jina/SiliconFlow/Cohere v2 风格 API）**、**MMR 结果去重**、检索模式（auto/hybrid/vector/lexical）与相似度阈值；未配置时自动退化关键词（CJK 二元组 + 拉丁词 BM25），零配置即可用；召回测试显示命中来源、相关度、双分数、**耗时**，并保留**检索历史**可一键重放。
 - **智能分块**：标题感知分块（保留 Markdown 标题路径），并将「文档标题 + 标题路径」作为上下文注入 embedding 与检索，显著提升召回。
 - **索引管理**：按当前配置**重建索引**（改分块大小 / 换 embedding 后一键重切 + 重向量化）、批量 embedding、统计（文档/分块/字符/Token 数、是否已向量化）。
 - **模型工具**：`knowledge_search`、`knowledge_list_bases`、`knowledge_create_base`、`knowledge_delete_base`、`knowledge_add_document`、`knowledge_list_documents`、`knowledge_delete_document`、`knowledge_import_url`、`knowledge_stats`、`knowledge_get_document`、`knowledge_read_document`（按字符区间分段阅读 / 正则定位）、`knowledge_reindex_base`。
 - **管理面板**：**不在设置内** —— 侧边栏底部（设置旁）的「知识库」入口打开工作区整页浮层，布局：左侧搜索框 + **分组折叠导航** + 彩色头像知识库卡片（右键菜单：重命名/移动到分组/新建分组/删除），右侧统计芯片、**「更新于」时间**、添加文档弹窗、**表格化资料列表（勾选列 + 名称/类型/状态/更新时间 + 多选批量重建/批量删除）**、分块/原文预览、重建索引、检索测试（命中高亮 + 向量/关键词双分数 + 历史）、全局与每库设置弹窗（文档处理 / 嵌入模型 / 重排模型 / TopK / 高级设置）、Toast 通知、空状态与悬停动效。
-- **本地模型管理（设置内）**：设置 →「本地模型」页面（`settings.section` 插槽），卡片：模型名称/说明、**就绪徽标**、**下载 / 重试 / 删除** 按钮、**实时下载进度条**；下载后即可在知识库设置里选用「本地模型」作为向量化方式。
+- **本地模型管理（设置内）**：设置 →「本地模型」页面（`settings.section` 插槽），**嵌入模型与 OCR 模型两张卡片**：模型名称/说明、**就绪徽标**、**下载 / 重试 / 删除** 按钮、**实时下载进度条**；下载后即可在知识库设置里选用「本地模型」作为向量化方式，扫描版 PDF 自动启用 OCR 识别。
 - **持久化**：业务状态（知识库/文档/运行时配置）经 DSH 官方 `storageDomain` seam 落盘（`json` 后端，默认随 `web` profile 提供）；**分块数据存于独立 SQLite 文件**（`<DSH_HOME>/storages/knowledge-chunks.sqlite`，可用 `chunkStorePath` 配置）——每分块一行、每次写入/删除为单条语句，不随数据量恶化；词法检索走 FTS5 三元组全文索引、向量检索查询时扫描存储的向量，启动不再全量载入内存。升级后首次启动自动完成旧数据迁移（幂等、去重）；无存储后端时自动降级为内存模式。
 
 ---
 
 ## 架构
 
-一个 bundle 含三个插件行：
+一个 bundle 含三个插件行，另有两个**独立 worker 线程**承载推理（与 Cherry 的 own-worker 姿势一致，原生/WASM 崩溃不会波及 host 进程）：
 
-| 插件 | 平台 | 职责 |
+| 插件 / 线程 | 平台 | 职责 |
 |---|---|---|
-| `knowledge`（`ctx.knowledge`） | host | 核心引擎：存储域、分块、embedding、检索、`/knowledge/*` HTTP 服务 |
+| `knowledge`（`ctx.knowledge`） | host | 核心引擎：存储域、分块、embedding、检索、OCR 调度、`/knowledge/*` HTTP 服务 |
 | `tool-knowledge` | host | 12 个模型工具，消费 `ctx.knowledge` |
 | `ui-knowledge` | client | 侧边栏底部入口（`sidebar.footer.action`）+ 工作区整页浮层（`shell.overlay`），Cherry Studio 式布局 |
+| `embed-worker`（worker 线程） | host | transformers.js 本地嵌入推理（模型 ~600MB 不进 host 进程） |
+| `ocr-worker`（worker 线程） | host | PaddleOCR / Tesseract 识别（onnxruntime、OpenCV、tesseract worker 全隔离在线程内） |
 
 数据模型（`storageDomain` 声明领域 `knowledge`，version 0）：
 
@@ -61,35 +65,50 @@
 dsh plugin --profile <name> add dsh-knowledge
 
 # 从发布 tarball（GitHub Releases 或 npm pack 产物）
-dsh plugin --profile <name> add ./dsh-knowledge-0.1.0.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.2.2.tgz
 
 # 从本地源码目录（需先构建，见下方「开发」）
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 ```
 
-> **pnpm 10+ 构建脚本白名单**：进程内本地嵌入运行时依赖 `onnxruntime-node`、`sharp`、`protobufjs`，pnpm 默认拒绝运行它们的 postinstall，`dsh plugin add` 会因此以非零退出、并在登记 bundle 前中断。请在**安装前**于 profile 的 `pnpm-workspace.yaml` 中加入以下内容，再重新执行 add：
+> **pnpm 10+ 构建脚本白名单（必须）**：插件依赖的 `onnxruntime-node`、`sharp`、`protobufjs`、`tesseract.js` 都带 postinstall，pnpm 默认拒绝运行它们并以非零退出——`dsh plugin add` 会因此**在登记 bundle 前中断，插件不会生效**。请在**安装前**于 profile 的 `pnpm-workspace.yaml` 中加入以下内容，再执行 add：
 >
 > ```yaml
 > allowBuilds:
 >   onnxruntime-node: true
 >   sharp: true
 >   protobufjs: true
+>   tesseract.js: true
 > ```
 >
-> （Windows 嵌入路径其实不依赖这些脚本——onnxruntime 的 Windows 二进制已内置，`sharp`/`protobufjs` 也未使用——但 pnpm 会把拒绝视为错误，授权是最干净的做法。）
+> （各平台二进制均已内置在 npm 包内，跳过这些脚本不损害功能；但 pnpm 把拒绝视为错误，授权是最干净的做法。装完后再补上配置、重跑一次 add 也可以——包已在 node_modules，重跑会正常登记。）
 
 重启 web 服务使 host 侧生效，刷新页面加载 client 面板。
 
 > 插件安装在 **profile 层**（`dsh plugin` 会在 profile 目录里跑 pnpm），因此无论 DSH 是 npm 安装还是全新源码 clone，上面的安装命令完全一样——不涉及插件源码、checkout 链接或 DSH 构建。
 
+### 零基础：只装了 DSH，怎么装到「和我一样」的功能
+
+一条命令之外，全部功能（本地嵌入、OCR、扫描件识别、混合检索、管理面板）都随插件自带，**没有任何个人配置或外部服务依赖**。只需要满足四个前提：
+
+1. **Node.js ≥ 22 与 pnpm ≥ 10 在 PATH 中**（DSH 本身即以此为前提；`dsh plugin add` 内部直接调用 pnpm，没有 pnpm 会提示你安装）。
+2. **先写好 `allowBuilds` 再执行 add**（见上方黑名单块——这是唯一的「安装前必须」步骤，profile 的 `pnpm-workspace.yaml` 首次初始化时会自动生成，只需往里追加那 4 行）。
+3. **模型下载的网络可达**：
+   - **本地嵌入模型**（约 585MB，Qwen3-Embedding-0.6B）：国内默认走 Hugging Face 镜像；如需自定义镜像，在知识库面板「设置 → 高级设置」或设置 → 本地模型页填 `hfEndpoint`（或设环境变量 `HF_ENDPOINT`）。
+   - **OCR 模型**（约 21MB，PaddleOCR）：默认从 hf-mirror.com 下载；**海外用户**请在同一个 `hfEndpoint` 填 `https://huggingface.co`，OCR 与嵌入模型都会改走该端点。
+   - 不下载也可以正常使用（远程 OpenAI 兼容 / Ollama 嵌入 + 纯文本 PDF），只是本地向量化与扫描件识别不可用。
+4. **平台**：Windows / macOS（Apple Silicon）/ Linux x64 + arm64 全功能；**Intel Mac（macOS x64）本地嵌入与 OCR 不可用**（onnxruntime 无 darwin-x64 二进制），请改用远程嵌入（OpenAI 兼容 / Ollama）。
+
+装好后首次使用：设置 →「本地模型」下载嵌入模型（或直接给知识库配远程 embedding），需要扫描件识别再下载 OCR 模型——之后的功能与本仓库开发机完全一致。
+
 ---
 
 ## 兼容性
 
-- **DSH 版本**：在 [deepseek-harness](https://github.com/deepseek-ai/DeepSeek-Harness) 提交 `47f943859b`（2026-08，npm 插件生态时代）上开发并验证。peer 依赖按 DSH 惯例声明为 `*`，更新的 DSH 源码也能无解析错误安装；若新版 DSH 出现兼容问题，请带上你运行的 DSH 提交号提 issue。
+- **DSH 版本**：在 [deepseek-harness](https://github.com/deepseek-ai/DeepSeek-Harness) 提交 `47f943859b`（2026-08，npm 插件生态时代）上开发并验证。插件不再声明 peer 依赖——DSH 宿主以 externals 注入 cordis/zod/存储等运行时；更新的 DSH 源码也能无解析错误安装。若新版 DSH 出现兼容问题，请带上你运行的 DSH 提交号提 issue。
 - **Node.js**：`^22.19.0 || >=24.0.0`（与 DSH 自身要求一致——分块存储使用 Node 内置 `node:sqlite`，DSH 自己的会话存储也在用）。
-- **平台**：Windows / macOS / Linux x64 + arm64。旧版 `.doc` / `.ppt` / `.xls` 解析依赖 `@firecrawl/anydoc`（各平台原生二进制）；其余全为纯 JS。
-- **首次运行联网**：启用 `embeddingProvider: local` 后首次使用会从 Hugging Face 下载模型权重（缓存于 `localModelCacheDir`）；需要时可设 `HF_ENDPOINT` 指向镜像。
+- **平台**：Windows / macOS（Apple Silicon）/ Linux x64 + arm64 全功能。旧版 `.doc` / `.ppt` / `.xls` 解析依赖 `@firecrawl/anydoc`（各平台原生二进制）；`@napi-rs/canvas` 的 Windows 平台包声明为 optionalDependencies，非 Windows 平台自动跳过。**Intel Mac（darwin-x64）**：onnxruntime 无该平台二进制，本地嵌入与本地 OCR 不可用，请用远程嵌入（OpenAI 兼容 / Ollama）。
+- **首次运行联网**：启用 `embeddingProvider: local` 后首次使用会从 Hugging Face 下载模型权重（缓存于 `localModelCacheDir`）；OCR 模型（约 21MB）在设置 → 本地模型页下载。两者都可经面板的 `hfEndpoint` 字段或环境变量 `HF_ENDPOINT` 指向镜像（OCR 默认 hf-mirror.com，海外可改为 huggingface.co）。
 
 ---
 
@@ -113,6 +132,10 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 | `similarityThreshold` | `0` | 相似度阈值（0–1），低于该分数的结果被过滤 |
 | `mmrDiversity` | `0` | MMR 结果多样性（0–1，0=关闭） |
 | `embeddingBatchSize` | `32` | 每次 embedding 请求的文本条数 |
+| `hfEndpoint` | `''` | Hugging Face 端点（嵌入模型与 OCR 模型的下载镜像）；留空 = 嵌入走 transformers 默认、OCR 走 hf-mirror.com |
+| `documentProcessorProvider` | `builtin` | PDF 文档处理：`builtin`（本地解析 + 可选 OCR）/ `mineru`（远程 MinerU 服务） |
+| `mineruApiKey` | `''` | MinerU API Key（`mineru` 模式需要；全局或每库覆盖） |
+| `mineruApiHost` | `''` | MinerU 服务地址；留空 = 官方 `https://mineru.net` |
 | `localModelCacheDir` | `''` | 本地模型缓存根目录；留空 = `<DSH_HOME>/cache/dsh-knowledge/local-models`（`DSH_HOME` 未设则为 `~/.dsh`） |
 | `chunkStorePath` | `''` | 分块 SQLite 文件；留空 = `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
 
@@ -120,9 +143,11 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 
 > 以上所有字段均可在**每个知识库的设置面板**中单独覆盖（留空继承全局）；API Key 以明文保存在本地存储。
 
-### 本地模型（进程内 embedding）
+### 本地模型（进程内 embedding 与 OCR）
 
-选择 `embeddingProvider: local` 时，插件在 host 进程内用 `@huggingface/transformers`（+ onnxruntime）跑 embedding，**无需任何外部服务**。默认模型 `onnx-community/Qwen3-Embedding-0.6B-ONNX`（1024 维），`embeddingModel` 可换成任意 Hugging Face 上的 ONNX embedding 仓库 id。首次使用会从 Hugging Face Hub 下载模型权重（默认缓存到 `$DSH_HOME/cache/dsh-knowledge/local-models`）；下载完成后后续导入与检索全程本地。**在设置 →「本地模型」页面可提前下载 / 取消 / 删除 / 重试**，并实时查看下载进度；知识库设置面板也会显示模型下载进度（下载中 % / 就绪 / 失败）；可用环境变量 `HF_ENDPOINT` 指向镜像加速下载。
+选择 `embeddingProvider: local` 时，插件在**独立 worker 线程**里用 `@huggingface/transformers`（+ onnxruntime）跑 embedding，**无需任何外部服务**。默认模型 `onnx-community/Qwen3-Embedding-0.6B-ONNX`（1024 维），`embeddingModel` 可换成任意 Hugging Face 上的 ONNX embedding 仓库 id。首次使用会从 Hugging Face Hub 下载模型权重（默认缓存到 `$DSH_HOME/cache/dsh-knowledge/local-models`）；下载完成后后续导入与检索全程本地。**在设置 →「本地模型」页面可提前下载 / 取消 / 删除 / 重试**，并实时查看下载进度；知识库设置面板也会显示模型下载进度（下载中 % / 就绪 / 失败）。
+
+**OCR（扫描件识别）**：下载 OCR 模型后，扫描版 PDF 与图片在导入时自动识别（PaddleOCR PP-OCRv5 优先，失败回退 Tesseract，全部在 `ocr-worker` 线程内）。模型约 21MB，默认从 hf-mirror.com 下载；海外用户可在同一 `hfEndpoint` 字段填 `https://huggingface.co`。
 
 ---
 
@@ -146,7 +171,7 @@ node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId
 ## 使用
 
 1. 点击**侧边栏底部「知识库」按钮**（设置旁），打开整页面板 —— 不在设置内。
-2. 点「新建知识库」，选中后粘贴文本、拖拽上传 txt/md/pdf/docx，或导入网页 URL。
+2. 点「新建知识库」，选中后粘贴文本、拖拽上传 txt/md/pdf/docx，或导入网页 URL；扫描版 PDF 也可直接拖入（设置 → 本地模型下载 OCR 模型后自动识别）。
 3. 在「检索测试」里验证召回（可切换混合/向量/关键词模式与阈值）；点右上角「设置」配置向量化。
 4. 对 agent 说 *"用知识库里的内容回答…"*，模型会调用 `knowledge_search` 等 12 个工具。
 
@@ -175,8 +200,9 @@ pnpm run build    # esbuild → lib/（含 client bundle）
 ## 已知局限
 
 - **模型下拉为建议式组合框，而非 provider 实时列表**：DSH 的 `ctx.llm` 只暴露对话模型（`listModels` 无 embedding 维度标记，且本插件的 embedding 端点/模型是独立配置）。设置面板因此用「内置精选建议 + 可输入自定义 id」的原生 datalist 组合框（嵌入 / 本地 / 重排三组建议）。
-- **导入为后台异步执行，但嵌入在宿主进程内联完成**：解析与分块有实时逐文件状态（解析中 / 嵌入中 NN%），向量化以批次内联运行而非独立 worker 队列；本地模型首次下载会阻塞到缓存完成（设置面板实时显示进度）。
-- **无 OCR / 无内置笔记编辑器**：图片与扫描版 PDF 无法提取文本（DSH 插件平台做不到——无法依赖外部进程做 OCR）；笔记编辑请使用 DSH 自身。
+- **嵌入在导入流程内联执行**：解析与分块有实时逐文件状态（解析中 / 嵌入中 NN%），向量化以批次内联运行（推理在独立 worker 线程，不阻塞 UI，但同一知识库的导入按 5 路并发池排队）；本地模型首次下载会阻塞到缓存完成（设置面板实时显示进度）。
+- **MinerU 需 API Key**：`documentProcessorProvider: mineru` 依赖 MinerU 官方服务（或自托管 host），需要注册获取 Key；未配置时 PDF 自动走本地解析 + OCR。
+- **无内置笔记编辑器**：笔记编辑请使用 DSH 自身。
 
 ---
 

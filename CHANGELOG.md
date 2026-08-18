@@ -2,6 +2,22 @@
 
 ## 0.2.2 — Cherry-parity import pipeline + worker-thread local models
 
+### Installability hardening + OCR mirror (later additions to this release)
+
+- **Zero-basis install fixes**: the tarball no longer declares peer
+  dependencies (`@deepseek-ai/*`, react, zod are all injected by the DSH
+  host as externals; declaring them made pnpm's auto-install-peers resolve
+  `@deepseek-ai/dsh-tools` → `@deepseek-ai/dsh-type-meta`, which does not
+  exist on the public registry and broke fresh installs). The Windows
+  `@napi-rs/canvas-win32-x64-msvc` platform package moved to
+  `optionalDependencies` so Linux/macOS installs no longer hit platform
+  rejection. Verified end-to-end: a clean profile-style pnpm install
+  (`nodeLinker: hoisted`, `autoInstallPeers: false`) with the documented
+  `allowBuilds` exits 0 and the bundle registers.
+- **OCR model mirror configurable**: the PaddleOCR download now honors the
+  `hfEndpoint` setting (default hf-mirror.com), so users outside China can
+  point it at `https://huggingface.co` like the embedding model.
+
 ### OCR for scanned PDFs (later additions to this release)
 
 - **Local OCR engine — PaddleOCR (PP-OCRv5 mobile, full Chinese dictionary)**
