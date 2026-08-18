@@ -113,39 +113,6 @@ export function PromptDialog(props: {
   )
 }
 
-// ── import failures (Cherry Studio parity: per-file failures stay visible) ──
-
-export interface ImportFailure {
-  name: string
-  error: string
-}
-
-export function ImportFailuresDialog(props: {
-  t: Translate
-  failures: readonly ImportFailure[]
-  onClose: () => void
-}): JSX.Element {
-  const { t } = props
-  return (
-    <Modal title={t('importFailuresTitle').replace('{count}', String(props.failures.length))} onClose={props.onClose} width={460}>
-      <p style={{ fontSize: 13, margin: '0 0 12px', lineHeight: 1.6, color: C.danger }}>
-        {t('importFailuresHint')}
-      </p>
-      <ul style={{ maxHeight: 300, overflowY: 'auto', margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {props.failures.map((failure, index) => (
-          <li key={`${failure.name}-${index}`} style={{ fontSize: 12, lineHeight: 1.5, background: 'color-mix(in srgb, var(--dsw-alias-brand-primary, #3b6ef6) 6%, transparent)', borderRadius: 6, padding: '6px 8px' }}>
-            <div style={{ fontWeight: 600, wordBreak: 'break-all' }}>{failure.name}</div>
-            <div style={{ color: C.danger, wordBreak: 'break-all' }}>{failure.error}</div>
-          </li>
-        ))}
-      </ul>
-      <div style={{ ...style.actionsRow, justifyContent: 'flex-end', marginTop: 12 }}>
-        <button style={style.button} onClick={props.onClose}>{t('close')}</button>
-      </div>
-    </Modal>
-  )
-}
-
 // ── restore / rebuild base ────────────────────────────────────────────────────
 
 export function RestoreBaseDialog(props: {

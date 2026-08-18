@@ -104,6 +104,11 @@ interface ProgressInfo {
 const localExtractors = new Map<string, Promise<LocalExtractor>>()
 const localModelStatus = new Map<string, LocalModelStatus>()
 const cancelledModels = new Set<string>()
+// Per-model inference chain: transformers.js gives no concurrency guarantee for
+// parallel runs on one pipeline instance, so serialize inference per model (the
+// extractor itself is shared — the model loads once — only the runs queue up).
+// Remote providers (openai/ollama) are unaffected and keep full parallelism.
+const localInferenceChains = new Map<string, Promise<unknown>>()
 
 /** Current load/download state for an in-process model (for the settings panel). */
 export function getLocalModelStatus(modelId: string): LocalModelStatus {
@@ -165,7 +170,12 @@ export function poolingFor(modelId: string): 'last_token' | 'cls' | 'mean' {
 
 async function embedLocal(modelId: string, texts: readonly string[]): Promise<number[][]> {
   const extractor = await getLocalExtractor(modelId)
-  return extractor([...texts])
+  // Chain this run behind the previous one for the same model; a failed run
+  // must not break the chain (the error still propagates to this caller).
+  const prev = localInferenceChains.get(modelId) ?? Promise.resolve()
+  const run = prev.then(() => extractor([...texts]))
+  localInferenceChains.set(modelId, run.then(() => undefined, () => undefined))
+  return run
 }
 
 async function getLocalExtractor(modelId: string): Promise<LocalExtractor> {

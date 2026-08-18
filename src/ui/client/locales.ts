@@ -35,8 +35,6 @@ export type KnowledgeKey =
   | 'confirmDeleteDoc'
   | 'uploaded'
   | 'importFailed'
-  | 'importFailuresTitle'
-  | 'importFailuresHint'
   | 'tooManyFiles'
   | 'perBaseHint'
   | 'uploadFile'
@@ -230,8 +228,6 @@ export const zh: Record<KnowledgeKey, string> = {
   confirmDeleteDoc: '删除该文档及其全部分块？',
   uploaded: '已导入',
   importFailed: '导入失败',
-  importFailuresTitle: '有 {count} 个文件导入失败',
-  importFailuresHint: '以下文件未能导入，可修正后重新上传：',
   tooManyFiles: '单次最多选择 {count} 个文件，其余已跳过',
   perBaseHint: '留空则使用全局设置',
   uploadFile: '上传文件',
@@ -423,8 +419,6 @@ export const en: Record<KnowledgeKey, string> = {
   confirmDeleteDoc: 'Delete this document and all its chunks?',
   uploaded: 'imported',
   importFailed: 'import failed',
-  importFailuresTitle: '{count} files failed to import',
-  importFailuresHint: 'These files could not be imported — fix and re-upload them:',
   tooManyFiles: 'At most {count} files per selection; the rest were skipped',
   perBaseHint: 'Leave empty to use global settings',
   uploadFile: 'Upload file',

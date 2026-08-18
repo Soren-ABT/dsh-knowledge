@@ -39,14 +39,13 @@ import {
   ConfirmDialog,
   CreateBaseDialog,
   FILE_ACCEPT,
-  ImportFailuresDialog,
   MAX_FILES,
   PromptDialog,
   RestoreBaseDialog,
   Toasts,
   readFileAsBase64,
 } from './dialogs.js'
-import type { ImportFailure, Toast } from './dialogs.js'
+import type { Toast } from './dialogs.js'
 import { ContextMenu, PopoverMenu } from './popover.js'
 import type { MenuEntry } from './popover.js'
 import { RagConfigPanel } from './rag-config.js'
@@ -130,7 +129,6 @@ type DialogState =
   | { kind: 'renameGroup'; group: string }
   | { kind: 'confirmDeleteGroup'; group: string }
   | { kind: 'addUrl' }
-  | { kind: 'importFailures'; failures: ImportFailure[] }
   | null
 
 interface RecallEntry {
@@ -447,31 +445,19 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     })
   }, [api, run, onImported, notify, selectedBaseId])
 
-  // Background import: no progress modal — files are uploaded one at a time and
-  // the document list refreshes as each lands (row status shows embedding %).
-  // Failures are collected and shown in the failures dialog (Cherry parity),
-  // not sprayed as per-file toasts.
+  // Cherry Studio parity: every picked file becomes a row immediately (parsing
+  // status) and the per-base worker pool processes them in the background; the
+  // 800ms status poll keeps the list live. Failures stay visible in the list
+  // as red failed rows (hover shows the reason), like Cherry's failed items.
   const runFileImport = useCallback(async (files: File[]): Promise<void> => {
     if (selectedBaseId === null || files.length === 0) return
     notify('info', `${files.length} ${t('uploaded')}…`)
-    const failures: ImportFailure[] = []
-    let imported = 0
     for (const file of files) {
-      try {
-        const contentBase64 = await readFileAsBase64(file)
-        await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64)
-        imported += 1
-      } catch (err) {
-        failures.push({ name: file.name, error: err instanceof Error ? err.message : String(err) })
-      }
+      const contentBase64 = await readFileAsBase64(file)
+      await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64)
     }
     await reloadDocuments()
-    if (failures.length > 0) {
-      notify('info', `${t('uploaded')} ${imported} · ${t('importFailed')} ${failures.length}`)
-      setDialog({ kind: 'importFailures', failures })
-    } else {
-      notify('success', `${imported} ${t('uploaded')}`)
-    }
+    notify('success', `${files.length} ${t('uploaded')}`)
   }, [api, notify, reloadDocuments, selectedBaseId, t])
 
   const runDirectoryImport = useCallback(async (files: File[]): Promise<void> => {
@@ -480,8 +466,6 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     const segments = (file: File): string[] => rel(file).split('/')
     const rootName = segments(files[0])[0] ?? 'folder'
     notify('info', `${t('tabDir')}: ${files.length} ${t('uploaded')}…`)
-    const failures: ImportFailure[] = []
-    let imported = 0
     try {
       // 1. collect unique directory paths (excluding the root) sorted by depth
       const dirPaths = new Set<string>()
@@ -500,29 +484,20 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         const created = await api.createDirectory(selectedBaseId, parts[parts.length - 1], dirId.get(parentPath))
         dirId.set(dirPath, created.id)
       }
-      // 3. upload files under their directory
+      // 3. submit every file under its directory — rows land immediately and
+      //    the background pool processes them (Cherry: whole directory, no cap)
       for (const file of files) {
         const parts = segments(file)
         const dirPath = parts.slice(0, -1).join('/')
         const parentId = dirPath === rootName || dirPath === '' ? root.id : dirId.get(dirPath)
-        try {
-          const contentBase64 = await readFileAsBase64(file)
-          await api.addFileDocument(selectedBaseId, file.name, file.type || 'application/octet-stream', contentBase64, undefined, parentId)
-          imported += 1
-        } catch (err) {
-          failures.push({ name: rel(file), error: err instanceof Error ? err.message : String(err) })
-        }
+        const contentBase64 = await readFileAsBase64(file)
+        await api.addFileDocument(selectedBaseId, file.name, file.type || 'application/octet-stream', contentBase64, undefined, parentId)
       }
     } catch (err) {
       notify('error', err instanceof Error ? err.message : String(err))
     }
     await reloadDocuments()
-    if (failures.length > 0) {
-      notify('info', `${t('uploaded')} ${imported} · ${t('importFailed')} ${failures.length}`)
-      setDialog({ kind: 'importFailures', failures })
-    } else {
-      notify('success', `${imported} ${t('uploaded')}`)
-    }
+    notify('success', `${files.length} ${t('uploaded')}`)
   }, [api, notify, reloadDocuments, selectedBaseId, t])
 
   const renameDocument = useCallback(async (doc: DocumentSummary, title: string): Promise<void> => {
@@ -1247,13 +1222,6 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
           label={t('urlDesc')}
           initial=""
           onOk={(value) => { setDialog(null); addUrl(value) }}
-          onClose={() => setDialog(null)}
-        />
-      )}
-      {dialog?.kind === 'importFailures' && (
-        <ImportFailuresDialog
-          t={t}
-          failures={dialog.failures}
           onClose={() => setDialog(null)}
         />
       )}

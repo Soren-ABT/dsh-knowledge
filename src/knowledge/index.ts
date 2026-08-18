@@ -114,6 +114,13 @@ export class KnowledgeService extends Service {
   private resolveStore: () => void = () => {}
   private readonly jobs = new Map<string, BackgroundJob>()
   private readonly indexing = new Map<string, { baseId: string; title: string; phase: 'parsing' | 'embedding'; total: number; progress: number }>()
+  // Cherry Studio parity: per-base worker pool (Cherry's knowledge jobs run at
+  // defaultConcurrency 5 on a per-base queue). Rows are created up front and
+  // flip status as the queued parse+ingest tasks run in the background.
+  private readonly ingestQueues = new Map<string, { pending: Array<() => Promise<void>>; running: number }>()
+  // Per-base write chain guarding dedup-check + first persist (read-then-write),
+  // so two concurrent imports of identical content cannot both pass the check.
+  private readonly baseWriteChains = new Map<string, Promise<unknown>>()
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'knowledge')
@@ -446,8 +453,10 @@ export class KnowledgeService extends Service {
         await store.deleteDocument(existing.id)
       }
     }
-    // Publish a placeholder first so the row appears (with "parsing" status)
-    // while the buffer is decoded and parsed, then hand the doc id to ingest.
+    // Cherry Studio parity: publish the row FIRST (with "parsing" status) and
+    // return immediately; the parse+embed runs on a per-base worker pool
+    // (concurrency 5) and the row flips processing → completed/failed as it
+    // goes, exactly like Cherry's create-then-index jobs.
     const title = request.title?.trim() || request.fileName
     const docId = crypto.randomUUID()
     const placeholder: KnowledgeDocument = {
@@ -470,34 +479,49 @@ export class KnowledgeService extends Service {
     const rawFilePath = store.raw !== undefined
       ? await store.raw.write(request.baseId, docId, safeRawExtension(request.fileName), decodeBase64(request.contentBase64))
       : undefined
-    await store.putDocument({
-      ...placeholder,
-      ...(rawFilePath !== undefined ? { rawFilePath } : {}),
-    })
+    const stored = { ...placeholder, ...(rawFilePath !== undefined ? { rawFilePath } : {}) }
+    await store.putDocument(stored)
     this.indexing.set(docId, { baseId: request.baseId, title, phase: 'parsing', total: 0, progress: 0 })
-    try {
-      const bytes = decodeBase64(request.contentBase64)
-      const text = await parseDocumentBuffer(bytes, request.fileName, request.mimeType)
-      if (text.trim().length === 0) throw new Error('parsed document is empty')
-      return await this.ingestDocument({
-        baseId: request.baseId,
-        title,
-        sourceType: 'file',
-        fileName: request.fileName,
-        ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
-        ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
-        placeholderId: docId,
-        rawFilePath,
-        text,
-      })
-    } catch (error) {
-      // A parse or duplicate failure removes the placeholder so an empty/broken
-      // file does not linger in the list (the raw copy goes with it).
-      if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
-      await store.deleteDocument(docId)
-      this.indexing.delete(docId)
-      throw error
-    }
+    // Queue the background parse+ingest. The task re-reads the persisted raw
+    // copy instead of holding the payload in memory, so a large batch never
+    // accumulates file contents in the queue; only a deployment without a raw
+    // backend (e.g. in-memory test stores) keeps the payload for the task. A
+    // failed import KEEPS its row (marked failed with the reason — Cherry
+    // shows failed rows in the list, reindexable from the raw copy) instead of
+    // vanishing from the list.
+    const fallbackPayload = rawFilePath !== undefined ? undefined : request.contentBase64
+    this.enqueueIngest(request.baseId, async () => {
+      try {
+        // Prefer re-reading the persisted raw copy (the queue never holds file
+        // contents in memory); fall back to the request payload only when the
+        // deployment has no raw backend (e.g. in-memory test stores).
+        let bytes: Uint8Array | null = rawFilePath !== undefined ? (await store.raw?.read(rawFilePath)) ?? null : null
+        if (bytes === null && fallbackPayload !== undefined) bytes = decodeBase64(fallbackPayload)
+        if (bytes === null) throw new Error('raw copy is missing — cannot parse the file')
+        const text = await parseDocumentBuffer(bytes, request.fileName, request.mimeType)
+        if (text.trim().length === 0) throw new Error('parsed document is empty')
+        await this.ingestDocument({
+          baseId: request.baseId,
+          title,
+          sourceType: 'file',
+          fileName: request.fileName,
+          ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
+          ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
+          placeholderId: docId,
+          rawFilePath,
+          text,
+        })
+      } catch (error) {
+        this.indexing.delete(docId)
+        const message = error instanceof Error ? error.message : String(error)
+        try {
+          await store.putDocument({ ...stored, embeddingError: message })
+        } catch {
+          // best-effort: the row already exists; the status flip is cosmetic
+        }
+      }
+    })
+    return stored
   }
 
   /** Start importing a local directory as a cancellable background job. */
@@ -1463,6 +1487,59 @@ export class KnowledgeService extends Service {
 
   // ── internal ──────────────────────────────────────────────────────────────
 
+  /** How many parse+ingest tasks may run concurrently per base (Cherry Studio: 5). */
+  private static readonly INGEST_CONCURRENCY = 5
+
+  /** Queue one parse+ingest task behind a per-base worker pool (Cherry's job queue). */
+  private enqueueIngest(baseId: string, task: () => Promise<void>): void {
+    let entry = this.ingestQueues.get(baseId)
+    if (entry === undefined) {
+      entry = { pending: [], running: 0 }
+      this.ingestQueues.set(baseId, entry)
+    }
+    entry.pending.push(task)
+    this.pumpIngestQueue(baseId)
+  }
+
+  private pumpIngestQueue(baseId: string): void {
+    const entry = this.ingestQueues.get(baseId)
+    if (entry === undefined) return
+    while (entry.running < KnowledgeService.INGEST_CONCURRENCY && entry.pending.length > 0) {
+      const task = entry.pending.shift()
+      if (task === undefined) break
+      entry.running += 1
+      void task().finally(() => {
+        entry.running -= 1
+        this.pumpIngestQueue(baseId)
+      })
+    }
+    if (entry.running === 0 && entry.pending.length === 0) this.ingestQueues.delete(baseId)
+  }
+
+  /** Serialize a read-then-write section per base (dedup check + first persist). */
+  private withBaseWriteLock<T>(baseId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.baseWriteChains.get(baseId) ?? Promise.resolve()
+    const run = prev.then(fn, fn)
+    this.baseWriteChains.set(baseId, run.then(() => undefined, () => undefined))
+    return run
+  }
+
+  /**
+   * Resolve once every queued/active ingest task has settled (all bases).
+   * Pipeline/test helper — the HTTP surface never needs it because the client
+   * polls /indexing-status. Throws when the tasks do not drain in time.
+   */
+  async waitForIdle(timeoutMs = 15000): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    const busy = (): boolean =>
+      this.indexing.size > 0
+      || [...this.ingestQueues.values()].some(entry => entry.running > 0 || entry.pending.length > 0)
+    while (busy()) {
+      if (Date.now() > deadline) throw new Error('knowledge: ingest tasks did not settle in time')
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+  }
+
   private async ingestDocument(input: {
     baseId: string
     title: string
@@ -1480,46 +1557,52 @@ export class KnowledgeService extends Service {
     const store = this.requireStore()
     const config = this.getConfigFor(input.baseId)
     const contentHash = sha256(input.text)
-    for (const doc of store.listDocuments(input.baseId)) {
-      if (doc.id === input.placeholderId) continue
-      if (doc.contentHash === contentHash) {
-        throw new Error(`duplicate document: "${doc.title}" already contains identical content`)
-      }
-    }
-    const docId = input.placeholderId ?? crypto.randomUUID()
-    const prior = input.placeholderId !== undefined ? store.getDocument(docId) : undefined
-    const createdAt = prior?.createdAt ?? Date.now()
     const pieces = chunkText(input.text, config.chunkSize, config.chunkOverlap, {
       smartChunk: config.smartChunk,
       separator: config.chunkSeparator,
     })
-    // Persist the document (with its source text) BEFORE embedding starts and
-    // mark it incomplete: a crash mid-embedding then leaves a recoverable
-    // record — startup recovery re-runs the embed with hash reuse, which only
-    // re-embeds the batches that never landed. Without this write a crash
-    // would leave either a raw placeholder (no text to rebuild from) or an
-    // old complete record, both losing the in-flight work.
-    const half: KnowledgeDocument = {
-      id: docId,
-      baseId: input.baseId,
-      title: input.title,
-      sourceType: input.sourceType,
-      ...(input.fileName !== undefined ? { fileName: input.fileName } : {}),
-      ...(input.mimeType !== undefined ? { mimeType: input.mimeType } : {}),
-      ...(input.url !== undefined ? { url: input.url } : {}),
-      ...(input.parentDirectoryId !== undefined ? { parentDirectoryId: input.parentDirectoryId } : {}),
-      ...(input.rawFilePath !== undefined ? { rawFilePath: input.rawFilePath } : {}),
-      contentHash,
-      rawText: input.text,
-      charCount: input.text.length,
-      tokenCount: estimateTokens(input.text),
-      chunkCount: 0,
-      incomplete: true,
-      createdAt,
-      updatedAt: Date.now(),
-    }
-    await store.putDocument(half)
-    const { chunks, embeddingError } = await this.buildChunks(input.baseId, docId, input.title, input.text, config, pieces, batch => store.putChunkBatch(batch))
+    // Dedup check + first persist run under the per-base write lock: concurrent
+    // imports of identical content must not both pass the check (Cherry guards
+    // the same read-then-write with its per-base mutation lock).
+    const half = await this.withBaseWriteLock(input.baseId, async () => {
+      for (const doc of store.listDocuments(input.baseId)) {
+        if (doc.id === input.placeholderId) continue
+        if (doc.contentHash === contentHash) {
+          throw new Error(`duplicate document: "${doc.title}" already contains identical content`)
+        }
+      }
+      const docId = input.placeholderId ?? crypto.randomUUID()
+      const prior = input.placeholderId !== undefined ? store.getDocument(docId) : undefined
+      const createdAt = prior?.createdAt ?? Date.now()
+      // Persist the document (with its source text) BEFORE embedding starts and
+      // mark it incomplete: a crash mid-embedding then leaves a recoverable
+      // record — startup recovery re-runs the embed with hash reuse, which only
+      // re-embeds the batches that never landed. Without this write a crash
+      // would leave either a raw placeholder (no text to rebuild from) or an
+      // old complete record, both losing the in-flight work.
+      const halfDoc: KnowledgeDocument = {
+        id: docId,
+        baseId: input.baseId,
+        title: input.title,
+        sourceType: input.sourceType,
+        ...(input.fileName !== undefined ? { fileName: input.fileName } : {}),
+        ...(input.mimeType !== undefined ? { mimeType: input.mimeType } : {}),
+        ...(input.url !== undefined ? { url: input.url } : {}),
+        ...(input.parentDirectoryId !== undefined ? { parentDirectoryId: input.parentDirectoryId } : {}),
+        ...(input.rawFilePath !== undefined ? { rawFilePath: input.rawFilePath } : {}),
+        contentHash,
+        rawText: input.text,
+        charCount: input.text.length,
+        tokenCount: estimateTokens(input.text),
+        chunkCount: 0,
+        incomplete: true,
+        createdAt,
+        updatedAt: Date.now(),
+      }
+      await store.putDocument(halfDoc)
+      return halfDoc
+    })
+    const { chunks, embeddingError } = await this.buildChunks(input.baseId, half.id, input.title, input.text, config, pieces, batch => store.putChunkBatch(batch))
     const document: KnowledgeDocument = {
       ...half,
       chunkCount: chunks.length,
@@ -1528,7 +1611,7 @@ export class KnowledgeService extends Service {
     }
     await store.putDocument(document)
     await store.putChunks(chunks)
-    this.indexing.delete(docId)
+    this.indexing.delete(half.id)
     await this.touchBase(input.baseId)
     return document
   }

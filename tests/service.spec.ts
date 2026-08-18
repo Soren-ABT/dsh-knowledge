@@ -481,6 +481,9 @@ describe('KnowledgeService', () => {
       contentBase64: Buffer.from('alpha content here', 'utf8').toString('base64'),
       parentDirectoryId: child.id,
     })
+    // addFileDocument returns as soon as the row is created; the parse+ingest
+    // runs on the background pool, so wait for it before reindexing.
+    await service.waitForIdle()
     const b = await service.addTextDocument({ baseId: base.id, title: 'b', content: 'beta content here' })
 
     // Selecting the root directory (recurses into both leaves) plus the
@@ -501,6 +504,7 @@ describe('KnowledgeService', () => {
       contentBase64: Buffer.from('alpha content here', 'utf8').toString('base64'),
       parentDirectoryId: root.id,
     })
+    await service.waitForIdle()
     await service.addTextDocument({ baseId: base.id, title: 'b', content: 'beta content here' })
 
     const result = await service.reindexBase(base.id)
@@ -534,6 +538,8 @@ describe('KnowledgeService', () => {
       mimeType: 'text/plain',
       contentBase64: Buffer.from('version one content here', 'utf8').toString('base64'),
     })
+    // The row is created immediately; wait for the background parse+ingest.
+    await service.waitForIdle()
     // In-memory stores have no raw file backend; the persisted-text path still works.
     expect(doc.rawFilePath).toBeUndefined()
     const result = await service.search({ query: 'version one', baseId: base.id })
