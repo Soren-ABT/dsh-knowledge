@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 — Cherry-parity import pipeline + worker-thread local models
+## 0.2.2 — Cherry-parity import pipeline + worker-thread local models
 
 The import path is rebuilt around Cherry Studio's architecture (verified
 against its source), and local-model inference moves off the main process.
@@ -231,7 +231,7 @@ so this is an enhancement over the reference implementation.
   before the hit, `>>>` marker), and the browser panel types.
 - Retrieval ranking is untouched; eval baselines are identical.
 
-## 0.2.2 — Crash-resumable imports (lightweight recoverable indexing)
+## 0.2.2 — Crash-resumable imports (internal iteration, not published to npm)
 
 A crash mid-embedding no longer loses the document. `ingestDocument` now
 persists the document (with its source text, marked `incomplete`) BEFORE
