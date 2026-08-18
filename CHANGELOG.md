@@ -2,6 +2,33 @@
 
 ## 0.2.2 — Cherry-parity import pipeline + worker-thread local models
 
+### OCR for scanned PDFs (later additions to this release)
+
+- **Local OCR engine — PaddleOCR (PP-OCRv5 mobile, full Chinese dictionary)**
+  with Tesseract.js as fallback, both inside a dedicated worker thread.
+  Scanned PDFs (no text layer) are recognized automatically once the models
+  are downloaded (~25MB, Settings → Local Models). PP-OCRv6's ONNX repos
+  ship a symbol-only dictionary (no CJK), so v5 mobile is the practical
+  Chinese-capable choice. Image preprocessing (grayscale → normalize →
+  sharpen, 2x upscale) mirrors Cherry's chain; CJK inter-glyph spaces are
+  collapsed; JBIG2/CCITT 1-bit bitmaps are unpacked correctly (scanner
+  scans).
+- **MinerU remote document processor** (Cherry's `mineru` file processor):
+  optional per-base/global setting routes PDFs through the MinerU API
+  (batch task → signed upload → poll → result zip → Markdown) for the best
+  scanned/complex-layout quality; any API failure falls back to the local
+  pipeline (parsers → OCR), so a misconfigured remote never blocks imports.
+- **Embedding-model change routes** (Cherry's `resolveEmbeddingModelChangeRoute`):
+  an empty base saves directly; a BM25-only base gaining a model backfills
+  vectors in place; switching an already-configured model is refused with
+  rebuild guidance (restore carries the new model config).
+- PDFs preview in an embedded viewer (native browser viewer via blob URL);
+  drag & drop upload; directory imports filter unsupported formats/hidden
+  entries; embedding vector-width guard; reindex skips in-flight rows;
+  download failures surface visibly.
+
+### (Original 0.2.2 entry below)
+
 The import path is rebuilt around Cherry Studio's architecture (verified
 against its source), and local-model inference moves off the main process.
 
