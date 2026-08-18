@@ -39,13 +39,14 @@ import {
   ConfirmDialog,
   CreateBaseDialog,
   FILE_ACCEPT,
+  ImportFailuresDialog,
   MAX_FILES,
   PromptDialog,
   RestoreBaseDialog,
   Toasts,
   readFileAsBase64,
 } from './dialogs.js'
-import type { Toast } from './dialogs.js'
+import type { ImportFailure, Toast } from './dialogs.js'
 import { ContextMenu, PopoverMenu } from './popover.js'
 import type { MenuEntry } from './popover.js'
 import { RagConfigPanel } from './rag-config.js'
@@ -129,6 +130,7 @@ type DialogState =
   | { kind: 'renameGroup'; group: string }
   | { kind: 'confirmDeleteGroup'; group: string }
   | { kind: 'addUrl' }
+  | { kind: 'importFailures'; failures: ImportFailure[] }
   | null
 
 interface RecallEntry {
@@ -447,24 +449,29 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
   // Background import: no progress modal — files are uploaded one at a time and
   // the document list refreshes as each lands (row status shows embedding %).
+  // Failures are collected and shown in the failures dialog (Cherry parity),
+  // not sprayed as per-file toasts.
   const runFileImport = useCallback(async (files: File[]): Promise<void> => {
     if (selectedBaseId === null || files.length === 0) return
     notify('info', `${files.length} ${t('uploaded')}…`)
+    const failures: ImportFailure[] = []
     let imported = 0
-    let failed = 0
     for (const file of files) {
       try {
         const contentBase64 = await readFileAsBase64(file)
         await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64)
         imported += 1
       } catch (err) {
-        failed += 1
-        notify('error', `${file.name}: ${err instanceof Error ? err.message : String(err)}`)
+        failures.push({ name: file.name, error: err instanceof Error ? err.message : String(err) })
       }
     }
     await reloadDocuments()
-    if (failed > 0) notify('info', `${t('uploaded')} ${imported} · ${t('importFailed')} ${failed}`)
-    else notify('success', `${imported} ${t('uploaded')}`)
+    if (failures.length > 0) {
+      notify('info', `${t('uploaded')} ${imported} · ${t('importFailed')} ${failures.length}`)
+      setDialog({ kind: 'importFailures', failures })
+    } else {
+      notify('success', `${imported} ${t('uploaded')}`)
+    }
   }, [api, notify, reloadDocuments, selectedBaseId, t])
 
   const runDirectoryImport = useCallback(async (files: File[]): Promise<void> => {
@@ -473,8 +480,8 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     const segments = (file: File): string[] => rel(file).split('/')
     const rootName = segments(files[0])[0] ?? 'folder'
     notify('info', `${t('tabDir')}: ${files.length} ${t('uploaded')}…`)
+    const failures: ImportFailure[] = []
     let imported = 0
-    let failed = 0
     try {
       // 1. collect unique directory paths (excluding the root) sorted by depth
       const dirPaths = new Set<string>()
@@ -503,16 +510,19 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
           await api.addFileDocument(selectedBaseId, file.name, file.type || 'application/octet-stream', contentBase64, undefined, parentId)
           imported += 1
         } catch (err) {
-          failed += 1
-          notify('error', `${file.name}: ${err instanceof Error ? err.message : String(err)}`)
+          failures.push({ name: rel(file), error: err instanceof Error ? err.message : String(err) })
         }
       }
     } catch (err) {
       notify('error', err instanceof Error ? err.message : String(err))
     }
     await reloadDocuments()
-    if (failed > 0) notify('info', `${t('uploaded')} ${imported} · ${t('importFailed')} ${failed}`)
-    else notify('success', `${imported} ${t('uploaded')}`)
+    if (failures.length > 0) {
+      notify('info', `${t('uploaded')} ${imported} · ${t('importFailed')} ${failures.length}`)
+      setDialog({ kind: 'importFailures', failures })
+    } else {
+      notify('success', `${imported} ${t('uploaded')}`)
+    }
   }, [api, notify, reloadDocuments, selectedBaseId, t])
 
   const renameDocument = useCallback(async (doc: DocumentSummary, title: string): Promise<void> => {
@@ -1240,6 +1250,13 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
           onClose={() => setDialog(null)}
         />
       )}
+      {dialog?.kind === 'importFailures' && (
+        <ImportFailuresDialog
+          t={t}
+          failures={dialog.failures}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === 'renameDoc' && (
         <PromptDialog
           title={t('renameDoc')}
@@ -1256,7 +1273,16 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         multiple
         accept={FILE_ACCEPT}
         style={{ display: 'none' }}
-        onChange={(e) => { void runFileImport(Array.from(e.target.files ?? []).slice(0, MAX_FILES)); e.target.value = '' }}
+        onChange={(e) => {
+          // Cherry parity: an interactive FILE pick is capped at 20 items with a
+          // friendly hint (directory imports are uncapped — see the input below).
+          const picked = Array.from(e.target.files ?? [])
+          e.target.value = ''
+          if (picked.length > MAX_FILES) {
+            notify('warning', t('tooManyFiles').replace('{count}', String(MAX_FILES)))
+          }
+          void runFileImport(picked.slice(0, MAX_FILES))
+        }}
       />
       <input
         ref={dirInputRef}
@@ -1265,7 +1291,13 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         // @ts-expect-error webkitdirectory is a Chromium-only attribute for a native folder picker
         webkitdirectory=""
         style={{ display: 'none' }}
-        onChange={(e) => { void runDirectoryImport(Array.from(e.target.files ?? []).slice(0, MAX_FILES)); e.target.value = '' }}
+        onChange={(e) => {
+          // No item cap on directory imports (Cherry: a folder is one source and
+          // the whole tree is processed; truncating here silently dropped files).
+          const picked = Array.from(e.target.files ?? [])
+          e.target.value = ''
+          void runDirectoryImport(picked)
+        }}
       />
 
       {contextMenu !== null && (
