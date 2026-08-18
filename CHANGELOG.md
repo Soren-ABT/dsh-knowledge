@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.3.0 — Cherry-parity import pipeline + worker-thread local models
+
+The import path is rebuilt around Cherry Studio's architecture (verified
+against its source), and local-model inference moves off the main process.
+
+- **Uncapped directory imports**: the folder picker no longer truncates to
+  the 20-item interactive-file limit (Cherry imports a directory as one
+  source with no cap); the 20 limit now applies to file/note picks only,
+  with a "too many files" hint. The import failure dialog is gone — failed
+  imports keep their row, marked red with the reason (Cherry's failed items),
+  reindexable from the raw copy.
+- **Cherry-style parallel import**: `addFileDocument` creates the row and
+  returns immediately; parse+ingest runs on a per-base worker pool
+  (concurrency 5, Cherry's `defaultConcurrency`), rows flip
+  parsing → embedding x% → completed/failed via the existing status poll.
+  Dedup check + first persist run under a per-base write lock so concurrent
+  identical imports cannot both pass.
+- **Local embedding in a dedicated worker thread** (Cherry's "in its own
+  worker" `InferenceServiceBase`): transformers.js and its ~600MB model run
+  off the main process — a large import batch can no longer freeze the host
+  (previously the in-process model plus 5 concurrent parses exceeded the
+  main heap and froze the whole web instance). Serialized inference in the
+  worker, request/response ids with timeout, 60s idle release of the loaded
+  model, crash → fail in-flight + respawn, `unref()` so the worker never
+  blocks shutdown; proxy + HF mirror honoured inside the worker.
+- **Download failures are visible**: a background model download/load
+  failure lands in the status map (`error` + reason) instead of being
+  swallowed, so the Local Models panel shows why a download did not start.
+- **Cherry-detail pass**: drag & drop upload onto the document list (the
+  hint existed, the handlers did not); directory imports filter unsupported
+  formats and hidden entries up front (Cherry's directory scan) with a
+  "skipped N" toast; server-side extension whitelist rejects binaries
+  before a row is created; embedding vector-width guard (Cherry's
+  `assertEmbeddingVectors`) prevents a switched model from corrupting cosine
+  search; reindex skips in-flight rows (Cherry's `REINDEX_ALLOWED_STATUSES`)
+  with visible counts; `.mdx` joins the supported formats.
+- Retrieval behavior and eval baselines are unchanged.
+
 ## 0.2.12 — Remove real eval sets (privacy)
 
 The four real evaluation sets (`eval-questions.json`, `eval-rephrase.json`,
