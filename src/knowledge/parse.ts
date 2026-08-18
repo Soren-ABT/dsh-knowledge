@@ -120,9 +120,11 @@ async function parsePdf(buffer: Uint8Array): Promise<string> {
   // local OCR models are downloaded, extract the embedded page rasters and
   // recognize them. Without the models the original error stands, pointing at
   // the settings panel.
+  let ocrReady = false
   try {
     const { isOcrReady, ocrPdfText } = await import('./ocr.js')
-    if (isOcrReady()) {
+    ocrReady = isOcrReady()
+    if (ocrReady) {
       const recognized = await ocrPdfText(buffer)
       if (recognized.trim().length > 0) return recognized
     }
@@ -132,7 +134,11 @@ async function parsePdf(buffer: Uint8Array): Promise<string> {
   if (primaryError !== null) {
     throw new Error(`PDF parsing failed: ${primaryError.message}`)
   }
-  throw new Error('PDF contains no extractable text (it may be scanned)')
+  throw new Error(
+    ocrReady
+      ? 'PDF contains no extractable text (it may be scanned)'
+      : 'PDF contains no extractable text (it may be scanned) — download the local OCR models in Settings → Local Models to auto-recognize scans',
+  )
 }
 
 async function parseDocx(buffer: Uint8Array): Promise<string> {

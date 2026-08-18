@@ -293,15 +293,18 @@ export class KnowledgeService extends Service {
   /** Cherry-style restore: re-embed every source document into a fresh base
    *  (with the source's current config), returning the new base. Raw source
    *  files are copied across so the restored base keeps the rebuild source. */
-  async restoreBase(sourceBaseId: string, name: string): Promise<KnowledgeBase> {
+  async restoreBase(sourceBaseId: string, name: string, config?: BaseConfig): Promise<KnowledgeBase> {
     const store = this.requireStore()
     const source = store.getBase(sourceBaseId)
     if (source === undefined) throw new Error(`knowledge base not found: ${sourceBaseId}`)
+    // Cherry's restore flow rebuilds with a (possibly different) embedding
+    // model: an explicit config overrides the source's (used when the user
+    // switches models), otherwise the source config carries over.
     const base = await this.createBase({
       name: name.trim() || `${source.name} (恢复)`,
       description: source.description,
       group: source.group,
-      config: source.config,
+      config: config ?? source.config,
     })
     for (const doc of store.listDocuments(sourceBaseId)) {
       if (doc.sourceType === 'directory') continue
@@ -362,6 +365,32 @@ export class KnowledgeService extends Service {
         ? { config: mergeBaseConfig(existing.config, request.config) }
         : {}),
       updatedAt: Date.now(),
+    }
+    // Cherry's embedding-model change routes (resolveEmbeddingModelChangeRoute):
+    // an empty base saves directly; a BM25-only base gaining a model backfills
+    // vectors in place; switching an already-configured model invalidates every
+    // stored vector and must go through rebuild (restore) — refuse the direct
+    // change with that guidance instead of silently breaking retrieval.
+    const patch = request.config
+    if (patch !== undefined) {
+      const oldConfig = this.getConfigFor(id)
+      const newConfig = resolveConfigFor(this.baseConfig, store.getConfigOverrides(), next.config)
+      const modelChanged = newConfig.embeddingProvider !== oldConfig.embeddingProvider
+        || newConfig.embeddingModel !== oldConfig.embeddingModel
+      if (modelChanged && store.listDocuments(id).length > 0) {
+        const hadModel = oldConfig.embeddingProvider !== 'none' && oldConfig.embeddingModel.trim() !== ''
+        if (hadModel) {
+          throw new Error('切换嵌入模型会使已有向量全部失效——请使用「重建知识库」以新模型重建（Cherry Studio 语义）')
+        }
+        // BM25-only → enable-in-place: commit the model, then backfill vectors
+        // in the background (Cherry's enableEmbeddingModel).
+        await store.putBase(next)
+        const baseId = id
+        void this.reindexBase(baseId).catch((error: unknown) => {
+          this.ctx.logger.warn(`knowledge: in-place embedding backfill failed: ${error instanceof Error ? error.message : String(error)}`)
+        })
+        return next
+      }
     }
     await store.putBase(next)
     return next
@@ -1576,9 +1605,13 @@ export class KnowledgeService extends Service {
    * Resolve once every queued/active ingest task has settled (all bases).
    * Pipeline/test helper — the HTTP surface never needs it because the client
    * polls /indexing-status. Throws when the tasks do not drain in time.
+   * The initial 25ms tick lets a fire-and-forget task (e.g. the in-place
+   * backfill after a model change) reach its first indexing entry before the
+   * first busy() probe, avoiding a false "idle".
    */
   async waitForIdle(timeoutMs = 15000): Promise<void> {
     const deadline = Date.now() + timeoutMs
+    await new Promise(resolve => setTimeout(resolve, 25))
     const busy = (): boolean =>
       this.indexing.size > 0
       || [...this.ingestQueues.values()].some(entry => entry.running > 0 || entry.pending.length > 0)

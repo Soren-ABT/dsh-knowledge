@@ -102,11 +102,38 @@ describe('embedding hash reuse (Cherry decision A4)', () => {
     expect(embedTextsMock).toHaveBeenCalled()
 
     // A different embedding model invalidates every hash → full re-embed.
+    // Direct switching on a non-empty base is refused (Cherry's restore route);
+    // rebuilding with the new model is the sanctioned path.
     embedTextsMock.mockClear()
-    await service.renameBase(base.id, { config: { embeddingModel: 'm2' } })
-    await service.reindexDocument(doc.id)
+    await expect(service.renameBase(base.id, { config: { embeddingModel: 'm2' } }))
+      .rejects.toThrow(/切换嵌入模型|rebuild/i)
+    const rebuilt = await service.restoreBase(base.id, 'reuse-m2', {
+      embeddingProvider: 'openai', embeddingBaseUrl: 'http://x', embeddingModel: 'm2', embeddingApiKey: 'k',
+    })
+    const rebuiltDoc = service.listDocuments(rebuilt.id)[0]
+    await service.reindexDocument(rebuiltDoc.id)
     const modelSwitchTexts = embedTextsMock.mock.calls.flatMap(call => call[4])
     expect(modelSwitchTexts.length).toBeGreaterThan(0)
+    // The rebuilt base indexes with the new model key.
+    const chunk = service.listChunks(rebuiltDoc.id)[0]
+    expect(chunk.embeddingModel).toBe('openai:m2')
+  })
+
+  it('enables a model on a BM25-only base in place (Cherry enable-in-place backfill)', async () => {
+    embedTextsMock.mockClear()
+    const service = await mountService()
+    const base = await service.createBase({ name: 'enable-in-place' })
+    await service.addTextDocument({ baseId: base.id, title: 'd', content: 'backfill content here' })
+    await service.waitForIdle()
+    // No model was configured → the change is allowed and backfills vectors.
+    await service.renameBase(base.id, {
+      config: { embeddingProvider: 'openai', embeddingBaseUrl: 'http://x', embeddingModel: 'm9', embeddingApiKey: 'k' },
+    })
+    await service.waitForIdle()
+    expect(embedTextsMock).toHaveBeenCalled()
+    const doc = service.listDocuments(base.id)[0]
+    const chunk = service.listChunks(doc.id)[0]
+    expect(chunk.embeddingModel).toBe('openai:m9')
   })
 
   it('reuses vectors across documents with identical chunk text', async () => {

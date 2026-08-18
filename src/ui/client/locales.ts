@@ -47,6 +47,7 @@ export type KnowledgeKey =
   | 'ocrDesc'
   | 'ocrDownload'
   | 'ocrRemove'
+  | 'processorBuiltinDesc'
   | 'perBaseHint'
   | 'uploadFile'
   | 'uploadButton'
@@ -251,6 +252,7 @@ export const zh: Record<KnowledgeKey, string> = {
   ocrDesc: '下载中文+英文识别模型（约 20MB）后，扫描版 PDF（无文本层）会自动 OCR 出文字并进索引',
   ocrDownload: '下载 OCR 模型',
   ocrRemove: '删除 OCR 模型',
+  processorBuiltinDesc: '内置处理器：本地解析全部支持格式；扫描件 PDF 在下载 OCR 模型后自动识别（设置 → 本地模型）',
   perBaseHint: '留空则使用全局设置',
   uploadFile: '上传文件',
   uploadButton: '点击选择文件或拖拽到此处',
@@ -453,6 +455,7 @@ export const en: Record<KnowledgeKey, string> = {
   ocrDesc: 'Download the Chinese + English recognition models (~20MB); scanned PDFs (no text layer) are then OCRed automatically and indexed',
   ocrDownload: 'Download OCR models',
   ocrRemove: 'Remove OCR models',
+  processorBuiltinDesc: 'Built-in processor: parses every supported format locally; scanned PDFs are OCRed automatically once the OCR models are downloaded (Settings → Local Models)',
   perBaseHint: 'Leave empty to use global settings',
   uploadFile: 'Upload file',
   uploadButton: 'Click to select files or drag them here',

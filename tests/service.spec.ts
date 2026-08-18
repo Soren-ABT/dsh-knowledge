@@ -356,6 +356,43 @@ describe('KnowledgeService', () => {
     expect(settled.every(doc => doc.status !== 'processing' && doc.chunkCount > 0)).toBe(true)
   })
 
+  it('routes embedding-model changes like Cherry: empty saves, BM25-only backfills, configured must rebuild', async () => {
+    const service = await mountService()
+    // 1. Empty base: the model change saves directly.
+    const empty = await service.createBase({ name: 'route-empty' })
+    await service.renameBase(empty.id, {
+      config: { embeddingProvider: 'openai', embeddingBaseUrl: 'http://x', embeddingModel: 'm1' },
+    })
+    expect(service.getConfigFor(empty.id).embeddingModel).toBe('m1')
+
+    // 2. BM25-only base with documents: enabling a model commits and backfills
+    //    in place (enable-in-place). The change is allowed and the model lands;
+    //    the actual backfill vectors are covered in embedding-reuse.spec (the
+    //    mock environment), since a real embed call would wait on the network.
+    const lexical = await service.createBase({ name: 'route-lexical' })
+    await service.addTextDocument({ baseId: lexical.id, title: 'd', content: 'backfill me please' })
+    await service.waitForIdle()
+    await service.renameBase(lexical.id, {
+      config: { embeddingProvider: 'openai', embeddingBaseUrl: 'http://127.0.0.1:1', embeddingModel: 'm2', embeddingApiKey: 'k' },
+    })
+    expect(service.getConfigFor(lexical.id).embeddingModel).toBe('m2')
+
+    // 3. Switching an already-configured model on a non-empty base is refused
+    //    with rebuild guidance (Cherry's restore route). 127.0.0.1:1 fails
+    //    fast so the embed attempt cannot hang the test on DNS.
+    const configured = await service.createBase({
+      name: 'route-switch',
+      config: { embeddingProvider: 'openai', embeddingBaseUrl: 'http://127.0.0.1:1', embeddingModel: 'm3', embeddingApiKey: 'k' },
+    })
+    await service.addTextDocument({ baseId: configured.id, title: 'd', content: 'already embedded' })
+    await service.waitForIdle()
+    await expect(service.renameBase(configured.id, {
+      config: { embeddingModel: 'm4' },
+    })).rejects.toThrow(/重建知识库|rebuild/i)
+    // Nothing changed.
+    expect(service.getConfigFor(configured.id).embeddingModel).toBe('m3')
+  })
+
   it('creates, renames and deletes groups, moving member bases with them', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'a', group: '工作' })

@@ -32,6 +32,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [localStatus, setLocalStatus] = useState<LocalModelStatus | null>(null)
   const [suggestions, setSuggestions] = useState<ModelSuggestions>({ embedding: [], local: [], rerank: [] })
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -68,6 +69,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   const patch = (p: Partial<KnowledgeConfig>): void => setValues(prev => ({ ...prev, ...p }))
 
   const save = async (): Promise<void> => {
+    setSaveError(null)
     const overrides: BaseConfig = {}
     const current = (base.config ?? {}) as Record<string, unknown>
     for (const key of Object.keys(values) as Array<keyof KnowledgeConfig>) {
@@ -78,8 +80,14 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
         ;(overrides as Record<string, unknown>)[key] = value === globalConfig[key] && typeof value === 'string' ? '' : value
       }
     }
-    await api.updateBase(base.id, { config: overrides })
-    onSaved()
+    try {
+      await api.updateBase(base.id, { config: overrides })
+      onSaved()
+    } catch (err) {
+      // The host refuses switching an already-configured embedding model on a
+      // non-empty base (Cherry's restore route) — surface that guidance.
+      setSaveError(err instanceof Error ? err.message : String(err))
+    }
   }
 
   const usesThreshold = values.rerankModel.trim() !== ''
@@ -89,9 +97,9 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
       <div style={{ ...style.card, flex: 1, overflowY: 'auto' }} className="kb-scroll">
         {/* 文档处理 */}
         <Section title={t('docProcessing')} hint={t('docProcessingHint')}>
-          <select style={style.input} value="builtin" onChange={() => {}}>
-            <option value="builtin">{t('processorBuiltin')}</option>
-          </select>
+          <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>
+            {t('processorBuiltinDesc')}
+          </div>
         </Section>
 
         {/* 嵌入模型 */}
@@ -277,6 +285,9 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
       </div>
 
       {/* footer: 重置 + 保存 */}
+      {saveError !== null && (
+        <div style={{ ...style.error, marginBottom: 8 }}>{saveError}</div>
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
         <button
           style={{ ...style.ghostButton, opacity: dirty ? 1 : 0.45 }}
