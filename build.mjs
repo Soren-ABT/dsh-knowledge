@@ -71,6 +71,10 @@ const hostEntries = [
   ['src/index.ts', 'lib/index.js'],
   ['src/knowledge/index.ts', 'lib/knowledge/index.js'],
   ['src/tool-knowledge/index.ts', 'lib/tool-knowledge/index.js'],
+  // Local embedding inference worker: a separate ESM bundle loaded by
+  // worker_threads at runtime (Cherry Studio's own-worker model), so
+  // transformers.js and its ~600MB model never run in the host process.
+  ['src/knowledge/embed-worker.ts', 'lib/knowledge/embed-worker.mjs'],
 ]
 
 for (const [entry, outfile] of hostEntries) {

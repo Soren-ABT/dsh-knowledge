@@ -1,14 +1,18 @@
 /**
  * Embedding providers. `openai` targets any OpenAI-compatible `/embeddings`
  * endpoint; `ollama` targets a local Ollama server; `local` runs an embedding
- * model in-process through transformers.js (Cherry Studio's Local Models).
+ * model through transformers.js in a DEDICATED WORKER THREAD (Cherry Studio's
+ * "in its own worker" model): the ~600MB model and every inference tensor live
+ * off the main process, so a large import batch can never freeze the host.
  * Every provider returns one L2-normalized vector per input text.
  * @module dsh-knowledge/knowledge/embed
  */
 
-import { readdir, rm } from 'node:fs/promises'
+import { rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { Worker } from 'node:worker_threads'
+import { fileURLToPath } from 'node:url'
 import { applyGlobalProxy, httpFetch, NETWORK_HINT } from './net.js'
 import type { EmbeddingProvider } from './types.js'
 
@@ -78,14 +82,7 @@ export async function embedTexts(
   throw new Error(`unknown embedding provider ${String(provider)}`)
 }
 
-// ── local (in-process transformers.js) ───────────────────────────────────────
-
-interface TransformersModule {
-  env: { allowLocalModels: boolean; cacheDir?: string; remoteHost?: string }
-  pipeline(task: string, modelId: string, options?: Record<string, unknown>): Promise<
-    (text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>
-  >
-}
+// ── local (dedicated worker thread running transformers.js) ─────────────────
 
 export interface LocalModelStatus {
   model: string
@@ -95,61 +92,7 @@ export interface LocalModelStatus {
   message: string
 }
 
-interface ProgressInfo {
-  status?: string
-  file?: string
-  progress?: number
-}
-
-const localExtractors = new Map<string, Promise<LocalExtractor>>()
-const localModelStatus = new Map<string, LocalModelStatus>()
-const cancelledModels = new Set<string>()
-// Per-model inference chain: transformers.js gives no concurrency guarantee for
-// parallel runs on one pipeline instance, so serialize inference per model (the
-// extractor itself is shared — the model loads once — only the runs queue up).
-// Remote providers (openai/ollama) are unaffected and keep full parallelism.
-const localInferenceChains = new Map<string, Promise<unknown>>()
-
-/** Current load/download state for an in-process model (for the settings panel). */
-export function getLocalModelStatus(modelId: string): LocalModelStatus {
-  return localModelStatus.get(modelId) ?? { model: modelId, status: 'idle', progress: 0, message: '' }
-}
-
-/** Download + load a local model into the in-memory extractor cache (no inference). */
-export async function loadLocalModel(modelId: string): Promise<void> {
-  await getLocalExtractor(modelId)
-}
-
-/** Cancel an in-flight download; the next progress tick throws and aborts the load. */
-export async function cancelLocalModel(modelId: string): Promise<void> {
-  cancelledModels.add(modelId)
-  localExtractors.delete(modelId)
-  localModelStatus.set(modelId, { model: modelId, status: 'idle', progress: 0, message: '' })
-  await rm(join(localModelCacheDir(), modelId), { recursive: true, force: true }).catch(() => {})
-}
-
-/** Drop a loaded extractor and delete its cached weights from disk. */
-export async function removeLocalModel(modelId: string): Promise<void> {
-  if (localModelStatus.get(modelId)?.status === 'downloading') {
-    throw new Error('模型正在下载，完成后才能删除')
-  }
-  cancelledModels.delete(modelId)
-  localExtractors.delete(modelId)
-  localModelStatus.delete(modelId)
-  await rm(join(localModelCacheDir(), modelId), { recursive: true, force: true })
-}
-
-/** Whether a model's cached weights are already on disk (a real `.onnx` weight file). */
-export async function isLocalModelDownloaded(modelId: string): Promise<boolean> {
-  try {
-    const entries = await readdir(join(localModelCacheDir(), modelId, 'onnx'))
-    return entries.some(name => name.endsWith('.onnx'))
-  } catch {
-    return false
-  }
-}
-
-type LocalExtractor = (texts: string[]) => Promise<number[][]>
+type Pooling = 'last_token' | 'cls' | 'mean'
 
 /**
  * Per-model pooling strategy, mirroring Cherry Studio's `pooling.ts`: the
@@ -159,7 +102,7 @@ type LocalExtractor = (texts: string[]) => Promise<number[][]>
  * - GTE / E5 → mean pooling (transformers.js default)
  * Unknown ids fall back to mean pooling, which is the safest general choice.
  */
-export function poolingFor(modelId: string): 'last_token' | 'cls' | 'mean' {
+export function poolingFor(modelId: string): Pooling {
   const id = modelId.toLowerCase()
   if (id.includes('qwen3')) return 'last_token'
   if (id.includes('bge') || id.includes('bce')) return 'cls'
@@ -168,82 +111,185 @@ export function poolingFor(modelId: string): 'last_token' | 'cls' | 'mean' {
   return 'mean'
 }
 
-async function embedLocal(modelId: string, texts: readonly string[]): Promise<number[][]> {
-  const extractor = await getLocalExtractor(modelId)
-  // Chain this run behind the previous one for the same model; a failed run
-  // must not break the chain (the error still propagates to this caller).
-  const prev = localInferenceChains.get(modelId) ?? Promise.resolve()
-  const run = prev.then(() => extractor([...texts]))
-  localInferenceChains.set(modelId, run.then(() => undefined, () => undefined))
-  return run
+/** Current load/download state for an in-process model (for the settings panel). */
+const localModelStatus = new Map<string, LocalModelStatus>()
+
+export function getLocalModelStatus(modelId: string): LocalModelStatus {
+  return localModelStatus.get(modelId) ?? { model: modelId, status: 'idle', progress: 0, message: '' }
 }
 
-async function getLocalExtractor(modelId: string): Promise<LocalExtractor> {
-  const cached = localExtractors.get(modelId)
-  if (cached !== undefined) return cached
-  const pending = createLocalExtractor(modelId)
-  localExtractors.set(modelId, pending)
+/** Whether a model's cached weights are already on disk (a real `.onnx` weight file). */
+export async function isLocalModelDownloaded(modelId: string): Promise<boolean> {
+  const { readdir } = await import('node:fs/promises')
   try {
-    return await pending
-  } catch (error) {
-    localExtractors.delete(modelId)
-    if (cancelledModels.has(modelId)) {
-      cancelledModels.delete(modelId)
-      localModelStatus.set(modelId, { model: modelId, status: 'idle', progress: 0, message: '' })
-    } else {
-      localModelStatus.set(modelId, {
-        model: modelId,
-        status: 'error',
-        progress: 0,
-        message: error instanceof Error ? error.message : String(error),
-      })
-    }
-    throw error
+    const entries = await readdir(join(localModelCacheDir(), modelId, 'onnx'))
+    return entries.some(name => name.endsWith('.onnx'))
+  } catch {
+    return false
   }
 }
 
-async function createLocalExtractor(modelId: string): Promise<LocalExtractor> {
-  const transformers = (await import('@huggingface/transformers')) as unknown as TransformersModule
-  const hfEndpoint = hfEndpointOverride
-    ?? (typeof process !== 'undefined' && process.env.HF_ENDPOINT !== undefined ? process.env.HF_ENDPOINT : undefined)
-  if (hfEndpoint !== undefined && hfEndpoint.trim() !== '') {
-    transformers.env.remoteHost = hfEndpoint.trim().replace(/\/+$/, '')
-  }
-  transformers.env.cacheDir = localModelCacheDir()
+interface WorkerResponse {
+  id?: number
+  ok?: boolean
+  vectors?: number[][]
+  error?: string
+  type?: 'progress'
+  modelId?: string
+  status?: LocalModelStatus['status']
+  progress?: number
+  message?: string
+}
 
-  // 1. Download through the repo id (progress reported); discard the pipeline so it
-  //    does not pin ~600MB — inference reloads from disk below (Cherry Studio style).
-  if (!(await isLocalModelDownloaded(modelId))) {
-    localModelStatus.set(modelId, { model: modelId, status: 'downloading', progress: 0, message: '' })
-    try {
-      await transformers.pipeline('feature-extraction', modelId, {
-        dtype: 'q8',
-        progress_callback: (info: ProgressInfo): void => {
-          if (cancelledModels.has(modelId)) throw new Error('download cancelled')
-          const current = localModelStatus.get(modelId)
-          if (current === undefined) return
-          if (info.status === 'progress' && typeof info.progress === 'number') {
-            localModelStatus.set(modelId, { ...current, status: 'downloading', progress: info.progress })
-          }
-        },
+// A single lazy worker owns every local model (Cherry: one worker per kind,
+// serialized requests, idle release, crash-then-respawn). `unref()` keeps the
+// worker from holding the host process open on shutdown.
+const LOCAL_WORKER_IDLE_TIMEOUT_MS = 60_000
+const LOCAL_WORKER_REQUEST_TIMEOUT_MS = 30 * 60_000
+
+let localWorker: Worker | null = null
+let localWorkerIdleTimer: ReturnType<typeof setTimeout> | null = null
+let localRequestSeq = 0
+const localPending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+
+function localWorkerPath(): string {
+  return fileURLToPath(new URL('./embed-worker.mjs', import.meta.url))
+}
+
+function clearIdleTimer(): void {
+  if (localWorkerIdleTimer !== null) {
+    clearTimeout(localWorkerIdleTimer)
+    localWorkerIdleTimer = null
+  }
+}
+
+function failAllPending(error: Error): void {
+  for (const { reject } of localPending.values()) reject(error)
+  localPending.clear()
+}
+
+function ensureLocalWorker(): Worker {
+  if (localWorker !== null) return localWorker
+  const worker = new Worker(localWorkerPath())
+  worker.unref()
+  worker.on('message', (message: WorkerResponse): void => {
+    if (message.type === 'progress' && message.modelId !== undefined) {
+      localModelStatus.set(message.modelId, {
+        model: message.modelId,
+        status: message.status ?? 'idle',
+        progress: message.progress ?? 0,
+        message: message.message ?? '',
       })
-    } catch (error) {
-      const raw = error instanceof Error ? error.message : String(error)
-      throw new Error(`${raw} · ${NETWORK_HINT}`)
+      return
     }
+    if (message.id === undefined) return
+    const pending = localPending.get(message.id)
+    if (pending === undefined) return
+    localPending.delete(message.id)
+    if (message.ok === true) pending.resolve(message.vectors ?? null)
+    else pending.reject(new Error(message.error ?? 'local model worker failed'))
+  })
+  const onWorkerFailure = (error: Error): void => {
+    // Ignore a superseded worker's late error/exit — a newer worker may be live.
+    if (localWorker !== worker) return
+    failAllPending(error)
+    localWorker = null
+    clearIdleTimer()
   }
+  worker.on('error', (error) => onWorkerFailure(error instanceof Error ? error : new Error(String(error))))
+  worker.on('exit', () => onWorkerFailure(new Error('local model worker exited')))
+  localWorker = worker
+  return worker
+}
 
-  // 2. Load from the absolute cache directory: an absolute path is not a valid HF repo
-  //    id, so transformers.js treats it as a local model and never touches the network.
-  localModelStatus.set(modelId, { model: modelId, status: 'ready', progress: 100, message: '' })
-  const pipeline = await transformers.pipeline('feature-extraction', join(localModelCacheDir(), modelId), { dtype: 'q8' })
-  return async (texts: string[]): Promise<number[][]> => {
-    // Pooling depends on the model family (see poolingFor) — Qwen3 takes the
-    // last token, BGE takes the CLS token, GTE/E5 take the mean. transformers.js
-    // slices + L2-normalizes in one step (matches Cherry Studio's pooling.ts).
-    const pooling = poolingFor(modelId)
-    const output = await pipeline(texts, { pooling, normalize: true })
-    return output.tolist() as number[][]
+function armIdleTimer(): void {
+  clearIdleTimer()
+  localWorkerIdleTimer = setTimeout(() => {
+    localWorkerIdleTimer = null
+    // Release a loaded model (up to 600MB+) after inactivity, mirroring
+    // Cherry's idle-release timer; the next request respawns the worker.
+    const worker = localWorker
+    localWorker = null
+    failAllPending(new Error('local model worker released after idle'))
+    void worker?.terminate()
+  }, LOCAL_WORKER_IDLE_TIMEOUT_MS)
+  localWorkerIdleTimer.unref?.()
+}
+
+function postToWorker(message: unknown): void {
+  const worker = ensureLocalWorker()
+  armIdleTimer()
+  worker.postMessage(message)
+}
+
+function callWorker(
+  type: 'embed' | 'load',
+  payload: { modelId: string; texts?: string[]; pooling?: Pooling },
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const id = ++localRequestSeq
+    const timer = setTimeout(() => {
+      localPending.delete(id)
+      reject(new Error('local model worker request timed out'))
+    }, LOCAL_WORKER_REQUEST_TIMEOUT_MS)
+    timer.unref?.()
+    localPending.set(id, {
+      resolve: (value) => { clearTimeout(timer); resolve(value) },
+      reject: (error) => { clearTimeout(timer); reject(error) },
+    })
+    postToWorker({
+      id,
+      type,
+      modelId: payload.modelId,
+      cacheDir: localModelCacheDir(),
+      hfEndpoint: hfEndpointOverride
+        ?? (typeof process !== 'undefined' && process.env.HF_ENDPOINT !== undefined ? process.env.HF_ENDPOINT : undefined),
+      texts: payload.texts,
+      pooling: payload.pooling,
+    })
+  })
+}
+
+async function embedLocal(modelId: string, texts: readonly string[]): Promise<number[][]> {
+  const vectors = await callWorker('embed', { modelId, texts: [...texts], pooling: poolingFor(modelId) })
+  return vectors as number[][]
+}
+
+/** Download + load a local model in the worker (no inference; progress reports via /local-model-status). */
+export async function loadLocalModel(modelId: string): Promise<void> {
+  await callWorker('load', { modelId })
+}
+
+/** Cancel an in-flight download; the next progress tick throws and aborts the load. */
+export async function cancelLocalModel(modelId: string): Promise<void> {
+  postToWorker({ type: 'cancel', modelId })
+  localModelStatus.set(modelId, { model: modelId, status: 'idle', progress: 0, message: '' })
+  await rm(join(localModelCacheDir(), modelId), { recursive: true, force: true }).catch(() => {})
+}
+
+/** Drop a loaded extractor (frees its ~600MB in the worker) and delete its cached weights from disk. */
+export async function removeLocalModel(modelId: string): Promise<void> {
+  if (localModelStatus.get(modelId)?.status === 'downloading') {
+    throw new Error('模型正在下载，完成后才能删除')
+  }
+  postToWorker({ type: 'release', modelId })
+  localModelStatus.delete(modelId)
+  await rm(join(localModelCacheDir(), modelId), { recursive: true, force: true })
+}
+
+/** Terminate the worker (plugin teardown). Idempotent. */
+export function disposeLocalModelWorker(): void {
+  clearIdleTimer()
+  const worker = localWorker
+  localWorker = null
+  failAllPending(new Error('local model worker disposed'))
+  if (worker !== null) {
+    try {
+      worker.postMessage({ type: 'shutdown' })
+    } catch {
+      // worker already dead — nothing to do
+    }
+    void worker.terminate()
   }
 }
 

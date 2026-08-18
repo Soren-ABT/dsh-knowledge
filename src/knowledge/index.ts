@@ -14,7 +14,7 @@ import { chunkText } from './chunk.js'
 import type { ChunkPiece } from './chunk.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
 import type { ConfigOverrides } from './domain.js'
-import { DEFAULT_LOCAL_MODEL, embedTexts, getLocalModelStatus, setHfEndpoint, setLocalModelCacheDir } from './embed.js'
+import { DEFAULT_LOCAL_MODEL, disposeLocalModelWorker, embedTexts, getLocalModelStatus, setHfEndpoint, setLocalModelCacheDir } from './embed.js'
 import type { LocalModelStatus } from './embed.js'
 import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, listLocalModels, LOCAL_MODELS } from './localModels.js'
 import type { LocalModelSummary } from './localModels.js'
@@ -137,6 +137,9 @@ export class KnowledgeService extends Service {
     this.resolveStore()
     const store = this.store
     this.ctx.effect(() => async () => { await store.close() }, 'knowledge: close store')
+    // Terminate the local-model inference worker on teardown so a loaded
+    // ~600MB model can never outlive the plugin (Cherry: lifecycle-managed worker).
+    this.ctx.effect(() => () => { disposeLocalModelWorker() }, 'knowledge: dispose local model worker')
     // Resume documents a previous process left mid-embedding: their chunks are
     // partially persisted, so re-running the embed with hash reuse completes
     // them without re-embedding the batches that already landed. (openStore
@@ -1488,19 +1491,15 @@ export class KnowledgeService extends Service {
   // ── internal ──────────────────────────────────────────────────────────────
 
   /**
-   * How many parse+ingest tasks may run concurrently per base (Cherry Studio: 5).
-   * The in-process local model (transformers.js, ~600MB in the main process)
-   * must never share the process with concurrent parses — Cherry runs local
-   * inference in its own worker; here the single-process equivalent is full
-   * serialization for `local`, while remote providers keep Cherry's parallelism.
+   * How many parse+ingest tasks may run concurrently per base (Cherry Studio:
+   * 5, on a per-base queue). Local-model inference no longer constrains this:
+   * it runs in a dedicated worker thread (see embed.ts), exactly like Cherry's
+   * own-worker embedding service.
    */
-  private static readonly REMOTE_INGEST_CONCURRENCY = 5
-  private static readonly LOCAL_INGEST_CONCURRENCY = 1
+  private static readonly INGEST_CONCURRENCY = 5
 
-  private ingestConcurrency(baseId: string): number {
-    return this.getConfigFor(baseId).embeddingProvider === 'local'
-      ? KnowledgeService.LOCAL_INGEST_CONCURRENCY
-      : KnowledgeService.REMOTE_INGEST_CONCURRENCY
+  private ingestConcurrency(): number {
+    return KnowledgeService.INGEST_CONCURRENCY
   }
 
   /** Queue one parse+ingest task behind a per-base worker pool (Cherry's job queue). */
@@ -1517,7 +1516,7 @@ export class KnowledgeService extends Service {
   private pumpIngestQueue(baseId: string): void {
     const entry = this.ingestQueues.get(baseId)
     if (entry === undefined) return
-    const concurrency = this.ingestConcurrency(baseId)
+    const concurrency = this.ingestConcurrency()
     while (entry.running < concurrency && entry.pending.length > 0) {
       const task = entry.pending.shift()
       if (task === undefined) break
