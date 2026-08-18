@@ -22,7 +22,7 @@
 ## 它带来什么
 
 - **知识库与文档**：创建/删除/重命名知识库与文档；**分组管理**（新建/重命名/删除分组，侧边栏按分组折叠导航，知识库可在菜单中「移动到分组」）；**弹窗式添加文档（文本/文件/网页/目录四页签）**、多文件拖拽上传（单次 ≤20 个，**5 路并发后台导入池**，可同时丢多批）、**目录导入**（递归扫描 txt/md/csv/html/json/pdf/docx/doc/pptx/ppt/xlsx/xls/epub 等，**导入为可下钻的文件夹树**）、URL 导入；**同名冲突「全部保留/替换」**、内容哈希去重；**文档预览**（PDF 内嵌查看器 + 文本/分块预览，超大文件自动截断）；资料行显示 **✓ 就绪状态徽标、实时导入状态（解析中 / 嵌入中 NN%）与相对更新时间**，文件夹在任一后代处理时显示「导入中」；全部操作走正式对话框与 Toast 通知（无 window.prompt/confirm）。
-- **扫描件 OCR（本地引擎）**：扫描版 PDF 与图片自动走 **PaddleOCR PP-OCRv5**（约 21MB 模型，含 1.8 万字符中文词典，设置 → 本地模型一键下载），识别失败自动回退 Tesseract；**1-bit 位图（JBIG2/CCITT 传真式扫描件）也能正确识别**；识别文本照常分块、向量化、可检索。
+- **扫描件 OCR（本地引擎）**：扫描版 PDF、**矢量绘制的无文本层 PDF** 与图片自动走**整页渲染 + PaddleOCR PP-OCRv5**（约 21MB 模型，含 1.8 万字符中文词典，设置 → 本地模型一键下载；页面用 mupdf WASM 渲染），识别失败自动回退 Tesseract；**1-bit 位图（JBIG2/CCITT 传真式扫描件）也能正确识别**；文本层损坏或逐字符排版的 PDF 会自动切换识别路径；识别文本照常分块、向量化、可检索。
 - **每库独立配置**：每个知识库可单独指定 embedding 提供方/模型（含**本地模型**）、**重排模型**、分块大小与 topK，未设置字段自动继承全局配置；改配置后一键重建索引（全库或单条资料）。
 - **可选 MinerU 远程文档处理**：PDF 可交给 [MinerU](https://github.com/opendatalab/MinerU) 服务解析（公式、表格、版式还原成 Markdown），知识库设置里填入 MinerU API Key（全局或每库覆盖）即可；未配置时自动走本地解析链路。
 - **向量化与检索**：可插拔 embedding 提供方 —— 任意 OpenAI 兼容 `/embeddings` 端点（OpenAI、DeepSeek、SiliconFlow、本地网关…）、Ollama，或 **进程内本地模型（transformers.js，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX，无需联网服务）**；**混合检索**（BM25 + 向量 + Reciprocal Rank Fusion）、**重排模型（rerank，Jina/SiliconFlow/Cohere v2 风格 API）**、**MMR 结果去重**、检索模式（auto/hybrid/vector/lexical）与相似度阈值；未配置时自动退化关键词（CJK 二元组 + 拉丁词 BM25），零配置即可用；召回测试显示命中来源、相关度、双分数、**耗时**，并保留**检索历史**可一键重放。
@@ -45,7 +45,7 @@
 | `tool-knowledge` | host | 12 个模型工具，消费 `ctx.knowledge` |
 | `ui-knowledge` | client | 侧边栏底部入口（`sidebar.footer.action`）+ 工作区整页浮层（`shell.overlay`），Cherry Studio 式布局 |
 | `embed-worker`（worker 线程） | host | transformers.js 本地嵌入推理（模型 ~600MB 不进 host 进程） |
-| `ocr-worker`（worker 线程） | host | PaddleOCR / Tesseract 识别（onnxruntime、OpenCV、tesseract worker 全隔离在线程内） |
+| `ocr-worker`（worker 线程） | host | 页面渲染（mupdf WASM）+ PaddleOCR / Tesseract 识别（onnxruntime、OpenCV、tesseract worker 全隔离在线程内） |
 
 数据模型（`storageDomain` 声明领域 `knowledge`，version 0）：
 
@@ -147,7 +147,7 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 
 选择 `embeddingProvider: local` 时，插件在**独立 worker 线程**里用 `@huggingface/transformers`（+ onnxruntime）跑 embedding，**无需任何外部服务**。默认模型 `onnx-community/Qwen3-Embedding-0.6B-ONNX`（1024 维），`embeddingModel` 可换成任意 Hugging Face 上的 ONNX embedding 仓库 id。首次使用会从 Hugging Face Hub 下载模型权重（默认缓存到 `$DSH_HOME/cache/dsh-knowledge/local-models`）；下载完成后后续导入与检索全程本地。**在设置 →「本地模型」页面可提前下载 / 取消 / 删除 / 重试**，并实时查看下载进度；知识库设置面板也会显示模型下载进度（下载中 % / 就绪 / 失败）。
 
-**OCR（扫描件识别）**：下载 OCR 模型后，扫描版 PDF 与图片在导入时自动识别（PaddleOCR PP-OCRv5 优先，失败回退 Tesseract，全部在 `ocr-worker` 线程内）。模型约 21MB，默认从 hf-mirror.com 下载；海外用户可在同一 `hfEndpoint` 字段填 `https://huggingface.co`。
+**OCR（扫描件识别）**：下载 OCR 模型后，扫描版 / 矢量无文本层 / 文本层损坏的 PDF 在导入时自动**渲染整页**（mupdf WASM）并识别（PaddleOCR PP-OCRv5 优先，失败回退 Tesseract，全部在 `ocr-worker` 线程内）。模型约 21MB，默认从 hf-mirror.com 下载；海外用户可在同一 `hfEndpoint` 字段填 `https://huggingface.co`。
 
 ---
 
