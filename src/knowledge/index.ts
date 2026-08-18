@@ -20,7 +20,7 @@ import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, listLoc
 import type { LocalModelSummary } from './localModels.js'
 import { httpFetch } from './net.js'
 import { knowledgeRoute } from './http.js'
-import { extractFromHtml, parseDocumentBuffer } from './parse.js'
+import { SUPPORTED_DOCUMENT_EXTENSIONS, extractFromHtml, extensionOf, parseDocumentBuffer } from './parse.js'
 import { rank } from './retrieval.js'
 import { maximalMarginalRelevance, reciprocalRankFusion, RRF_K } from './retrieval.js'
 import type { RankedHit } from './retrieval.js'
@@ -447,6 +447,12 @@ export class KnowledgeService extends Service {
   async addFileDocument(request: AddFileDocumentRequest): Promise<KnowledgeDocument> {
     const store = this.requireStore()
     if (store.getBase(request.baseId) === undefined) throw new Error(`knowledge base not found: ${request.baseId}`)
+    // Reject unsupported formats before the row is created (Cherry's
+    // `assertSupportedKnowledgeFilePath`): a binary/image/archive must not be
+    // decoded into garbage text and imported as a real document.
+    if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(request.fileName))) {
+      throw new Error(`Unsupported knowledge file type: ${request.fileName}`)
+    }
     // Same-name conflict handling, Cherry Studio style: replace the existing entry first.
     if (request.conflict === 'replace') {
       const existing = store.listDocuments(request.baseId).find(doc => doc.fileName === request.fileName)
@@ -778,11 +784,18 @@ export class KnowledgeService extends Service {
     if (document === undefined) throw new Error(`document not found: ${id}`)
     // A directory container has no content of its own: reindexing it means
     // reindexing its whole subtree (Cherry's reindex-subtree semantics).
+    // In-flight leaves are skipped (Cherry's REINDEX_ALLOWED_STATUSES), not
+    // failed, so reindexing a busy directory never aborts mid-subtree.
     if (document.sourceType === 'directory') {
       for (const child of store.listDocuments(document.baseId)) {
-        if (child.parentDirectoryId === document.id) await this.reindexDocument(child.id)
+        if (child.parentDirectoryId !== document.id) continue
+        if (this.indexing.has(child.id)) continue
+        await this.reindexDocument(child.id)
       }
       return document
+    }
+    if (this.indexing.has(id)) {
+      throw new Error(`"${document.title}" is still being indexed — try again when it finishes`)
     }
     // Re-read and re-parse the original source when it was persisted (Cherry's
     // `canKnowledgeItemRebuildSource`): a reindex after a parser upgrade gets
@@ -904,19 +917,25 @@ export class KnowledgeService extends Service {
     job.current = ''
   }
 
-  async reindexDocuments(ids: readonly string[]): Promise<{ reindexed: number }> {
+  async reindexDocuments(ids: readonly string[]): Promise<{ reindexed: number; skipped: number }> {
     const store = this.requireStore()
     // Fold the selection to its outermost roots first (Cherry's
     // `getOutermostSelectedItemIds`): a directory and one of its descendants
     // in the same batch must not reindex the subtree twice, and each selected
-    // directory reindexes its whole subtree recursively.
+    // directory reindexes its whole subtree recursively. In-flight rows are
+    // skipped and counted so the UI can tell the user (Cherry's bulk gate).
     let reindexed = 0
+    let skipped = 0
     for (const id of this.outermostSelectedIds(ids)) {
       if (store.getDocument(id) === undefined) continue
+      if (this.indexing.has(id)) {
+        skipped += 1
+        continue
+      }
       await this.reindexDocument(id)
       reindexed += 1
     }
-    return { reindexed }
+    return { reindexed, skipped }
   }
 
   async deleteDocuments(ids: readonly string[]): Promise<{ deleted: number }> {
@@ -1667,6 +1686,10 @@ export class KnowledgeService extends Service {
         const stored = key !== undefined
           ? this.requireStore().listEmbeddingVectorsByHashes(hashes, key)
           : new Map<string, number[]>()
+        // Cherry's `assertEmbeddingVectors`: one consistent width per batch and
+        // it must match the width already stored under this model — a switched
+        // model/维度 would silently corrupt every downstream cosine search.
+        const storedDimension = [...stored.values()][0]?.length
         const need: number[] = []
         const needTexts: string[] = []
         for (let i = 0; i < chunks.length; i += 1) {
@@ -1692,6 +1715,17 @@ export class KnowledgeService extends Service {
           const batch = need.slice(i, i + batchSize)
           const batchTexts = needTexts.slice(i, i + batchSize)
           const vectors = await this.embedTextsOnce(config, batchTexts)
+          // Same-width guarantee across the whole batch (a provider mixing
+          // widths would poison every vector comparison in the store).
+          const widths = new Set(vectors.map(vector => vector.length))
+          if (widths.size > 1) {
+            throw new Error(`embedding returned mixed vector dimensions: ${[...widths].join(', ')}`)
+          }
+          const width = vectors[0]?.length ?? 0
+          if (width === 0) throw new Error('embedding returned empty vectors')
+          if (storedDimension !== undefined && storedDimension !== width) {
+            throw new Error(`embedding vector dimension ${width} does not match the ${storedDimension} already stored for model "${key}" — switch back or reindex the base`)
+          }
           const done: KnowledgeChunk[] = []
           for (let j = 0; j < batch.length; j += 1) {
             const index = batch[j]
@@ -1923,10 +1957,11 @@ async function fetchHtml(url: string): Promise<string> {
   throw new Error('URL redirect limit exceeded')
 }
 
-const DIRECTORY_EXTENSIONS = new Set([
-  '.txt', '.md', '.markdown', '.csv', '.html', '.htm', '.json', '.log',
-  '.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.epub',
-])
+/** Lowercased extensions accepted by addFileDocument (defensive gate; the UI filters first). */
+const SUPPORTED_DOCUMENT_EXTENSION_SET = new Set<string>(SUPPORTED_DOCUMENT_EXTENSIONS)
+
+/** Dot-prefixed forms for the host-side directory scan (Cherry's directory import has no cap). */
+const DIRECTORY_EXTENSIONS = new Set(SUPPORTED_DOCUMENT_EXTENSIONS.map(ext => `.${ext}`))
 
 const DIRECTORY_MAX_FILES = 500
 const DIRECTORY_MAX_DEPTH = 8

@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, DragEvent } from 'react'
 import { KnowledgeApi } from './api.js'
 import type {
   BaseStats,
@@ -42,6 +42,7 @@ import {
   MAX_FILES,
   PromptDialog,
   RestoreBaseDialog,
+  SUPPORTED_IMPORT_EXTENSIONS,
   Toasts,
   readFileAsBase64,
 } from './dialogs.js'
@@ -168,6 +169,8 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   const [indexingMap, setIndexingMap] = useState<Map<string, { progress: number; phase: 'parsing' | 'embedding' }>>(new Map())
   const [docLimit, setDocLimit] = useState(100)
   const [navWidth, setNavWidth] = useState(272)
+  const [dragOver, setDragOver] = useState(false)
+  const dragDepth = useRef(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dirInputRef = useRef<HTMLInputElement>(null)
 
@@ -460,16 +463,60 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     notify('success', `${files.length} ${t('uploaded')}`)
   }, [api, notify, reloadDocuments, selectedBaseId, t])
 
+  // ── drag & drop upload (Cherry Studio drops files onto the knowledge list) ──
+
+  const dragCarriesFiles = (event: DragEvent): boolean => Array.from(event.dataTransfer?.types ?? []).includes('Files')
+
+  const handleDragEnter = useCallback((event: DragEvent): void => {
+    if (!dragCarriesFiles(event)) return
+    event.preventDefault()
+    dragDepth.current += 1
+    setDragOver(true)
+  }, [])
+
+  const handleDragOver = useCallback((event: DragEvent): void => {
+    if (dragCarriesFiles(event)) event.preventDefault()
+  }, [])
+
+  const handleDragLeave = useCallback((): void => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragOver(false)
+  }, [])
+
+  const handleDrop = useCallback((event: DragEvent): void => {
+    if (!dragCarriesFiles(event)) return
+    event.preventDefault()
+    dragDepth.current = 0
+    setDragOver(false)
+    const files = Array.from(event.dataTransfer?.files ?? [])
+    if (files.length > 0) void runFileImport(files)
+  }, [runFileImport])
+
   const runDirectoryImport = useCallback(async (files: File[]): Promise<void> => {
     if (selectedBaseId === null || files.length === 0) return
+    // Cherry's directory scan only picks up supported files and skips hidden
+    // entries — mirror that here so a folder of mixed content imports
+    // cleanly instead of shipping unsupported binaries to the parser.
+    const supported = files.filter(file => {
+      const rel = file.webkitRelativePath || file.name
+      if (rel.split('/').some(segment => segment.startsWith('.'))) return false
+      const dot = file.name.lastIndexOf('.')
+      const ext = dot >= 0 ? file.name.slice(dot + 1).toLowerCase() : ''
+      return SUPPORTED_IMPORT_EXTENSIONS.has(ext)
+    })
+    const skippedCount = files.length - supported.length
+    if (supported.length === 0) {
+      notify('warning', t('noSupportedFiles'))
+      return
+    }
     const rel = (file: File): string => file.webkitRelativePath || file.name
     const segments = (file: File): string[] => rel(file).split('/')
-    const rootName = segments(files[0])[0] ?? 'folder'
-    notify('info', `${t('tabDir')}: ${files.length} ${t('uploaded')}…`)
+    const rootName = segments(supported[0])[0] ?? 'folder'
+    notify('info', `${t('tabDir')}: ${supported.length} ${t('uploaded')}…`)
     try {
       // 1. collect unique directory paths (excluding the root) sorted by depth
       const dirPaths = new Set<string>()
-      for (const file of files) {
+      for (const file of supported) {
         const parts = segments(file)
         for (let i = 1; i < parts.length - 1; i += 1) dirPaths.add(parts.slice(0, i + 1).join('/'))
       }
@@ -486,7 +533,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       }
       // 3. submit every file under its directory — rows land immediately and
       //    the background pool processes them (Cherry: whole directory, no cap)
-      for (const file of files) {
+      for (const file of supported) {
         const parts = segments(file)
         const dirPath = parts.slice(0, -1).join('/')
         const parentId = dirPath === rootName || dirPath === '' ? root.id : dirId.get(dirPath)
@@ -497,7 +544,8 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       notify('error', err instanceof Error ? err.message : String(err))
     }
     await reloadDocuments()
-    notify('success', `${files.length} ${t('uploaded')}`)
+    notify('success', `${supported.length} ${t('uploaded')}`)
+    if (skippedCount > 0) notify('info', t('skippedFiles').replace('{count}', String(skippedCount)))
   }, [api, notify, reloadDocuments, selectedBaseId, t])
 
   const renameDocument = useCallback(async (doc: DocumentSummary, title: string): Promise<void> => {
@@ -558,9 +606,18 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   }, [allChecked, documents])
 
   const bulkReindex = useCallback(async (): Promise<void> => {
+    // Skip rows still processing up front (Cherry's bulk gate: only
+    // completed/failed items are reindexable) so the batch is never rejected.
+    const reindexable = checkedDocs.filter(doc => doc.status !== 'processing')
+    const skipped = checkedDocs.length - reindexable.length
+    if (reindexable.length === 0) {
+      notify('warning', t('bulkReindexNone'))
+      return
+    }
     await run(async () => {
-      const result = await api.reindexDocuments(checkedDocs.map(doc => doc.id))
-      notify('success', `${t('reindexDone')} ${result.reindexed}`)
+      const result = await api.reindexDocuments(reindexable.map(doc => doc.id))
+      const totalSkipped = skipped + (result.skipped ?? 0)
+      notify('success', `${t('reindexDone')} ${result.reindexed}${totalSkipped > 0 ? ` · ${t('bulkReindexSkipped')} ${totalSkipped}` : ''}`)
       setCheckedDocIds(new Set())
       await reloadDocuments()
     })
@@ -914,7 +971,24 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                       </div>
                     )}
 
-                  <div style={style.card}>
+                  <div
+                    style={{ ...style.card, ...(dragOver ? { outline: `2px dashed ${C.accent}`, outlineOffset: -4 } : {}) }}
+                    onDragEnter={handleDragEnter}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                  >
+                    {dragOver && (
+                      <div style={{
+                        position: 'absolute', inset: 0, zIndex: 30, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: 'color-mix(in srgb, var(--dsw-alias-brand-primary, #3b6ef6) 8%, transparent)',
+                        borderRadius: 10, pointerEvents: 'none',
+                      }}>
+                        <span style={{ fontSize: 14, fontWeight: 600, color: C.accent, background: 'var(--dsw-bg-base, #fff)', padding: '8px 16px', borderRadius: 999, boxShadow: '0 2px 10px rgba(0,0,0,0.12)' }}>
+                          {t('dragToUpload')}
+                        </span>
+                      </div>
+                    )}
                     {currentDirectoryId !== null && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                         <button className="kb-row" style={style.button} onClick={navigateUp}>← {t('backToParent')}</button>

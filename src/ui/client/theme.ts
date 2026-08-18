@@ -89,7 +89,7 @@ export const style = {
   baseName: { fontSize: 13, fontWeight: 600 } as CSSProperties,
   baseMeta: { fontSize: 11, color: C.muted, marginTop: 2 } as CSSProperties,
   main: { flex: 1, minWidth: 0, overflowY: 'auto', padding: 18, display: 'flex', flexDirection: 'column', gap: 14 } as CSSProperties,
-  card: { border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface, padding: 14 } as CSSProperties,
+  card: { border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface, padding: 14, position: 'relative' } as CSSProperties,
   cardTitle: { fontSize: 13, fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' } as CSSProperties,
   button: {
     display: 'inline-flex', alignItems: 'center', gap: 5, border: `1px solid ${C.border}`,

@@ -372,7 +372,7 @@ export class KnowledgeApi {
     return this.call('POST', `/documents/${encodeURIComponent(documentId)}/refresh`)
   }
 
-  reindexDocuments(ids: string[]): Promise<{ reindexed: number }> {
+  reindexDocuments(ids: string[]): Promise<{ reindexed: number; skipped: number }> {
     return this.call('POST', '/documents/reindex', { ids })
   }
 

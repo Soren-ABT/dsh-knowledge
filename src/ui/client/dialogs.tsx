@@ -188,9 +188,12 @@ export function CreateBaseDialog(props: {
 
 // ── add data source (Cherry Studio style: file → OS picker, dir/url → dialogs) ──
 
-const FILE_ACCEPT = '.txt,.md,.markdown,.csv,.html,.htm,.json,.log,.pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.epub'
+const FILE_ACCEPT = '.txt,.md,.markdown,.mdx,.csv,.html,.htm,.json,.log,.pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.epub'
 const MAX_FILES = 20
 export { FILE_ACCEPT, MAX_FILES }
+
+/** Extension set shared by the directory import filter (Cherry's directory scan skips others). */
+export const SUPPORTED_IMPORT_EXTENSIONS = new Set(FILE_ACCEPT.split(',').map(ext => ext.slice(1)))
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

@@ -6,6 +6,23 @@
  * @module dsh-knowledge/knowledge/parse
  */
 
+/**
+ * The formats a knowledge import accepts (Cherry's `knowledgeSupportedFileExts`
+ * plus json/log, which we decode as plain text). Anything else — binaries,
+ * images, archives — is rejected at add time instead of being decoded into
+ * garbage text (Cherry's directory scan skips unsupported extensions silently).
+ */
+export const SUPPORTED_DOCUMENT_EXTENSIONS = [
+  'txt', 'md', 'markdown', 'mdx', 'csv', 'html', 'htm', 'json', 'log',
+  'pdf', 'docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'epub',
+] as const
+
+/** Lowercased extension of a file name ('' when none). */
+export function extensionOf(fileName: string): string {
+  const idx = fileName.lastIndexOf('.')
+  return idx >= 0 ? fileName.slice(idx + 1).toLowerCase() : ''
+}
+
 /** Return the parsed text of a document buffer, dispatching on extension. */
 export async function parseDocumentBuffer(
   buffer: Uint8Array,
@@ -26,11 +43,6 @@ export async function parseDocumentBuffer(
   if (ext === 'xls') return parseLegacyOffice(buffer, 'xlsx')
   // txt / md / csv / json / log / code and anything else text-like
   return decodeText(buffer)
-}
-
-function extensionOf(fileName: string): string {
-  const idx = fileName.lastIndexOf('.')
-  return idx >= 0 ? fileName.slice(idx + 1).toLowerCase() : ''
 }
 
 function decodeText(buffer: Uint8Array): string {

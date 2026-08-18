@@ -36,6 +36,11 @@ export type KnowledgeKey =
   | 'uploaded'
   | 'importFailed'
   | 'tooManyFiles'
+  | 'noSupportedFiles'
+  | 'skippedFiles'
+  | 'bulkReindexSkipped'
+  | 'bulkReindexNone'
+  | 'dragToUpload'
   | 'perBaseHint'
   | 'uploadFile'
   | 'uploadButton'
@@ -229,6 +234,11 @@ export const zh: Record<KnowledgeKey, string> = {
   uploaded: '已导入',
   importFailed: '导入失败',
   tooManyFiles: '单次最多选择 {count} 个文件，其余已跳过',
+  noSupportedFiles: '所选内容中没有支持的文件（隐藏文件与不支持的格式已跳过）',
+  skippedFiles: '已跳过 {count} 个不支持的文件',
+  bulkReindexSkipped: '跳过处理中 {count}',
+  bulkReindexNone: '所选文档都还在处理中，稍后再试',
+  dragToUpload: '松开上传文件',
   perBaseHint: '留空则使用全局设置',
   uploadFile: '上传文件',
   uploadButton: '点击选择文件或拖拽到此处',
@@ -420,6 +430,11 @@ export const en: Record<KnowledgeKey, string> = {
   uploaded: 'imported',
   importFailed: 'import failed',
   tooManyFiles: 'At most {count} files per selection; the rest were skipped',
+  noSupportedFiles: 'No supported files in the selection (hidden files and unsupported formats are skipped)',
+  skippedFiles: 'Skipped {count} unsupported files',
+  bulkReindexSkipped: 'skipped {count} in progress',
+  bulkReindexNone: 'All selected documents are still processing — try again later',
+  dragToUpload: 'Drop to upload',
   perBaseHint: 'Leave empty to use global settings',
   uploadFile: 'Upload file',
   uploadButton: 'Click to select files or drag them here',

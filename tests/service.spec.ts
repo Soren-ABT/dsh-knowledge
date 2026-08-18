@@ -274,6 +274,19 @@ describe('KnowledgeService', () => {
     expect(service.listDocuments(base.id)).toHaveLength(1)
   })
 
+  it('rejects unsupported file types before creating a row', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'reject-ext' })
+    // Cherry's `assertSupportedKnowledgeFilePath`: a binary/image/archive must
+    // never be decoded into garbage text and imported as a real document.
+    await expect(service.addFileDocument({
+      baseId: base.id,
+      fileName: 'screenshot.png',
+      contentBase64: Buffer.from('not a document').toString('base64'),
+    })).rejects.toThrow(/Unsupported knowledge file type/)
+    expect(service.listDocuments(base.id)).toHaveLength(0)
+  })
+
   it('queues a large batch of file uploads and settles every row', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'batch' })
