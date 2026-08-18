@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+﻿import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { hashEmbeddingText } from '../src/knowledge/chunkdb.js'
 import type { Config } from '../src/knowledge/config.js'
@@ -56,6 +56,9 @@ const DEFAULT_CONFIG: Config = {
   localModelCacheDir: '',
   hfEndpoint: '',
   chunkStorePath: '',
+  documentProcessorProvider: 'builtin',
+  mineruApiKey: '',
+  mineruApiHost: '',
 }
 
 function fakeWebServer() {

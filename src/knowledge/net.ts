@@ -33,7 +33,7 @@ export function applyGlobalProxy(): void {
 export interface HttpFetchOptions {
   method?: string
   headers?: Record<string, string>
-  body?: string
+  body?: string | Uint8Array
   /** Per-attempt timeout in milliseconds. */
   timeoutMs?: number
   /** Extra retries after the first failed attempt (default 1). */
@@ -51,7 +51,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
       return await fetch(url, {
         method,
         headers,
-        body,
+        body: body as BodyInit,
         signal: AbortSignal.timeout(timeoutMs),
         ...(redirect !== undefined ? { redirect } : {}),
       })

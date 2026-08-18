@@ -117,6 +117,9 @@ export interface KnowledgeConfig {
   embeddingBatchSize: number
   siblingChunks: number
   hfEndpoint: string
+  documentProcessorProvider: 'builtin' | 'mineru'
+  mineruApiKey: string
+  mineruApiHost: string
 }
 
 export interface SearchHit {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+﻿import { describe, expect, it } from 'vitest'
 import { resolveConfig } from '../src/knowledge/config.js'
 import type { Config } from '../src/knowledge/config.js'
 import { LOCAL_MODELS } from '../src/knowledge/localModels.js'
@@ -27,6 +27,9 @@ const base: Config = {
   localModelCacheDir: '',
   hfEndpoint: '',
   chunkStorePath: '',
+  documentProcessorProvider: 'builtin',
+  mineruApiKey: '',
+  mineruApiHost: '',
 }
 
 describe('resolveConfig', () => {

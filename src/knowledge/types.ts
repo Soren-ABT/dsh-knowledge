@@ -33,6 +33,9 @@ export interface BaseConfig {
   readonly embeddingBatchSize?: number
   /** How many neighbouring chunks (±) to attach to each search hit as context (0–3, 0 = off). */
   readonly siblingChunks?: number
+  readonly documentProcessorProvider?: 'builtin' | 'mineru'
+  readonly mineruApiKey?: string
+  readonly mineruApiHost?: string
 }
 
 /** One knowledge base (a namespace of documents). */
@@ -137,6 +140,12 @@ export interface KnowledgeConfig {
   readonly siblingChunks: number
   /** Hugging Face endpoint override (mirror); empty = official hub / `HF_ENDPOINT` env. */
   readonly hfEndpoint: string
+  /** Document processor: `builtin` (local parsers + OCR) or `mineru` (remote MinerU API). */
+  readonly documentProcessorProvider: 'builtin' | 'mineru'
+  /** MinerU API key (required when provider is `mineru`). */
+  readonly mineruApiKey: string
+  /** MinerU API host; empty = https://mineru.net */
+  readonly mineruApiHost: string
 }
 
 /** One ranked search result. */

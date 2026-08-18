@@ -48,6 +48,7 @@ export type KnowledgeKey =
   | 'ocrDownload'
   | 'ocrRemove'
   | 'processorBuiltinDesc'
+  | 'processorMineruDesc'
   | 'perBaseHint'
   | 'uploadFile'
   | 'uploadButton'
@@ -253,6 +254,7 @@ export const zh: Record<KnowledgeKey, string> = {
   ocrDownload: '下载 OCR 模型',
   ocrRemove: '删除 OCR 模型',
   processorBuiltinDesc: '内置处理器：本地解析全部支持格式；扫描件 PDF 在下载 OCR 模型后自动识别（设置 → 本地模型）',
+  processorMineruDesc: 'PDF 优先经 MinerU 远程 API 解析（版面/表格/扫描件质量最高），失败自动回退本地解析。在 mineru.net 获取 API Key。',
   perBaseHint: '留空则使用全局设置',
   uploadFile: '上传文件',
   uploadButton: '点击选择文件或拖拽到此处',
@@ -456,6 +458,7 @@ export const en: Record<KnowledgeKey, string> = {
   ocrDownload: 'Download OCR models',
   ocrRemove: 'Remove OCR models',
   processorBuiltinDesc: 'Built-in processor: parses every supported format locally; scanned PDFs are OCRed automatically once the OCR models are downloaded (Settings → Local Models)',
+  processorMineruDesc: 'PDFs go through the MinerU remote API first (best quality for scans/complex layouts); failures fall back to local parsing. Get an API key at mineru.net.',
   perBaseHint: 'Leave empty to use global settings',
   uploadFile: 'Upload file',
   uploadButton: 'Click to select files or drag them here',

@@ -538,7 +538,27 @@ export class KnowledgeService extends Service {
         let bytes: Uint8Array | null = rawFilePath !== undefined ? (await store.raw?.read(rawFilePath)) ?? null : null
         if (bytes === null && fallbackPayload !== undefined) bytes = decodeBase64(fallbackPayload)
         if (bytes === null) throw new Error('raw copy is missing — cannot parse the file')
-        const text = await parseDocumentBuffer(bytes, request.fileName, request.mimeType)
+        // Cherry's fileProcessorId posture: when the MinerU remote processor
+        // is configured, PDFs go through the API first (scanned/complex
+        // layouts get true layout-aware Markdown); any failure falls back to
+        // the local pipeline.
+        const config = this.getConfigFor(request.baseId)
+        let text: string | null = null
+        if (config.documentProcessorProvider === 'mineru' && config.mineruApiKey.trim() !== ''
+          && extensionOf(request.fileName) === 'pdf') {
+          try {
+            const { extractPdfWithMineru } = await import('./mineru.js')
+            text = await extractPdfWithMineru(bytes, request.fileName, {
+              apiKey: config.mineruApiKey,
+              apiHost: config.mineruApiHost,
+            })
+          } catch (error) {
+            this.ctx.logger.warn(`knowledge: mineru extract failed, falling back to local: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+        if (text === null) {
+          text = await parseDocumentBuffer(bytes, request.fileName, request.mimeType)
+        }
         if (text.trim().length === 0) throw new Error('parsed document is empty')
         await this.ingestDocument({
           baseId: request.baseId,

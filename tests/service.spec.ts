@@ -29,6 +29,9 @@ const DEFAULT_CONFIG: Config = {
   localModelCacheDir: '',
   hfEndpoint: '',
   chunkStorePath: '',
+  documentProcessorProvider: 'builtin',
+  mineruApiKey: '',
+  mineruApiHost: '',
 }
 
 function fakeWebServer() {
@@ -391,6 +394,28 @@ describe('KnowledgeService', () => {
     })).rejects.toThrow(/重建知识库|rebuild/i)
     // Nothing changed.
     expect(service.getConfigFor(configured.id).embeddingModel).toBe('m3')
+  })
+
+  it('falls back to the local pipeline when the MinerU remote processor fails', async () => {
+    const service = await mountService()
+    const base = await service.createBase({
+      name: 'mineru-fallback',
+      config: {
+        documentProcessorProvider: 'mineru',
+        mineruApiKey: 'invalid-key',
+        mineruApiHost: 'http://127.0.0.1:1', // connection refused → fast failure
+      },
+    })
+    const doc = await service.addFileDocument({
+      baseId: base.id,
+      fileName: 'notes.txt',
+      contentBase64: Buffer.from('plain text survives mineru failure', 'utf8').toString('base64'),
+    })
+    await service.waitForIdle()
+    const settled = service.listDocuments(base.id).find(d => d.id === doc.id)
+    expect(settled?.chunkCount).toBeGreaterThan(0)
+    const text = service.listChunks(doc.id).map(c => c.text).join(' ')
+    expect(text).toContain('plain text survives mineru failure')
   })
 
   it('creates, renames and deletes groups, moving member bases with them', async () => {

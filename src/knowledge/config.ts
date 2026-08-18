@@ -37,6 +37,12 @@ export interface Config {
   hfEndpoint: string
   /** Chunk SQLite file; empty = `<DSH_HOME>/storages/knowledge-chunks.sqlite`. */
   chunkStorePath: string
+  /** Document processor: `builtin` (local parsers + OCR) or `mineru` (remote MinerU API). */
+  documentProcessorProvider: 'builtin' | 'mineru'
+  /** MinerU API key (required when provider is `mineru`). */
+  mineruApiKey: string
+  /** MinerU API host; empty = https://mineru.net */
+  mineruApiHost: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -61,6 +67,9 @@ export const Config: Schema<Config> = Schema.object({
   localModelCacheDir: Schema.string().default(''),
   hfEndpoint: Schema.string().default(''),
   chunkStorePath: Schema.string().default(''),
+  documentProcessorProvider: Schema.union(['builtin', 'mineru']).default('builtin'),
+  mineruApiKey: Schema.string().default(''),
+  mineruApiHost: Schema.string().default(''),
 })
 
 /** Resolve a full config from deployment defaults plus runtime overrides. */
@@ -97,6 +106,9 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     embeddingBatchSize,
     siblingChunks,
     hfEndpoint: overrides.hfEndpoint ?? config.hfEndpoint,
+    documentProcessorProvider: overrides.documentProcessorProvider ?? config.documentProcessorProvider,
+    mineruApiKey: overrides.mineruApiKey ?? config.mineruApiKey,
+    mineruApiHost: overrides.mineruApiHost ?? config.mineruApiHost,
   }
 }
 
@@ -131,6 +143,9 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     rrfVectorWeight: clampNumber(baseConfig.rrfVectorWeight ?? resolved.rrfVectorWeight, 0.1, 5, 1),
     embeddingBatchSize: clampInt(baseConfig.embeddingBatchSize ?? resolved.embeddingBatchSize, 1, 512, 32),
     siblingChunks: clampInt(baseConfig.siblingChunks ?? resolved.siblingChunks, 0, 3, 1),
+    documentProcessorProvider: baseConfig.documentProcessorProvider ?? resolved.documentProcessorProvider,
+    mineruApiKey: baseConfig.mineruApiKey ?? resolved.mineruApiKey,
+    mineruApiHost: baseConfig.mineruApiHost ?? resolved.mineruApiHost,
   }
 }
 

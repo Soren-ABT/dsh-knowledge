@@ -97,9 +97,34 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
       <div style={{ ...style.card, flex: 1, overflowY: 'auto' }} className="kb-scroll">
         {/* 文档处理 */}
         <Section title={t('docProcessing')} hint={t('docProcessingHint')}>
-          <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>
-            {t('processorBuiltinDesc')}
-          </div>
+          <select
+            style={style.input}
+            value={values.documentProcessorProvider}
+            onChange={(e) => patch({ documentProcessorProvider: e.target.value as 'builtin' | 'mineru' })}
+          >
+            <option value="builtin">{t('processorBuiltin')}</option>
+            <option value="mineru">MinerU（远程，扫描件/复杂版面）</option>
+          </select>
+          {values.documentProcessorProvider === 'mineru' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+              <input
+                style={style.input}
+                type="password"
+                placeholder="MinerU API Key"
+                value={values.mineruApiKey}
+                onChange={(e) => patch({ mineruApiKey: e.target.value })}
+              />
+              <input
+                style={style.input}
+                placeholder="API Host（默认 https://mineru.net）"
+                value={values.mineruApiHost}
+                onChange={(e) => patch({ mineruApiHost: e.target.value })}
+              />
+              <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
+                {t('processorMineruDesc')}
+              </div>
+            </div>
+          )}
         </Section>
 
         {/* 嵌入模型 */}

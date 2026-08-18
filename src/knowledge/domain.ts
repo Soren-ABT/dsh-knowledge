@@ -88,6 +88,9 @@ export const configOverridesSchema = z.object({
   embeddingBatchSize: z.number().int().gt(0).optional(),
   siblingChunks: z.number().int().gte(0).lte(3).optional(),
   hfEndpoint: z.string().optional(),
+  documentProcessorProvider: z.enum(['builtin', 'mineru']).optional(),
+  mineruApiKey: z.string().optional(),
+  mineruApiHost: z.string().optional(),
 })
 
 /** Partial runtime config stored in the domain global slot. */
@@ -111,6 +114,9 @@ export interface ConfigOverrides {
   embeddingBatchSize?: number
   siblingChunks?: number
   hfEndpoint?: string
+  documentProcessorProvider?: KnowledgeConfig['documentProcessorProvider']
+  mineruApiKey?: string
+  mineruApiHost?: string
 }
 
 export const knowledgeDomainSpec = defineDomain({
