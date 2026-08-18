@@ -236,6 +236,18 @@ export class KnowledgeApi {
     return this.call('DELETE', `/local-models/remove?model=${encodeURIComponent(id)}`)
   }
 
+  getOcrStatus(): Promise<{ status: string; progress: number; message: string }> {
+    return this.call('GET', '/local-ocr')
+  }
+
+  downloadOcr(): Promise<{ status: string; progress: number; message: string }> {
+    return this.call('POST', '/local-ocr/download', {})
+  }
+
+  removeOcr(): Promise<{ deleted: boolean }> {
+    return this.call('DELETE', '/local-ocr/remove')
+  }
+
   setConfig(overrides: Partial<KnowledgeConfig>): Promise<KnowledgeConfig> {
     return this.call('PUT', '/config', overrides)
   }

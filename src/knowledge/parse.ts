@@ -116,6 +116,19 @@ async function parsePdf(buffer: Uint8Array): Promise<string> {
   } catch {
     // fallback failed — report the primary engine's error below
   }
+  // Last resort for scanned PDFs (Cherry's local-document posture): when the
+  // local OCR models are downloaded, extract the embedded page rasters and
+  // recognize them. Without the models the original error stands, pointing at
+  // the settings panel.
+  try {
+    const { isOcrReady, ocrPdfText } = await import('./ocr.js')
+    if (isOcrReady()) {
+      const recognized = await ocrPdfText(buffer)
+      if (recognized.trim().length > 0) return recognized
+    }
+  } catch {
+    // OCR unavailable — keep the original error
+  }
   if (primaryError !== null) {
     throw new Error(`PDF parsing failed: ${primaryError.message}`)
   }

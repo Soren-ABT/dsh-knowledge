@@ -64,6 +64,9 @@ const hostExternal = [
   '@firecrawl/anydoc',
   '@huggingface/transformers',
   'onnxruntime-node',
+  'pdfjs-dist',
+  'tesseract.js',
+  'tesseract.js-core',
   'undici',
 ]
 
@@ -75,6 +78,9 @@ const hostEntries = [
   // worker_threads at runtime (Cherry Studio's own-worker model), so
   // transformers.js and its ~600MB model never run in the host process.
   ['src/knowledge/embed-worker.ts', 'lib/knowledge/embed-worker.mjs'],
+  // OCR inference worker: Tesseract.js rethrows worker errors on
+  // process.nextTick, so it must run in its own thread (own-worker OCR).
+  ['src/knowledge/ocr-worker.ts', 'lib/knowledge/ocr-worker.mjs'],
 ]
 
 for (const [entry, outfile] of hostEntries) {

@@ -43,6 +43,10 @@ export type KnowledgeKey =
   | 'dragToUpload'
   | 'pdfTooLarge'
   | 'pdfPreviewFailed'
+  | 'ocrTitle'
+  | 'ocrDesc'
+  | 'ocrDownload'
+  | 'ocrRemove'
   | 'perBaseHint'
   | 'uploadFile'
   | 'uploadButton'
@@ -243,6 +247,10 @@ export const zh: Record<KnowledgeKey, string> = {
   dragToUpload: '松开上传文件',
   pdfTooLarge: '文件超过 100MB，无法内嵌预览，请右键下载查看',
   pdfPreviewFailed: 'PDF 预览加载失败',
+  ocrTitle: '本地 OCR（扫描件识别）',
+  ocrDesc: '下载中文+英文识别模型（约 20MB）后，扫描版 PDF（无文本层）会自动 OCR 出文字并进索引',
+  ocrDownload: '下载 OCR 模型',
+  ocrRemove: '删除 OCR 模型',
   perBaseHint: '留空则使用全局设置',
   uploadFile: '上传文件',
   uploadButton: '点击选择文件或拖拽到此处',
@@ -441,6 +449,10 @@ export const en: Record<KnowledgeKey, string> = {
   dragToUpload: 'Drop to upload',
   pdfTooLarge: 'File exceeds 100MB — cannot preview inline; download it to view',
   pdfPreviewFailed: 'Failed to load PDF preview',
+  ocrTitle: 'Local OCR (scanned documents)',
+  ocrDesc: 'Download the Chinese + English recognition models (~20MB); scanned PDFs (no text layer) are then OCRed automatically and indexed',
+  ocrDownload: 'Download OCR models',
+  ocrRemove: 'Remove OCR models',
   perBaseHint: 'Leave empty to use global settings',
   uploadFile: 'Upload file',
   uploadButton: 'Click to select files or drag them here',

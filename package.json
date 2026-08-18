@@ -87,6 +87,9 @@
     "jszip": "^3.10.1",
     "mammoth": "^1.8.0",
     "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^5.7.284",
+    "tesseract.js": "^7.0.0",
+    "tesseract.js-core": "^6.1.2",
     "undici": "^7.0.0",
     "word-extractor": "^1.0.4"
   },

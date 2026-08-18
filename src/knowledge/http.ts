@@ -155,6 +155,14 @@ async function route(
     return undefined
   }
 
+  // /local-ocr (status/download/remove) — scanned-PDF OCR models
+  if (segments[0] === 'local-ocr') {
+    if (method === 'GET' && segments.length === 1) return service.getOcrStatus()
+    if (segments[1] === 'download' && method === 'POST') return service.downloadOcr()
+    if (segments[1] === 'remove' && method === 'DELETE') return service.deleteOcr()
+    return undefined
+  }
+
   // /model-suggestions
   if (segments[0] === 'model-suggestions' && method === 'GET') {
     return service.modelSuggestions()

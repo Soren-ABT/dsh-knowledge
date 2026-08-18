@@ -18,6 +18,7 @@ import { DEFAULT_LOCAL_MODEL, disposeLocalModelWorker, embedTexts, getLocalModel
 import type { LocalModelStatus } from './embed.js'
 import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, listLocalModels, LOCAL_MODELS } from './localModels.js'
 import type { LocalModelSummary } from './localModels.js'
+import { downloadOcrModels, disposeOcrWorker, getOcrModelStatus, removeOcrModels, type OcrModelStatus } from './ocr.js'
 import { httpFetch } from './net.js'
 import { knowledgeRoute } from './http.js'
 import { SUPPORTED_DOCUMENT_EXTENSIONS, extractFromHtml, extensionOf, parseDocumentBuffer } from './parse.js'
@@ -140,6 +141,7 @@ export class KnowledgeService extends Service {
     // Terminate the local-model inference worker on teardown so a loaded
     // ~600MB model can never outlive the plugin (Cherry: lifecycle-managed worker).
     this.ctx.effect(() => () => { disposeLocalModelWorker() }, 'knowledge: dispose local model worker')
+    this.ctx.effect(() => () => { disposeOcrWorker() }, 'knowledge: dispose OCR worker')
     // Resume documents a previous process left mid-embedding: their chunks are
     // partially persisted, so re-running the embed with hash reuse completes
     // them without re-embedding the batches that already landed. (openStore
@@ -1134,6 +1136,20 @@ export class KnowledgeService extends Service {
 
   deleteLocalModel(id: string): Promise<LocalModelSummary> {
     return deleteLocalModel(id)
+  }
+
+  // ── local OCR (scanned-PDF recognition, Cherry's local-document posture) ──
+
+  getOcrStatus(): OcrModelStatus {
+    return getOcrModelStatus()
+  }
+
+  downloadOcr(): Promise<OcrModelStatus> {
+    return downloadOcrModels()
+  }
+
+  deleteOcr(): Promise<{ deleted: true }> {
+    return removeOcrModels().then(() => ({ deleted: true }))
   }
 
   listChunks(documentId: string, limit?: number, offset?: number): KnowledgeChunk[] {

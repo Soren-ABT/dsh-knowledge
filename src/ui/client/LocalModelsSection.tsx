@@ -27,11 +27,14 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const [busyId, setBusyId] = useState<string | null>(null)
   const [mirror, setMirror] = useState('')
   const [mirrorLoaded, setMirrorLoaded] = useState(false)
+  const [ocrStatus, setOcrStatus] = useState<{ status: string; progress: number; message: string }>({ status: 'idle', progress: 0, message: '' })
+  const [ocrBusy, setOcrBusy] = useState(false)
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      const next = await api.listLocalModels()
+      const [next, ocr] = await Promise.all([api.listLocalModels(), api.getOcrStatus()])
       setModels(next)
+      setOcrStatus(ocr)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -99,6 +102,34 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     }
   }, [api, refresh])
 
+  const downloadOcr = useCallback(async (): Promise<void> => {
+    setOcrBusy(true)
+    setError(null)
+    try {
+      await api.downloadOcr()
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setOcrBusy(false)
+    }
+  }, [api, refresh])
+
+  const removeOcr = useCallback(async (): Promise<void> => {
+    setOcrBusy(true)
+    setError(null)
+    try {
+      await api.removeOcr()
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setOcrBusy(false)
+    }
+  }, [api, refresh])
+
+  const ocrReady = ocrStatus.status === 'ready'
+
   return (
     <div style={{ minWidth: 0 }}>
       <h2 style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{t('localModelsTitle')}</h2>
@@ -136,6 +167,69 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
         ))}
         {models !== null && models.length === 0 && (
           <div style={style.empty}>{t('noLocalModels')}</div>
+        )}
+      </div>
+
+      {/* Local OCR — scanned PDFs (Cherry's local-document posture) */}
+      <div style={{ ...cardStyle, marginTop: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40,
+              borderRadius: 12, flexShrink: 0, background: ocrReady ? accentSoft : C.surface2,
+              color: ocrReady ? C.accent : C.muted, fontSize: 20,
+            }}
+          >
+            🔍
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{t('ocrTitle')}</span>
+              {ocrReady && <span style={readyBadge}>{t('ready')}</span>}
+            </div>
+            <p style={{ marginTop: 2, fontSize: 12, color: C.muted, lineHeight: 1.5 }}>{t('ocrDesc')}</p>
+          </div>
+          {ocrReady && (
+            <button
+              className="kb-dangerbtn"
+              style={style.iconOnlyButton}
+              title={t('ocrRemove')}
+              aria-label={t('ocrRemove')}
+              disabled={ocrBusy}
+              onClick={() => void removeOcr()}
+            >
+              <IconTrash size={14} />
+            </button>
+          )}
+        </div>
+
+        {ocrStatus.status === 'error' && ocrStatus.message !== '' && (
+          <p style={{ marginTop: 8, fontSize: 12, color: C.danger, lineHeight: 1.5 }}>{ocrStatus.message}</p>
+        )}
+
+        {ocrStatus.status === 'downloading' && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ height: 6, width: '100%', borderRadius: 999, background: C.surface2, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${ocrStatus.progress}%`, borderRadius: 999, background: C.accent, transition: 'width 0.2s' }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12, color: C.muted }}>
+              <span>{t('localModelDownloading')}</span>
+              <span>{Math.floor(ocrStatus.progress)}%</span>
+            </div>
+          </div>
+        )}
+
+        {!ocrReady && ocrStatus.status !== 'downloading' && (
+          <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
+            <button
+              style={{ ...style.button, width: '100%', justifyContent: 'center' }}
+              disabled={ocrBusy}
+              onClick={() => void downloadOcr()}
+            >
+              {ocrStatus.status === 'error' ? <IconRefresh size={13} /> : <IconDownload size={13} />}
+              {ocrStatus.status === 'error' ? t('localModelRetry') : t('ocrDownload')}
+            </button>
+          </div>
         )}
       </div>
     </div>
