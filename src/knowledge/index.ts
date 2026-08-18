@@ -1487,8 +1487,21 @@ export class KnowledgeService extends Service {
 
   // ── internal ──────────────────────────────────────────────────────────────
 
-  /** How many parse+ingest tasks may run concurrently per base (Cherry Studio: 5). */
-  private static readonly INGEST_CONCURRENCY = 5
+  /**
+   * How many parse+ingest tasks may run concurrently per base (Cherry Studio: 5).
+   * The in-process local model (transformers.js, ~600MB in the main process)
+   * must never share the process with concurrent parses — Cherry runs local
+   * inference in its own worker; here the single-process equivalent is full
+   * serialization for `local`, while remote providers keep Cherry's parallelism.
+   */
+  private static readonly REMOTE_INGEST_CONCURRENCY = 5
+  private static readonly LOCAL_INGEST_CONCURRENCY = 1
+
+  private ingestConcurrency(baseId: string): number {
+    return this.getConfigFor(baseId).embeddingProvider === 'local'
+      ? KnowledgeService.LOCAL_INGEST_CONCURRENCY
+      : KnowledgeService.REMOTE_INGEST_CONCURRENCY
+  }
 
   /** Queue one parse+ingest task behind a per-base worker pool (Cherry's job queue). */
   private enqueueIngest(baseId: string, task: () => Promise<void>): void {
@@ -1504,7 +1517,8 @@ export class KnowledgeService extends Service {
   private pumpIngestQueue(baseId: string): void {
     const entry = this.ingestQueues.get(baseId)
     if (entry === undefined) return
-    while (entry.running < KnowledgeService.INGEST_CONCURRENCY && entry.pending.length > 0) {
+    const concurrency = this.ingestConcurrency(baseId)
+    while (entry.running < concurrency && entry.pending.length > 0) {
       const task = entry.pending.shift()
       if (task === undefined) break
       entry.running += 1
@@ -1669,9 +1683,15 @@ export class KnowledgeService extends Service {
         // crash mid-embedding then leaves each completed batch in the store
         // (onBatch → putChunkBatch), so startup recovery resumes from the
         // persisted state — hash reuse re-embeds only the missing batches.
-        for (let i = 0; i < need.length; i += config.embeddingBatchSize) {
-          const batch = need.slice(i, i + config.embeddingBatchSize)
-          const batchTexts = needTexts.slice(i, i + config.embeddingBatchSize)
+        // The local in-process model is capped at 8 chunks per call (Cherry
+        // uses 10) so one forward pass never allocates a huge intermediate
+        // tensor in the shared main-process WASM heap.
+        const batchSize = config.embeddingProvider === 'local'
+          ? Math.min(config.embeddingBatchSize, 8)
+          : config.embeddingBatchSize
+        for (let i = 0; i < need.length; i += batchSize) {
+          const batch = need.slice(i, i + batchSize)
+          const batchTexts = needTexts.slice(i, i + batchSize)
           const vectors = await this.embedTextsOnce(config, batchTexts)
           const done: KnowledgeChunk[] = []
           for (let j = 0; j < batch.length; j += 1) {

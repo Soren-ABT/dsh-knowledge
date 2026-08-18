@@ -274,6 +274,30 @@ describe('KnowledgeService', () => {
     expect(service.listDocuments(base.id)).toHaveLength(1)
   })
 
+  it('queues a large batch of file uploads and settles every row', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'batch' })
+    // Fire all uploads without awaiting (rows land immediately), then wait for
+    // the background per-base pool to drain — every row must settle.
+    const pending = []
+    for (let i = 0; i < 30; i += 1) {
+      pending.push(service.addFileDocument({
+        baseId: base.id,
+        fileName: `file-${i}.txt`,
+        contentBase64: Buffer.from(`batch content number ${i} here`, 'utf8').toString('base64'),
+      }))
+    }
+    const rows = await Promise.all(pending)
+    expect(rows).toHaveLength(30)
+    // All rows exist immediately (Cherry: created before processing)…
+    expect(service.listDocuments(base.id)).toHaveLength(30)
+    // …and the background pool settles them all (lexical-only docs finish as
+    // 'pending' by design — the invariant is: no longer processing, indexed).
+    await service.waitForIdle()
+    const settled = service.listDocuments(base.id)
+    expect(settled.every(doc => doc.status !== 'processing' && doc.chunkCount > 0)).toBe(true)
+  })
+
   it('creates, renames and deletes groups, moving member bases with them', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'a', group: '工作' })
