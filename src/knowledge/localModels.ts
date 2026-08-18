@@ -4,7 +4,7 @@
  * @module dsh-knowledge/knowledge/localModels
  */
 
-import { cancelLocalModel, getLocalModelStatus, isLocalModelDownloaded, loadLocalModel, removeLocalModel } from './embed.js'
+import { cancelLocalModel, getLocalModelStatus, isLocalModelDownloaded, loadLocalModel, markLocalModelError, removeLocalModel } from './embed.js'
 
 export interface LocalModelDescriptor {
   readonly id: string
@@ -99,9 +99,14 @@ export async function listLocalModels(): Promise<LocalModelSummary[]> {
 
 export async function downloadLocalModel(id: string): Promise<LocalModelSummary> {
   const descriptor = findModel(id)
-  // Fire-and-forget: the download runs in the host, progress + completion are
-  // observed through listLocalModels (the poller drives the UI, Cherry-style).
-  void loadLocalModel(id).catch(() => {})
+  // Fire-and-forget: the download runs in the worker, progress + completion
+  // are observed through listLocalModels (the poller drives the UI,
+  // Cherry-style). A background failure must NOT be swallowed — it lands in
+  // the status map so the settings panel shows the error instead of looking
+  // like the button did nothing.
+  void loadLocalModel(id).catch((error: unknown) => {
+    markLocalModelError(descriptor.id, error instanceof Error ? error.message : String(error))
+  })
   return summarize(descriptor)
 }
 

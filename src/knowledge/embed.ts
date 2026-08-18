@@ -118,6 +118,11 @@ export function getLocalModelStatus(modelId: string): LocalModelStatus {
   return localModelStatus.get(modelId) ?? { model: modelId, status: 'idle', progress: 0, message: '' }
 }
 
+/** Surface a background download/load failure so the settings poller can show it (never swallow). */
+export function markLocalModelError(modelId: string, message: string): void {
+  localModelStatus.set(modelId, { model: modelId, status: 'error', progress: 0, message })
+}
+
 /** Whether a model's cached weights are already on disk (a real `.onnx` weight file). */
 export async function isLocalModelDownloaded(modelId: string): Promise<boolean> {
   const { readdir } = await import('node:fs/promises')

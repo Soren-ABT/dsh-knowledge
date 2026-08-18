@@ -20,6 +20,7 @@ vi.mock('../src/knowledge/embed.js', () => ({
     }),
   ),
   getLocalModelStatus: vi.fn(() => ({ model: '', status: 'idle', progress: 0, message: '' })),
+  markLocalModelError: vi.fn(),
   isLocalModelDownloaded: vi.fn(async () => false),
   loadLocalModel: vi.fn(async () => {}),
   removeLocalModel: vi.fn(async () => {}),
