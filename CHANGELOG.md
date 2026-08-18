@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 — Cherry-parity import pipeline + worker-thread local models
+## 0.2.0 — Cherry-parity import pipeline + worker-thread local models
 
 ### Whole-library PDF quality audit + parse decision tree (later addition)
 
