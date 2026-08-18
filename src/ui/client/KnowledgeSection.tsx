@@ -67,6 +67,8 @@ if (typeof document !== 'undefined' && document.getElementById('kb-panel-styles'
 /** Cap the document-preview payload so huge files cannot wedge the panel. */
 const PREVIEW_RAW_TEXT_LIMIT = 200_000
 const PREVIEW_CHUNK_LIMIT = 500
+/** Cherry's in-panel PDF viewer caps at 100 MB; above that we suggest the download. */
+const PDF_PREVIEW_MAX_BYTES = 100 * 1024 * 1024
 
 // ── sidebar action ───────────────────────────────────────────────────────────
 
@@ -1645,6 +1647,42 @@ function DocumentDetailPanel(props: {
     : fileVisual(doc.fileName ?? 'text.txt')
   const DocIcon = visual.icon
   const chunksTruncated = props.chunks.length < doc.chunkCount
+  // PDF rows preview through an embedded viewer (Cherry's in-panel file
+  // preview): the raw bytes are fetched and served to the browser's native
+  // PDF viewer via a blob URL. Fetching the bytes (instead of pointing the
+  // iframe at the raw route) sidesteps Content-Disposition entirely — a
+  // stale host would otherwise make the iframe download instead of display.
+  const isPdfPreview = doc.sourceType === 'file' && (doc.fileName ?? '').toLowerCase().endsWith('.pdf')
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null)
+  const [pdfPreviewError, setPdfPreviewError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!isPdfPreview || mode !== 'preview') return
+    let disposed = false
+    let objectUrl: string | null = null
+    setPdfUrl(null)
+    setPdfPreviewError(null)
+    void fetch(`/knowledge/documents/${doc.id}/raw`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const blob = await response.blob()
+        // Cherry caps the in-panel viewer at 100 MB and falls back to the
+        // system app; here the fallback is a download of the same bytes.
+        if (blob.size > PDF_PREVIEW_MAX_BYTES) {
+          setPdfPreviewError(t('pdfTooLarge'))
+          return
+        }
+        if (disposed) return
+        objectUrl = URL.createObjectURL(blob)
+        setPdfUrl(objectUrl)
+      })
+      .catch((error: unknown) => {
+        if (!disposed) setPdfPreviewError(error instanceof Error ? error.message : String(error))
+      })
+    return () => {
+      disposed = true
+      if (objectUrl !== null) URL.revokeObjectURL(objectUrl)
+    }
+  }, [doc.id, isPdfPreview, mode, t])
   const tabStyle = (active: boolean): CSSProperties => ({
     border: 'none',
     background: active ? accentSoftText() : 'transparent',
@@ -1674,21 +1712,30 @@ function DocumentDetailPanel(props: {
 
       <div className="kb-scroll" style={{ maxHeight: 'calc(100vh - 250px)', overflowY: 'auto' }}>
         {mode === 'preview' ? (
-          doc.sourceType === 'file' && (doc.fileName ?? '').toLowerCase().endsWith('.pdf') ? (
-            // Cherry Studio parity: PDFs preview in an embedded viewer (the
-            // browser's native PDF viewer via a same-origin inline stream).
-            <iframe
-              src={`/knowledge/documents/${doc.id}/raw?inline=1`}
-              title={doc.title}
-              style={{
-                width: '100%',
-                height: 'calc(100vh - 320px)',
-                minHeight: 420,
-                border: `1px solid ${C.border}`,
-                borderRadius: 8,
-                background: '#fff',
-              }}
-            />
+          isPdfPreview ? (
+            pdfPreviewError !== null ? (
+              <div style={style.empty}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.danger, marginBottom: 6 }}>{t('pdfPreviewFailed')}</div>
+                <div style={{ fontSize: 12, color: C.muted, wordBreak: 'break-all' }}>{pdfPreviewError}</div>
+              </div>
+            ) : pdfUrl === null ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 320 }}>
+                <span className="kb-spinner" style={{ ...style.spinner, width: 22, height: 22, borderWidth: 3 }} />
+              </div>
+            ) : (
+              <iframe
+                src={pdfUrl}
+                title={doc.title}
+                style={{
+                  width: '100%',
+                  height: 'calc(100vh - 320px)',
+                  minHeight: 420,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  background: '#fff',
+                }}
+              />
+            )
           ) : (
           <>
             {props.rawTextTruncated && (

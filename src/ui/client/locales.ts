@@ -41,6 +41,8 @@ export type KnowledgeKey =
   | 'bulkReindexSkipped'
   | 'bulkReindexNone'
   | 'dragToUpload'
+  | 'pdfTooLarge'
+  | 'pdfPreviewFailed'
   | 'perBaseHint'
   | 'uploadFile'
   | 'uploadButton'
@@ -239,6 +241,8 @@ export const zh: Record<KnowledgeKey, string> = {
   bulkReindexSkipped: '跳过处理中 {count}',
   bulkReindexNone: '所选文档都还在处理中，稍后再试',
   dragToUpload: '松开上传文件',
+  pdfTooLarge: '文件超过 100MB，无法内嵌预览，请右键下载查看',
+  pdfPreviewFailed: 'PDF 预览加载失败',
   perBaseHint: '留空则使用全局设置',
   uploadFile: '上传文件',
   uploadButton: '点击选择文件或拖拽到此处',
@@ -435,6 +439,8 @@ export const en: Record<KnowledgeKey, string> = {
   bulkReindexSkipped: 'skipped {count} in progress',
   bulkReindexNone: 'All selected documents are still processing — try again later',
   dragToUpload: 'Drop to upload',
+  pdfTooLarge: 'File exceeds 100MB — cannot preview inline; download it to view',
+  pdfPreviewFailed: 'Failed to load PDF preview',
   perBaseHint: 'Leave empty to use global settings',
   uploadFile: 'Upload file',
   uploadButton: 'Click to select files or drag them here',
