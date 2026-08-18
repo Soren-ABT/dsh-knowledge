@@ -377,6 +377,21 @@ function normalizeRgba(image: { width: number; height: number; data: Uint8Clampe
     }
     return rgba
   }
+  if (data.length >= expected / 8) {
+    // 1-bit bitmap (JBIG2/CCITT fax scans): pdfjs hands back bit-packed rows,
+    // MSB first. Every byte carries 8 pixels — treating it as grayscale would
+    // shred the image and OCR would see noise.
+    const rgba = new Uint8ClampedArray(expected * 4)
+    for (let i = 0; i < expected; i += 1) {
+      const bit = (data[i >> 3] >> (7 - (i & 7))) & 1
+      const v = bit === 1 ? 255 : 0
+      rgba[i * 4] = v
+      rgba[i * 4 + 1] = v
+      rgba[i * 4 + 2] = v
+      rgba[i * 4 + 3] = 255
+    }
+    return rgba
+  }
   // Grayscale (or unknown) — replicate the single channel.
   const rgba = new Uint8ClampedArray(expected * 4)
   for (let i = 0; i < expected; i += 1) {
