@@ -36,6 +36,7 @@ export type KnowledgeKey =
   | 'uploaded'
   | 'importFailed'
   | 'tooManyFiles'
+  | 'fileTooLarge'
   | 'noSupportedFiles'
   | 'skippedFiles'
   | 'bulkReindexSkipped'
@@ -242,6 +243,7 @@ export const zh: Record<KnowledgeKey, string> = {
   uploaded: '已导入',
   importFailed: '导入失败',
   tooManyFiles: '单次最多选择 {count} 个文件，其余已跳过',
+  fileTooLarge: '「{name}」超过 22MB，无法上传（上传接口上限约 24MB），已跳过',
   noSupportedFiles: '所选内容中没有支持的文件（隐藏文件与不支持的格式已跳过）',
   skippedFiles: '已跳过 {count} 个不支持的文件',
   bulkReindexSkipped: '跳过处理中 {count}',
@@ -446,6 +448,7 @@ export const en: Record<KnowledgeKey, string> = {
   uploaded: 'imported',
   importFailed: 'import failed',
   tooManyFiles: 'At most {count} files per selection; the rest were skipped',
+  fileTooLarge: '"{name}" exceeds 22MB — cannot upload (the upload API caps at ~24MB); skipped',
   noSupportedFiles: 'No supported files in the selection (hidden files and unsupported formats are skipped)',
   skippedFiles: 'Skipped {count} unsupported files',
   bulkReindexSkipped: 'skipped {count} in progress',

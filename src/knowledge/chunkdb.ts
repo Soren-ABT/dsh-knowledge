@@ -108,10 +108,14 @@ function toLikePattern(token: string): string {
   return `%${token.replace(/[\\%_]/g, ch => `\\${ch}`)}%`
 }
 
-/** True when the query has tokens but none is trigram-indexable → pure LIKE scan. */
+/**
+ * True when the query yields no trigram-indexable term (symbols-only input
+ * like `!!!`, or every token is 1–2 chars). A MATCH with no terms would be
+ * `MATCH ''`, which FTS5 rejects with a syntax error — route to the safe
+ * LIKE scan instead (which simply matches nothing for symbol-only input).
+ */
 function needsLikeFallback(query: string): boolean {
-  const terms = extractMatchTerms(query)
-  return terms.length === 0 && (query.match(/[\p{L}\p{N}_]+/gu) ?? []).length > 0
+  return extractMatchTerms(query).length === 0
 }
 
 // ── embedding BLOB codec (little-endian float32) ─────────────────────────────

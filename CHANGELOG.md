@@ -2,6 +2,37 @@
 
 ## 0.2.2 — Cherry-parity import pipeline + worker-thread local models
 
+### Bug-fix round (later additions to this release)
+
+- **Local-model worker could be killed mid-download**: the 60s idle-release
+  timer fired while a model download/load was still running (progress
+  messages never reset it), terminating the worker and failing the request —
+  a 585MB first download is guaranteed to hit this. Progress reports now
+  keep the timer alive, and the timer never fires while a request is
+  in-flight.
+- **A failed local-model load was cached forever**: `getExtractor` kept the
+  rejected promise, so every later request failed until the model was
+  removed; failures are now dropped from the cache and retried.
+- **Symbol-only search queries crashed retrieval**: `MATCH ''` is an FTS5
+  syntax error, so searching `!!!` returned HTTP 500; such queries now route
+  to the safe LIKE scan. Regression-tested in a new `chunkdb.spec.ts`.
+- **Cancel-then-redownload of a local model was blocked**: the cancellation
+  marker never expired, so re-downloading the same model always failed;
+  markers now auto-expire.
+- **Model deletion could fail on Windows file locks**: the worker's release
+  ack is now awaited (with a grace timeout) before the cache directory is
+  removed.
+- **`normalizeRgba` could misclassify single-channel grayscale as 1-bit**:
+  branch order hardened (pdfjs's decoded layout varies with raster size —
+  RGBA for small images, RGB for larger grayscale, bit-packed for 1-bit).
+- **Tests never exercised the real pdfjs decode path**: the synthetic scanned
+  PDFs were byte-corrupt (latin1→UTF-8 inflation), so OCR tests only hit the
+  gate; the builder now concatenates raw bytes and new tests decode real
+  rasters through pdfjs (8-bit grayscale and 1-bit both verified).
+- **Oversized uploads failed with an opaque server error**: files above
+  ~24MB (the 32MB JSON body cap after base64) are now pre-checked client-side
+  with a clear message in both the file picker and directory import paths.
+
 ### Installability hardening + OCR mirror (later additions to this release)
 
 - **Zero-basis install fixes**: the tarball no longer declares peer

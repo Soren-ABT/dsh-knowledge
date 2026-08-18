@@ -307,8 +307,9 @@ export function disposeOcrWorker(): void {
 /**
  * Extract every embedded raster on each PDF page via pdfjs (no canvas
  * rendering — scanned pages are embedded images), normalize to RGBA.
+ * Exported for tests (the decoded shape drives normalizeRgba's branches).
  */
-async function extractPdfImages(bytes: Uint8Array): Promise<Array<PdfImage & { page: number }>> {
+export async function extractPdfImages(bytes: Uint8Array): Promise<Array<PdfImage & { page: number }>> {
   const pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as {
     getDocument(input: Record<string, unknown>): {
       promise: Promise<{ numPages: number; getPage(n: number): Promise<unknown> }>
@@ -373,7 +374,8 @@ async function waitForImage(
   return null
 }
 
-function normalizeRgba(image: { width: number; height: number; data: Uint8ClampedArray | Uint8Array }): Uint8ClampedArray {
+/** Normalize pdfjs-decoded pixel data (RGBA / RGB / single-channel gray / 1-bit) to RGBA. */
+export function normalizeRgba(image: { width: number; height: number; data: Uint8ClampedArray | Uint8Array }): Uint8ClampedArray {
   const { width, height, data } = image
   const expected = width * height
   if (data.length >= expected * 4) {
@@ -384,6 +386,7 @@ function normalizeRgba(image: { width: number; height: number; data: Uint8Clampe
     return rgba
   }
   if (data.length >= expected * 3) {
+    // 8-bit RGB (pdfjs also decodes 8-bit grayscale as 3 channels).
     const rgba = new Uint8ClampedArray(expected * 4)
     for (let i = 0; i < expected; i += 1) {
       rgba[i * 4] = data[i * 3]
@@ -393,14 +396,11 @@ function normalizeRgba(image: { width: number; height: number; data: Uint8Clampe
     }
     return rgba
   }
-  if (data.length >= expected / 8) {
-    // 1-bit bitmap (JBIG2/CCITT fax scans): pdfjs hands back bit-packed rows,
-    // MSB first. Every byte carries 8 pixels — treating it as grayscale would
-    // shred the image and OCR would see noise.
+  if (data.length >= expected) {
+    // Single-channel 8-bit grayscale — one byte per pixel.
     const rgba = new Uint8ClampedArray(expected * 4)
     for (let i = 0; i < expected; i += 1) {
-      const bit = (data[i >> 3] >> (7 - (i & 7))) & 1
-      const v = bit === 1 ? 255 : 0
+      const v = data[i] ?? 0
       rgba[i * 4] = v
       rgba[i * 4 + 1] = v
       rgba[i * 4 + 2] = v
@@ -408,10 +408,13 @@ function normalizeRgba(image: { width: number; height: number; data: Uint8Clampe
     }
     return rgba
   }
-  // Grayscale (or unknown) — replicate the single channel.
+  // 1-bit bitmap (JBIG2/CCITT fax scans): pdfjs hands back bit-packed rows,
+  // MSB first, ~expected/8 bytes. Every byte carries 8 pixels — treating it
+  // as grayscale would shred the image and OCR would see noise.
   const rgba = new Uint8ClampedArray(expected * 4)
   for (let i = 0; i < expected; i += 1) {
-    const v = data[i] ?? 0
+    const bit = (data[i >> 3] >> (7 - (i & 7))) & 1
+    const v = bit === 1 ? 255 : 0
     rgba[i * 4] = v
     rgba[i * 4 + 1] = v
     rgba[i * 4 + 2] = v

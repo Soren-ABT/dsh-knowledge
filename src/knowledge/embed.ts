@@ -139,7 +139,7 @@ interface WorkerResponse {
   ok?: boolean
   vectors?: number[][]
   error?: string
-  type?: 'progress'
+  type?: 'progress' | 'released'
   modelId?: string
   status?: LocalModelStatus['status']
   progress?: number
@@ -151,11 +151,15 @@ interface WorkerResponse {
 // worker from holding the host process open on shutdown.
 const LOCAL_WORKER_IDLE_TIMEOUT_MS = 60_000
 const LOCAL_WORKER_REQUEST_TIMEOUT_MS = 30 * 60_000
+/** How long removeLocalModel waits for the worker's release ack before deleting. */
+const LOCAL_RELEASE_ACK_TIMEOUT_MS = 3000
 
 let localWorker: Worker | null = null
 let localWorkerIdleTimer: ReturnType<typeof setTimeout> | null = null
 let localRequestSeq = 0
 const localPending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+/** Resolvers awaiting a worker `released` ack per model (file-lock-safe deletion). */
+const localReleasedWaiters = new Map<string, Array<() => void>>()
 
 function localWorkerPath(): string {
   return fileURLToPath(new URL('./embed-worker.mjs', import.meta.url))
@@ -185,6 +189,19 @@ function ensureLocalWorker(): Worker {
         progress: message.progress ?? 0,
         message: message.message ?? '',
       })
+      // A download/load can run for minutes (585MB model); each progress
+      // report is proof the worker is alive, so keep the idle-release timer
+      // from firing mid-download (it would terminate the worker and kill the
+      // request).
+      armIdleTimer()
+      return
+    }
+    if (message.type === 'released' && message.modelId !== undefined) {
+      const waiters = localReleasedWaiters.get(message.modelId)
+      if (waiters !== undefined) {
+        localReleasedWaiters.delete(message.modelId)
+        for (const resolve of waiters) resolve()
+      }
       return
     }
     if (message.id === undefined) return
@@ -211,8 +228,14 @@ function armIdleTimer(): void {
   clearIdleTimer()
   localWorkerIdleTimer = setTimeout(() => {
     localWorkerIdleTimer = null
-    // Release a loaded model (up to 600MB+) after inactivity, mirroring
-    // Cherry's idle-release timer; the next request respawns the worker.
+    // Never release while a request is in flight: the worker may be in the
+    // middle of a long download/load/inference (>60s). Only release when
+    // nothing is pending, mirroring Cherry's idle-release timer; the next
+    // request respawns the worker.
+    if (localPending.size > 0) {
+      armIdleTimer()
+      return
+    }
     const worker = localWorker
     localWorker = null
     failAllPending(new Error('local model worker released after idle'))
@@ -278,6 +301,25 @@ export async function removeLocalModel(modelId: string): Promise<void> {
     throw new Error('模型正在下载，完成后才能删除')
   }
   postToWorker({ type: 'release', modelId })
+  // Wait for the worker's release ack so onnxruntime can close its file
+  // handles before the files are removed (a Windows mmap lock would make rm
+  // fail). Time out after a short grace period rather than blocking forever.
+  await new Promise<void>((resolve) => {
+    const done = (): void => resolve()
+    const waiters = localReleasedWaiters.get(modelId) ?? []
+    waiters.push(done)
+    localReleasedWaiters.set(modelId, waiters)
+    const timer = setTimeout(() => {
+      const current = localReleasedWaiters.get(modelId) ?? []
+      const index = current.indexOf(done)
+      if (index >= 0) {
+        current.splice(index, 1)
+        if (current.length === 0) localReleasedWaiters.delete(modelId)
+      }
+      resolve()
+    }, LOCAL_RELEASE_ACK_TIMEOUT_MS)
+    timer.unref?.()
+  })
   localModelStatus.delete(modelId)
   await rm(join(localModelCacheDir(), modelId), { recursive: true, force: true })
 }

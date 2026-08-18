@@ -40,6 +40,7 @@ import {
   CreateBaseDialog,
   FILE_ACCEPT,
   MAX_FILES,
+  MAX_UPLOAD_BYTES,
   PromptDialog,
   RestoreBaseDialog,
   SUPPORTED_IMPORT_EXTENSIONS,
@@ -460,13 +461,20 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   // as red failed rows (hover shows the reason), like Cherry's failed items.
   const runFileImport = useCallback(async (files: File[]): Promise<void> => {
     if (selectedBaseId === null || files.length === 0) return
-    notify('info', `${files.length} ${t('uploaded')}…`)
-    for (const file of files) {
+    // The upload API caps the JSON body at 32MB (base64 → ~24MB of file).
+    // Reject oversized files up front with a clear message instead of a
+    // server-side 500.
+    const oversized = files.filter(file => file.size > MAX_UPLOAD_BYTES)
+    const accepted = files.filter(file => file.size <= MAX_UPLOAD_BYTES)
+    for (const file of oversized) notify('warning', t('fileTooLarge').replace('{name}', file.name))
+    if (accepted.length === 0) return
+    notify('info', `${accepted.length} ${t('uploaded')}…`)
+    for (const file of accepted) {
       const contentBase64 = await readFileAsBase64(file)
       await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64)
     }
     await reloadDocuments()
-    notify('success', `${files.length} ${t('uploaded')}`)
+    notify('success', `${accepted.length} ${t('uploaded')}`)
   }, [api, notify, reloadDocuments, selectedBaseId, t])
 
   // ── drag & drop upload (Cherry Studio drops files onto the knowledge list) ──
@@ -539,12 +547,21 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       }
       // 3. submit every file under its directory — rows land immediately and
       //    the background pool processes them (Cherry: whole directory, no cap)
+      let oversizedCount = 0
       for (const file of supported) {
+        if (file.size > MAX_UPLOAD_BYTES) {
+          oversizedCount += 1
+          notify('warning', t('fileTooLarge').replace('{name}', file.name))
+          continue
+        }
         const parts = segments(file)
         const dirPath = parts.slice(0, -1).join('/')
         const parentId = dirPath === rootName || dirPath === '' ? root.id : dirId.get(dirPath)
         const contentBase64 = await readFileAsBase64(file)
         await api.addFileDocument(selectedBaseId, file.name, file.type || 'application/octet-stream', contentBase64, undefined, parentId)
+      }
+      if (oversizedCount > 0) {
+        notify('warning', t('fileTooLarge').replace('{name}', `${oversizedCount} files`))
       }
     } catch (err) {
       notify('error', err instanceof Error ? err.message : String(err))

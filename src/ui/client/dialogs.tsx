@@ -190,7 +190,13 @@ export function CreateBaseDialog(props: {
 
 const FILE_ACCEPT = '.txt,.md,.markdown,.mdx,.csv,.html,.htm,.json,.log,.pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.epub'
 const MAX_FILES = 20
-export { FILE_ACCEPT, MAX_FILES }
+/**
+ * Upload cap: the JSON upload API limits bodies to 32MB, so a base64 payload
+ * leaves ~24MB for the file itself. Pre-checked client-side with headroom
+ * (22MB) so oversized files fail with a clear message, not a server 500.
+ */
+const MAX_UPLOAD_BYTES = 22 * 1024 * 1024
+export { FILE_ACCEPT, MAX_FILES, MAX_UPLOAD_BYTES }
 
 /** Extension set shared by the directory import filter (Cherry's directory scan skips others). */
 export const SUPPORTED_IMPORT_EXTENSIONS = new Set(FILE_ACCEPT.split(',').map(ext => ext.slice(1)))

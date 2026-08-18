@@ -4,35 +4,53 @@ import { parseDocumentBuffer } from '../src/knowledge/parse.js'
 import {
   buildOcrUrl,
   DEFAULT_OCR_MIRROR,
+  extractPdfImages,
+  normalizeRgba,
   ocrPdfText,
   postprocessOcrText,
   prepareForOcr,
   rgbaToPng,
 } from '../src/knowledge/ocr.js'
 
-/** Build a "scanned" PDF: one page embedding a grayscale raster (no text layer). */
-function makeScannedPdf(width: number, height: number): Buffer {
-  const pixels = new Uint8Array(width * height)
-  for (let i = 0; i < pixels.length; i += 1) pixels[i] = 255
+/** Build a one-page "scanned" PDF embedding one raster (no text layer). */
+function makeScannedPdf(bits: 1 | 8, width: number, height: number): Buffer {
+  const pixels = new Uint8Array(bits === 1 ? Math.ceil((width * height) / 8) : width * height)
+  if (bits === 8) {
+    for (let i = 0; i < pixels.length; i += 1) pixels[i] = (i * 3) % 256
+  } else {
+    for (let i = 0; i < pixels.length; i += 1) pixels[i] = i % 3 === 0 ? 0xff : 0x00
+  }
   const stream = deflateSync(pixels)
   const content = `q ${width} 0 0 ${height} 0 0 cm /Im1 Do Q`
   const objects = [
-    '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>`,
-    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
-    `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${stream.length} >>\nstream\n${Buffer.from(stream).toString('latin1')}\nendstream`,
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'),
+    Buffer.from('<< /Type /Pages /Kids [3 0 R] /Count 1 >>'),
+    Buffer.from(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>`,
+    ),
+    Buffer.from(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`),
+    // The stream bytes are concatenated as raw bytes — a latin1→UTF-8 string
+    // round-trip would inflate them and corrupt the deflate stream.
+    Buffer.concat([
+      Buffer.from(
+        `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceGray /BitsPerComponent ${bits} /Filter /FlateDecode /Length ${stream.length} >>\nstream\n`,
+      ),
+      stream,
+      Buffer.from('\nendstream'),
+    ]),
   ]
   const chunks: Buffer[] = [Buffer.from('%PDF-1.4\n')]
   const offsets: number[] = []
   objects.forEach((body, index) => {
     offsets.push(Buffer.concat(chunks).length)
-    chunks.push(Buffer.from(`${index + 1} 0 obj\n${body}\nendobj\n`))
+    chunks.push(Buffer.concat([Buffer.from(`${index + 1} 0 obj\n`), body, Buffer.from('\nendobj\n')]))
   })
   const xrefPos = Buffer.concat(chunks).length
   let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
   for (const offset of offsets) xref += `${String(offset).padStart(10, '0')} 00000 n \n`
-  chunks.push(Buffer.from(`${xref}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`))
+  chunks.push(
+    Buffer.from(`${xref}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`),
+  )
   return Buffer.concat(chunks)
 }
 
@@ -56,13 +74,68 @@ describe('rgbaToPng', () => {
 describe('local OCR fallback', () => {
   it('returns empty when the OCR models are not downloaded (caller keeps its error)', async () => {
     // The test environment has no traineddata on disk, so this is the gate path.
-    const text = await ocrPdfText(makeScannedPdf(4, 4))
+    const text = await ocrPdfText(makeScannedPdf(8, 4, 4))
     expect(text).toBe('')
   })
 
   it('a scanned PDF without OCR models still fails with the clear error', async () => {
-    await expect(parseDocumentBuffer(makeScannedPdf(20, 20), 'scan.pdf', 'application/pdf'))
+    await expect(parseDocumentBuffer(makeScannedPdf(8, 20, 20), 'scan.pdf', 'application/pdf'))
       .rejects.toThrow(/no extractable text|PDF parsing failed/)
+  })
+})
+
+describe('pdfjs scanned-raster decode (real pipeline)', () => {
+  it('decodes an 8-bit grayscale page and normalizes it to grayscale RGBA', async () => {
+    const images = await extractPdfImages(makeScannedPdf(8, 30, 20))
+    expect(images).toHaveLength(1)
+    expect(images[0].width).toBe(30)
+    expect(images[0].height).toBe(20)
+    // pdfjs's decoded layout varies with image size (RGBA for small rasters,
+    // RGB for larger 8-bit grayscale) — normalizeRgba must handle both.
+    expect(images[0].data.length).toBeGreaterThanOrEqual(30 * 20)
+    const rgba = normalizeRgba(images[0])
+    expect(rgba.length).toBe(30 * 20 * 4)
+    // Grayscale: every channel equals the first, alpha opaque.
+    for (let i = 0; i < 30 * 20; i += 1) {
+      expect(rgba[i * 4]).toBe(rgba[i * 4 + 1])
+      expect(rgba[i * 4 + 1]).toBe(rgba[i * 4 + 2])
+      expect(rgba[i * 4 + 3]).toBe(255)
+    }
+  })
+
+  it('decodes a 1-bit (JBIG2/CCITT-style) page as bit-packed rows into pure black/white RGBA', async () => {
+    // A larger raster (100x80) decodes as bit-packed 1bpp (~1000 bytes); small
+    // rasters come back pre-expanded to RGBA — both must normalize to the same
+    // black/white RGBA.
+    const images = await extractPdfImages(makeScannedPdf(1, 100, 80))
+    expect(images).toHaveLength(1)
+    const small = await extractPdfImages(makeScannedPdf(1, 30, 20))
+    const decodeSizes = new Set([...images, ...small].map(image => image.data.length))
+    expect(decodeSizes.size).toBeGreaterThanOrEqual(1)
+    for (const image of [...images, ...small]) {
+      const rgba = normalizeRgba(image)
+      expect(rgba.length).toBe(image.width * image.height * 4)
+      for (let i = 0; i < image.width * image.height; i += 1) {
+        const v = rgba[i * 4]
+        expect(v === 0 || v === 255).toBe(true)
+        expect(rgba[i * 4 + 1]).toBe(v)
+        expect(rgba[i * 4 + 2]).toBe(v)
+        expect(rgba[i * 4 + 3]).toBe(255)
+      }
+    }
+  })
+
+  it('normalizes a single-channel 8-bit grayscale buffer (defensive branch)', () => {
+    const data = new Uint8ClampedArray(4 * 4)
+    for (let i = 0; i < 16; i += 1) data[i] = i * 16
+    const rgba = normalizeRgba({ width: 4, height: 4, data })
+    expect(rgba.length).toBe(16 * 4)
+    for (let i = 0; i < 16; i += 1) {
+      expect(rgba[i * 4]).toBe(data[i])
+      expect(rgba[i * 4 + 1]).toBe(data[i])
+      expect(rgba[i * 4 + 2]).toBe(data[i])
+      expect(rgba[i * 4 + 3]).toBe(255)
+    }
   })
 })
 

@@ -139,6 +139,12 @@ function getExtractor(modelId: string, cacheDir: string, hfEndpoint: string | un
   if (cached !== undefined) return cached
   const pending = createExtractor(modelId, cacheDir, hfEndpoint)
   extractors.set(modelId, pending)
+  // A failed load (network down, cancelled download, corrupt cache) must not
+  // poison the map: drop it so the next request retries instead of reusing a
+  // rejected promise forever.
+  pending.catch(() => {
+    if (extractors.get(modelId) === pending) extractors.delete(modelId)
+  })
   return pending
 }
 
@@ -149,14 +155,23 @@ parentPort?.on('message', (message: WorkerMessage): void => {
   }
   if (message.type === 'cancel') {
     // Interrupt an in-flight download (its progress callback throws); a
-    // loaded extractor stays usable until the files are removed.
+    // loaded extractor stays usable until the files are removed. The marker
+    // auto-expires so a later re-download of the same model is not blocked
+    // forever by the old cancellation.
     cancelledModels.add(message.modelId)
+    setTimeout(() => {
+      cancelledModels.delete(message.modelId)
+    }, 30_000).unref?.()
     return
   }
   if (message.type === 'release') {
-    // Drop the loaded extractor so the ~600MB model can be garbage-collected.
+    // Drop the loaded extractor so the ~600MB model can be garbage-collected,
+    // then ack so the main process can delete the files without hitting a
+    // file lock (onnxruntime may still hold handles until the extractor is
+    // released and collected).
     cancelledModels.delete(message.modelId)
     extractors.delete(message.modelId)
+    post({ type: 'released', modelId: message.modelId })
     return
   }
   const { id, type, modelId, cacheDir, hfEndpoint } = message
