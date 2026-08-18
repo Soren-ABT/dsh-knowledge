@@ -172,6 +172,13 @@ export class ChunkDatabase implements RetrievalLane {
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA foreign_keys = OFF')
+    // Multiple connections can touch the store (a second plugin instance, a
+    // crashed-and-restarted host still holding the old file, the one-time
+    // migration path, or a concurrent checkpoint/VACUUM). SQLite's default
+    // busy_timeout is 0 — a write that meets another connection's lock fails
+    // instantly with SQLITE_BUSY ("database is locked") instead of waiting.
+    // 5s covers short read/write overlaps without hiding a real deadlock.
+    this.db.exec('PRAGMA busy_timeout = 5000')
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS chunk (
         chunk_id TEXT PRIMARY KEY,

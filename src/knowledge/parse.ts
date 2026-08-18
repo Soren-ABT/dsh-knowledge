@@ -93,6 +93,90 @@ function codePointFrom(value: number): string {
 
 // ── optional parsers ─────────────────────────────────────────────────────────
 
+/**
+ * Mean length of the non-empty lines of extracted text. Healthy text layers
+ * average well above this (paragraphs of 20–80 chars); per-glyph-laid-out
+ * math PDFs and corrupt-encoding layers average below 5 (one glyph per
+ * "line"). This heuristic decides whether a text layer is usable as-is,
+ * needs coordinate reassembly, or needs OCR instead. Exported for tests.
+ */
+export function averageLineLength(text: string): number {
+  const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0)
+  if (lines.length === 0) return 0
+  return lines.reduce((sum, line) => sum + line.length, 0) / lines.length
+}
+
+/**
+ * Extract text with the NEW pdfjs (pdf-parse bundles an old pdf.js whose
+ * textContent extraction fragments per-glyph-laid-out math into one "line"
+ * per glyph). Items carry their transform matrix, so glyphs are re-clustered
+ * into true lines by y (tolerance = median font height × 0.6) and sorted by
+ * x within a line — the same line-reassembly Cherry's OCR pipeline applies
+ * to detected text boxes.
+ */
+async function extractTextWithLayout(bytes: Uint8Array): Promise<string> {
+  const pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as {
+    getDocument(input: Record<string, unknown>): {
+      promise: Promise<{ numPages: number; getPage(n: number): Promise<unknown> }>
+      destroy(): Promise<void>
+    }
+  }
+  const loadingTask = pdfjs.getDocument({
+    data: Uint8Array.from(bytes),
+    disableWorker: true,
+    isEvalSupported: false,
+    useSystemFonts: true,
+  })
+  try {
+    const doc = await loadingTask.promise as { numPages: number; getPage(n: number): Promise<unknown> }
+    const pages: string[] = []
+    for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
+      const page = await doc.getPage(pageNumber) as {
+        getTextContent(): Promise<{ items?: Array<{ str?: string; transform?: number[] }> }>
+      }
+      const content = await page.getTextContent()
+      const items = (content.items ?? [])
+        .map(item => ({
+          str: item.str ?? '',
+          x: item.transform?.[4] ?? 0,
+          y: item.transform?.[5] ?? 0,
+          height: Math.abs(item.transform?.[3] ?? 0) || 10,
+        }))
+        .filter(item => item.str.length > 0)
+      if (items.length === 0) continue
+      const heights = items.map(item => item.height).sort((a, b) => a - b)
+      const tolerance = (heights[Math.floor(heights.length / 2)] ?? 10) * 0.6
+      // Cluster glyphs into y-bands; within a band sort by x and join.
+      const bands = new Map<number, Array<{ x: number; str: string }>>()
+      for (const item of items) {
+        const band = Math.round(item.y / tolerance)
+        const list = bands.get(band) ?? []
+        list.push({ x: item.x, str: item.str })
+        bands.set(band, list)
+      }
+      const lines = [...bands.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, list]) => list.sort((a, b) => a.x - b.x).map(entry => entry.str).join(''))
+        .filter(line => line.trim().length > 0)
+      if (lines.length > 0) pages.push(lines.join('\n'))
+    }
+    return pages.join('\n\n')
+  } finally {
+    await loadingTask.destroy().catch(() => {})
+  }
+}
+
+/** OCR fallback shared by the empty-text and corrupt-text-layer paths. */
+async function ocrFallback(bytes: Uint8Array): Promise<string> {
+  try {
+    const { isOcrReady, ocrPdfText } = await import('./ocr.js')
+    if (!isOcrReady()) return ''
+    return await ocrPdfText(bytes)
+  } catch {
+    return ''
+  }
+}
+
 async function parsePdf(buffer: Uint8Array): Promise<string> {
   // Primary engine: pdf-parse (pdf.js). On failure or an empty extraction,
   // fall back to @firecrawl/anydoc (Cherry's AnydocReader fallback posture):
@@ -108,7 +192,32 @@ async function parsePdf(buffer: Uint8Array): Promise<string> {
   } catch (error) {
     primaryError = error instanceof Error ? error : new Error(String(error))
   }
-  if (text.trim().length > 0) return text
+  if (text.trim().length > 0) {
+    // A text layer exists — decide whether it is usable:
+    // - healthy lines (avg ≥ 5 chars): keep it;
+    // - per-glyph math layout: reassemble true lines from glyph coordinates;
+    // - corrupt encoding (reassembly still yields junk): render + OCR.
+    const avgLine = averageLineLength(text)
+    if (avgLine >= 5) return text
+    let reassembled = ''
+    try {
+      reassembled = await extractTextWithLayout(buffer)
+    } catch {
+      // reassembly unavailable — fall through to OCR
+    }
+    if (averageLineLength(reassembled) >= 12 && reassembled.trim().length > 0) return reassembled
+    const recognized = await ocrFallback(buffer)
+    if (recognized.trim().length > 0) return recognized
+    // anydoc as the last resort before the fragmented original.
+    try {
+      const anydoc = await loadAnydoc()
+      const markdown = (await anydoc.toMarkdownBytes(Buffer.from(buffer))).trim()
+      if (markdown.length > 0) return markdown
+    } catch {
+      // fallback failed — report the primary engine's error below
+    }
+    return text
+  }
   try {
     const anydoc = await loadAnydoc()
     const markdown = (await anydoc.toMarkdownBytes(Buffer.from(buffer))).trim()
@@ -117,9 +226,8 @@ async function parsePdf(buffer: Uint8Array): Promise<string> {
     // fallback failed — report the primary engine's error below
   }
   // Last resort for scanned PDFs (Cherry's local-document posture): when the
-  // local OCR models are downloaded, extract the embedded page rasters and
-  // recognize them. Without the models the original error stands, pointing at
-  // the settings panel.
+  // local OCR models are downloaded, recognize the full-page renders. Without
+  // the models the original error stands, pointing at the settings panel.
   let ocrReady = false
   try {
     const { isOcrReady, ocrPdfText } = await import('./ocr.js')

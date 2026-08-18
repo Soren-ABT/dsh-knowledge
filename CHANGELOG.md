@@ -2,6 +2,36 @@
 
 ## 0.2.2 — Cherry-parity import pipeline + worker-thread local models
 
+### Whole-library PDF quality audit + parse decision tree (later addition)
+
+A full audit of every imported document (223 docs) found three distinct PDF
+failure modes and one SQLite concurrency bug; the parse pipeline now handles
+each:
+
+- **Fragmented text layers are no longer imported blindly.** pdf-parse's
+  bundled old pdf.js fragments per-glyph-laid-out math PDFs into one "line"
+  per glyph (avg line ≈ 1–5 chars) and corrupt-encoding layers yield junk
+  sequences. The new decision tree measures the extracted text's line health:
+  healthy (avg ≥ 5) → keep; per-glyph math → reassemble true lines from
+  glyph coordinates via the new pdfjs (`getTextContent` items carry their
+  transform matrix; y-clustering + x-sort, the same reassembly Cherry applies
+  to OCR boxes); still junk (avg < 12 after reassembly) → render + OCR;
+  only then anydoc, then the fragmented original as the last resort.
+- **Corrupt-encoding text layers now OCR instead of indexing garbage** (e.g.
+  a journal PDF whose glyph mapping read `L PE T R t)1 U M R…` now imports
+  the rendered page's OCR text: "炼油技术与工程…摘要：提出了--种混合模拟退火
+  算法…").
+- **SQLite `database is locked` on concurrent writes fixed**: the chunk store
+  never set `busy_timeout` (SQLite default 0), so a write that met another
+  connection's lock failed instantly instead of waiting. Now `PRAGMA
+  busy_timeout = 5000` (two documents in the library had failed embeddings
+  from this).
+- **Verified against the real library**: 马尔科夫链模型.pdf (vector-drawn,
+  281 glyph-fragment chunks → renders cleanly), 基于逻辑模拟退火法的炼油厂…
+  (corrupt text layer, 554 × 7-char chunks → OCRs to readable paragraphs),
+  plus the earlier JBIG2 scan fix. Documents already imported with bad text
+  must be re-imported to benefit (the stored text is what it was).
+
 ### Scanned/vector PDF OCR — full-page rendering (later addition to this release)
 
 - **PDFs whose pages are vector-drawn instead of embedded rasters now OCR

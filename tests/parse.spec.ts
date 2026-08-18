@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractFromHtml, parseDocumentBuffer } from '../src/knowledge/parse.js'
+import { averageLineLength, extractFromHtml, parseDocumentBuffer } from '../src/knowledge/parse.js'
 
 /** Build a minimal, structurally valid single-page PDF with one text line. */
 function makePdf(text: string): Buffer {
@@ -48,6 +48,23 @@ describe('extractFromHtml', () => {
   it('strips HTML comments and collapses whitespace per line', () => {
     const html = '<p>keep <!-- hidden -->  this</p>'
     expect(extractFromHtml(html).text).toBe('keep this')
+  })
+})
+
+describe('averageLineLength (text-layer quality gate)', () => {
+  it('scores healthy paragraph text far above the fragmentation threshold', () => {
+    expect(averageLineLength('这是第一行正常文本\n这是第二行正常文本')).toBeGreaterThan(5)
+    expect(averageLineLength('Hello world, this is a normal line.')).toBeGreaterThan(5)
+  })
+
+  it('scores per-glyph fragments below the threshold', () => {
+    expect(averageLineLength('8\n.\n0\n11\n=\np')).toBeLessThan(5)
+    expect(averageLineLength('L\nPE\nT\nR t)1\nU\nM')).toBeLessThan(5)
+  })
+
+  it('scores empty text as 0', () => {
+    expect(averageLineLength('')).toBe(0)
+    expect(averageLineLength('\n\n  \n')).toBe(0)
   })
 })
 
