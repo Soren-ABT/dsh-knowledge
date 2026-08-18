@@ -10,7 +10,7 @@
  */
 
 import { gunzipSync, deflateSync } from 'node:zlib'
-import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -30,8 +30,8 @@ export interface OcrModelStatus {
   message: string
 }
 
-/** Languages shipped by the OCR card (Chinese-first; English for mixed docs). */
-const OCR_LANGUAGES = ['chi_sim', 'eng'] as const
+/** Languages shipped by the OCR card (Cherry's tesseract default: zh + zh-Traditional + en). */
+const OCR_LANGUAGES = ['chi_sim', 'chi_tra', 'eng'] as const
 type OcrLanguage = (typeof OCR_LANGUAGES)[number]
 
 /** Mirror order: jsdelivr npm mirror (reachable in CN), official tessdata, backstop. */
@@ -51,60 +51,89 @@ function traineddataPath(lang: OcrLanguage): string {
 // ── status / download management (settings panel) ────────────────────────────
 
 let ocrStatus: OcrModelStatus = { status: 'idle', progress: 0, message: '' }
+let ocrDownloadInFlight: Promise<OcrModelStatus> | null = null
 
 export function getOcrModelStatus(): OcrModelStatus {
   return ocrStatus
 }
 
-/** Whether every shipped OCR language is on disk (the parse fallback gate). */
+/**
+ * Whether every shipped OCR language is on disk and complete (both the
+ * inflated .traineddata and the .gz Tesseract reads) — the parse fallback gate.
+ */
 export function isOcrReady(): boolean {
-  return OCR_LANGUAGES.every(lang => existsSync(traineddataPath(lang)))
+  return OCR_LANGUAGES.every(lang =>
+    existsSync(traineddataPath(lang)) && existsSync(`${traineddataPath(lang)}.gz`)
+  )
 }
 
 function setOcrStatus(status: OcrModelStatus): void {
   ocrStatus = status
 }
 
-/** Download all OCR languages with aggregate progress; idempotent per file. */
+/**
+ * Download all OCR languages with aggregate progress; idempotent per file and
+ * coalesced (concurrent callers share one in-flight download — Cherry's
+ * LocalModelDownloadService.inFlight).
+ */
 export async function downloadOcrModels(): Promise<OcrModelStatus> {
-  await mkdir(ocrCacheDir(), { recursive: true })
-  const missing = OCR_LANGUAGES.filter(lang => !existsSync(traineddataPath(lang)))
-  if (missing.length === 0) {
-    setOcrStatus({ status: 'ready', progress: 100, message: '' })
-    return getOcrModelStatus()
-  }
-  setOcrStatus({ status: 'downloading', progress: 0, message: '' })
-  let done = 0
-  try {
-    for (const lang of missing) {
-      await downloadLanguage(lang, (fraction) => {
-        setOcrStatus({
-          status: 'downloading',
-          progress: Math.round(((done + fraction) / OCR_LANGUAGES.length) * 100),
-          message: '',
-        })
-      })
-      done += 1
+  if (ocrDownloadInFlight !== null) return ocrDownloadInFlight
+  const run = (async () => {
+    await mkdir(ocrCacheDir(), { recursive: true })
+    // Same completeness probe as isOcrReady(): a stale cache holding only the
+    // inflated copy (pre-.gz layout) must be re-downloaded, not skipped.
+    const missing = OCR_LANGUAGES.filter(lang =>
+      !existsSync(traineddataPath(lang)) || !existsSync(`${traineddataPath(lang)}.gz`)
+    )
+    if (missing.length === 0) {
+      setOcrStatus({ status: 'ready', progress: 100, message: '' })
+      return getOcrModelStatus()
     }
-    setOcrStatus({ status: 'ready', progress: 100, message: '' })
-  } catch (error) {
-    setOcrStatus({
-      status: 'error',
-      progress: Math.round((done / OCR_LANGUAGES.length) * 100),
-      message: error instanceof Error ? error.message : String(error),
-    })
-    throw error
-  }
-  return getOcrModelStatus()
+    setOcrStatus({ status: 'downloading', progress: 0, message: '' })
+    let done = 0
+    try {
+      for (const lang of missing) {
+        await downloadLanguage(lang, (fraction) => {
+          setOcrStatus({
+            status: 'downloading',
+            progress: Math.round(((done + fraction) / OCR_LANGUAGES.length) * 100),
+            message: '',
+          })
+        })
+        done += 1
+      }
+      setOcrStatus({ status: 'ready', progress: 100, message: '' })
+    } catch (error) {
+      setOcrStatus({
+        status: 'error',
+        progress: Math.round((done / OCR_LANGUAGES.length) * 100),
+        message: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
+    return getOcrModelStatus()
+  })()
+  ocrDownloadInFlight = run.finally(() => { ocrDownloadInFlight = null })
+  return ocrDownloadInFlight
 }
 
-/** Remove the OCR cache (worker releases the WASM heap on next use anyway). */
+/**
+ * Remove the OCR cache. The worker is released first so a Windows file lock
+ * cannot block the unlink (Cherry terminates its OCR worker before deleting
+ * weights for the same reason).
+ */
 export async function removeOcrModels(): Promise<void> {
+  disposeOcrWorker()
   setOcrStatus({ status: 'idle', progress: 0, message: '' })
   await rm(ocrCacheDir(), { recursive: true, force: true })
 }
 
-/** Download one language's traineddata.gz through the mirror chain and gunzip it. */
+/**
+ * Download one language's traineddata.gz through the mirror chain and gunzip
+ * it. Both copies are written atomically (tmp + rename, Cherry's fetchToFile
+ * posture) so a failed download never leaves a half-written file that the
+ * readiness probe could mistake for a complete model.
+ */
 async function downloadLanguage(lang: OcrLanguage, onProgress: (fraction: number) => void): Promise<void> {
   let lastError: unknown
   for (const buildUrl of LANG_SOURCES) {
@@ -116,10 +145,10 @@ async function downloadLanguage(lang: OcrLanguage, onProgress: (fraction: number
       // A mirror error page / LFS pointer is tiny — reject on size before inflating.
       if (gz.length < 100_000) throw new Error(`traineddata from ${url} too small (${gz.length} bytes)`)
       const data = gunzipSync(gz)
-      await writeFile(traineddataPath(lang), data)
-      // Tesseract.js looks for `<lang>.traineddata.gz` under langPath first —
-      // keep the compressed copy alongside the inflated one.
-      await writeFile(`${traineddataPath(lang)}.gz`, gz)
+      await writeFile(`${traineddataPath(lang)}.tmp`, data)
+      await writeFile(`${traineddataPath(lang)}.gz.tmp`, gz)
+      await rename(`${traineddataPath(lang)}.tmp`, traineddataPath(lang))
+      await rename(`${traineddataPath(lang)}.gz.tmp`, `${traineddataPath(lang)}.gz`)
       onProgress(1)
       return
     } catch (error) {
@@ -384,8 +413,12 @@ export async function ocrPdfText(bytes: Uint8Array): Promise<string> {
     if (images.length === 0) return ''
     const pageTexts = new Map<number, string[]>()
     for (const image of images) {
-      const png = rgbaToPng(image.width, image.height, image.data)
-      const text = (await recognizePng(png)).trim()
+      // Cherry preprocesses OCR input (grayscale → normalize → sharpen, via
+      // sharp); here the same chain runs in pure JS. Low-resolution rasters
+      // are upscaled 2x first (Cherry renders PDF pages at ~216dpi instead).
+      const { width, height, data } = prepareForOcr(image.width, image.height, image.data)
+      const png = rgbaToPng(width, height, data)
+      const text = postprocessOcrText(await recognizePng(png))
       if (text.length > 0) {
         const bucket = pageTexts.get(image.page) ?? []
         bucket.push(text)
@@ -402,6 +435,93 @@ export async function ocrPdfText(bytes: Uint8Array): Promise<string> {
     console.warn(`[dsh-knowledge] OCR failed for scanned PDF: ${error instanceof Error ? error.message : String(error)}`)
     return ''
   }
+}
+
+/** Nearest-neighbour 2x upscale for low-resolution rasters (pure JS). */
+function upscale2x(width: number, height: number, rgba: Uint8ClampedArray): { width: number; height: number; data: Uint8ClampedArray } {
+  const out = new Uint8ClampedArray(width * height * 4 * 4)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const src = (y * width + x) * 4
+      const r = rgba[src], g = rgba[src + 1], b = rgba[src + 2], a = rgba[src + 3]
+      for (let dy = 0; dy < 2; dy += 1) {
+        for (let dx = 0; dx < 2; dx += 1) {
+          const dst = ((y * 2 + dy) * width * 2 + (x * 2 + dx)) * 4
+          out[dst] = r; out[dst + 1] = g; out[dst + 2] = b; out[dst + 3] = a
+        }
+      }
+    }
+  }
+  return { width: width * 2, height: height * 2, data: out }
+}
+
+/**
+ * Cherry's OCR input chain (sharp grayscale → normalize → sharpen) in pure JS:
+ * grayscale, min-max contrast stretch, then a 3x3 unsharp kernel. Small
+ * rasters are upscaled 2x before the chain so thin strokes survive.
+ */
+export function prepareForOcr(width: number, height: number, rgba: Uint8ClampedArray): { width: number; height: number; data: Uint8ClampedArray } {
+  let w = width, h = height, data = rgba
+  if (w < 1200 && h < 800) {
+    const up = upscale2x(w, h, data)
+    w = up.width; h = up.height; data = up.data
+  }
+  const gray = new Uint8ClampedArray(w * h)
+  for (let i = 0; i < w * h; i += 1) {
+    // Perceptual luma (Rec. 601), same weights sharp uses for grayscale().
+    gray[i] = Math.round(0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2])
+  }
+  // normalize(): min-max stretch to the full 0-255 range.
+  let min = 255, max = 0
+  for (let i = 0; i < gray.length; i += 1) {
+    if (gray[i] < min) min = gray[i]
+    if (gray[i] > max) max = gray[i]
+  }
+  const range = max - min
+  const stretched = new Uint8ClampedArray(w * h)
+  if (range > 0) {
+    for (let i = 0; i < gray.length; i += 1) {
+      stretched[i] = Math.round(((gray[i] - min) / range) * 255)
+    }
+  } else {
+    stretched.set(gray)
+  }
+  // sharpen(): unsharp kernel on the stretched gray.
+  const sharpened = new Uint8ClampedArray(w * h)
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      let sum = 0
+      for (let ky = -1; ky <= 1; ky += 1) {
+        for (let kx = -1; kx <= 1; kx += 1) {
+          const px = Math.min(w - 1, Math.max(0, x + kx))
+          const py = Math.min(h - 1, Math.max(0, y + ky))
+          sum += stretched[py * w + px] * SHARPEN_KERNEL[(ky + 1) * 3 + (kx + 1)]
+        }
+      }
+      sharpened[y * w + x] = Math.min(255, Math.max(0, sum))
+    }
+  }
+  const out = new Uint8ClampedArray(w * h * 4)
+  for (let i = 0; i < w * h; i += 1) {
+    const v = sharpened[i]
+    out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255
+  }
+  return { width: w, height: h, data: out }
+}
+
+/** 3x3 unsharp kernel (sums to 1, mild edge boost). */
+const SHARPEN_KERNEL = [
+  0, -0.4, 0,
+  -0.4, 2.6, -0.4,
+  0, -0.4, 0,
+]
+
+/**
+ * Tesseract separates CJK glyphs with spaces ("中 文 测 试"); collapse spaces
+ * between CJK characters so the indexed text matches natural search queries.
+ */
+export function postprocessOcrText(text: string): string {
+  return text.replace(/([\u4e00-\u9fff\u3400-\u4dbf])\s+(?=[\u4e00-\u9fff\u3400-\u4dbf])/g, '$1')
 }
 
 /** List languages currently on disk (settings panel detail). */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { deflateSync } from 'node:zlib'
 import { parseDocumentBuffer } from '../src/knowledge/parse.js'
-import { ocrPdfText, rgbaToPng } from '../src/knowledge/ocr.js'
+import { ocrPdfText, postprocessOcrText, prepareForOcr, rgbaToPng } from '../src/knowledge/ocr.js'
 
 /** Build a "scanned" PDF: one page embedding a grayscale raster (no text layer). */
 function makeScannedPdf(width: number, height: number): Buffer {
@@ -56,5 +56,38 @@ describe('local OCR fallback', () => {
   it('a scanned PDF without OCR models still fails with the clear error', async () => {
     await expect(parseDocumentBuffer(makeScannedPdf(20, 20), 'scan.pdf', 'application/pdf'))
       .rejects.toThrow(/no extractable text|PDF parsing failed/)
+  })
+})
+
+describe('OCR input preparation (Cherry: grayscale → normalize → sharpen)', () => {
+  it('upscales small rasters 2x and returns grayscale RGBA of the new size', () => {
+    const rgba = new Uint8ClampedArray(8 * 8 * 4)
+    for (let i = 0; i < 8 * 8; i += 1) {
+      const v = (i * 3) % 256
+      rgba[i * 4] = v; rgba[i * 4 + 1] = v; rgba[i * 4 + 2] = v; rgba[i * 4 + 3] = 255
+    }
+    const out = prepareForOcr(8, 8, rgba)
+    expect(out.width).toBe(16)
+    expect(out.height).toBe(16)
+    expect(out.data.length).toBe(16 * 16 * 4)
+    // Grayscale: every channel equals the first, alpha opaque.
+    expect(out.data[4]).toBe(out.data[5])
+    expect(out.data[6]).toBe(out.data[5])
+    expect(out.data[7]).toBe(255)
+  })
+
+  it('keeps a large raster at its original size', () => {
+    const rgba = new Uint8ClampedArray(1500 * 1000 * 4)
+    rgba.fill(255)
+    const out = prepareForOcr(1500, 1000, rgba)
+    expect(out.width).toBe(1500)
+    expect(out.height).toBe(1000)
+  })
+})
+
+describe('OCR text post-processing', () => {
+  it('collapses spaces between CJK glyphs but keeps inter-word spaces', () => {
+    expect(postprocessOcrText('中 文 测 试 OCR 12345\n')).toBe('中文测试 OCR 12345\n')
+    expect(postprocessOcrText('hello world 中文 测试')).toBe('hello world 中文测试')
   })
 })
