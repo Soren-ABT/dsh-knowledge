@@ -157,8 +157,8 @@ node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId
 依赖公开的 DeepSeek Harness monorepo 作为 sibling checkout（`package.json` 的 `devDependencies` 用 `link:../dsh/...` 指向它，peer 依赖由该 checkout 提供）：
 
 ```bash
-# 建立 sibling 链接（Windows 可用 junction）
-#   mklink /J ..\dsh "D:\Program Files\deepseek harness"
+# 建立 sibling 链接（Windows 可用 junction，指向你的 DSH 安装目录）
+#   mklink /J ..\dsh "<你的 DSH 安装目录>"
 pnpm install --config.auto-install-peers=false
 pnpm run check    # typecheck + test + build
 pnpm run build    # esbuild → lib/（含 client bundle）
