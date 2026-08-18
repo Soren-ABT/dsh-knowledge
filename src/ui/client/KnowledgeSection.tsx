@@ -257,16 +257,20 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     setChunks([])
     setRawText(null)
     setRawTextTruncated(false)
+    // PDFs preview through an embedded viewer (raw?inline=1), so their parsed
+    // text does not need to be shipped to the panel (rawTextLimit 0 = skip).
+    const known = documents.find(doc => doc.id === id)
+    const pdfPreview = known?.sourceType === 'file' && (known.fileName ?? '').toLowerCase().endsWith('.pdf')
     await run(async () => {
       const [doc, chunkList] = await Promise.all([
-        api.getDocument(id, { rawTextLimit: PREVIEW_RAW_TEXT_LIMIT }),
+        api.getDocument(id, { rawTextLimit: pdfPreview ? 0 : PREVIEW_RAW_TEXT_LIMIT }),
         api.listChunks(id, PREVIEW_CHUNK_LIMIT),
       ])
       setChunks(chunkList)
       setRawText(doc.rawText ?? null)
       setRawTextTruncated(doc.rawTextTruncated === true)
     })
-  }, [api, run])
+  }, [api, run, documents])
 
   const loadMoreChunks = useCallback(async (): Promise<void> => {
     if (selectedDocId === null) return
@@ -1670,6 +1674,22 @@ function DocumentDetailPanel(props: {
 
       <div className="kb-scroll" style={{ maxHeight: 'calc(100vh - 250px)', overflowY: 'auto' }}>
         {mode === 'preview' ? (
+          doc.sourceType === 'file' && (doc.fileName ?? '').toLowerCase().endsWith('.pdf') ? (
+            // Cherry Studio parity: PDFs preview in an embedded viewer (the
+            // browser's native PDF viewer via a same-origin inline stream).
+            <iframe
+              src={`/knowledge/documents/${doc.id}/raw?inline=1`}
+              title={doc.title}
+              style={{
+                width: '100%',
+                height: 'calc(100vh - 320px)',
+                minHeight: 420,
+                border: `1px solid ${C.border}`,
+                borderRadius: 8,
+                background: '#fff',
+              }}
+            />
+          ) : (
           <>
             {props.rawTextTruncated && (
               <div style={{ ...style.warningHint, marginBottom: 8 }}>
@@ -1682,6 +1702,7 @@ function DocumentDetailPanel(props: {
               <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, margin: 0, color: C.text, lineHeight: 1.6, wordBreak: 'break-word', fontFamily: 'inherit' }}>{props.rawText}</pre>
             )}
           </>
+          )
         ) : (
           <>
             {chunksTruncated && (

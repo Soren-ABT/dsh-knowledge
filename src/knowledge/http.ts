@@ -55,10 +55,12 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
       return
     }
     if (isRawDownload(value)) {
-      const { bytes, fileName, mimeType } = value
+      const { bytes, fileName, mimeType, inline } = value
       res.writeHead(200, {
         'content-type': mimeType ?? 'application/octet-stream',
-        'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        'content-disposition': inline === true
+          ? `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`
+          : `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
         'content-length': String(bytes.byteLength),
       })
       res.end(Buffer.from(bytes))
@@ -77,6 +79,8 @@ interface RawDownload {
   bytes: Uint8Array
   fileName: string
   mimeType?: string
+  /** Serve with `Content-Disposition: inline` for in-panel embedding. */
+  inline?: boolean
 }
 
 function isRawDownload(value: unknown): value is RawDownload {
@@ -280,7 +284,9 @@ async function route(
       if (segments[2] === 'raw' && method === 'GET') {
         const raw = await service.getRawFile(documentId)
         if (raw === undefined) return undefined
-        return { rawDownload: true, ...raw }
+        // `?inline=1` serves the bytes for in-panel embedding (Cherry's file
+        // preview); the default stays an attachment download.
+        return { rawDownload: true, inline: query.get('inline') === '1', ...raw }
       }
     }
     return undefined
