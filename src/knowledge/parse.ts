@@ -94,16 +94,32 @@ function codePointFrom(value: number): string {
 // ── optional parsers ─────────────────────────────────────────────────────────
 
 async function parsePdf(buffer: Uint8Array): Promise<string> {
+  // Primary engine: pdf-parse (pdf.js). On failure or an empty extraction,
+  // fall back to @firecrawl/anydoc (Cherry's AnydocReader fallback posture):
+  // anydoc detects the format by content signature and returns structured
+  // Markdown, so an unusual/corrupt-ish PDF that pdf.js rejects can still be
+  // indexed. Only when both engines fail does the import fail.
+  let primaryError: Error | null = null
+  let text = ''
   try {
     const pdfParse = await loadPdfParse()
     const result = await pdfParse(Buffer.from(buffer))
-    const text = typeof result?.text === 'string' ? result.text : ''
-    if (text.trim().length === 0) throw new Error('PDF contains no extractable text (it may be scanned)')
-    return text
+    text = typeof result?.text === 'string' ? result.text : ''
   } catch (error) {
-    if (error instanceof Error && error.message.includes('no extractable text')) throw error
-    throw new Error(`PDF parsing failed: ${error instanceof Error ? error.message : String(error)}`)
+    primaryError = error instanceof Error ? error : new Error(String(error))
   }
+  if (text.trim().length > 0) return text
+  try {
+    const anydoc = await loadAnydoc()
+    const markdown = (await anydoc.toMarkdownBytes(Buffer.from(buffer))).trim()
+    if (markdown.length > 0) return markdown
+  } catch {
+    // fallback failed — report the primary engine's error below
+  }
+  if (primaryError !== null) {
+    throw new Error(`PDF parsing failed: ${primaryError.message}`)
+  }
+  throw new Error('PDF contains no extractable text (it may be scanned)')
 }
 
 async function parseDocx(buffer: Uint8Array): Promise<string> {

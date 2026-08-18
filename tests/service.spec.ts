@@ -42,6 +42,32 @@ function fakeWebServer() {
   }
 }
 
+/** Build a minimal, structurally valid single-page PDF with one text line. */
+function makeTestPdf(text: string): Buffer {
+  const objects: string[] = []
+  const add = (body: string): number => {
+    objects.push(body)
+    return objects.length
+  }
+  add('<< /Type /Catalog /Pages 2 0 R >>')
+  add('<< /Type /Pages /Kids [3 0 R] /Count 1 >>')
+  const stream = `BT /F1 24 Tf 72 720 Td (${text}) Tj ET`
+  add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>`)
+  add(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`)
+  add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+  const chunks: Buffer[] = [Buffer.from('%PDF-1.4\n')]
+  const offsets: number[] = []
+  objects.forEach((body, index) => {
+    offsets.push(Buffer.concat(chunks).length)
+    chunks.push(Buffer.from(`${index + 1} 0 obj\n${body}\nendobj\n`))
+  })
+  const xrefPos = Buffer.concat(chunks).length
+  let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (const offset of offsets) xref += `${String(offset).padStart(10, '0')} 00000 n \n`
+  chunks.push(Buffer.from(`${xref}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`))
+  return Buffer.concat(chunks)
+}
+
 async function mountService(): Promise<KnowledgeServiceType> {
   const ctx = new Context()
   ctx.provide('webServer', fakeWebServer())
@@ -272,6 +298,25 @@ describe('KnowledgeService', () => {
     })
     expect(doc2.id).not.toBe(doc.id)
     expect(service.listDocuments(base.id)).toHaveLength(1)
+  })
+
+  it('uploads a PDF end to end: row lands, pool parses, chunks are indexed', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'pdf-upload' })
+    const doc = await service.addFileDocument({
+      baseId: base.id,
+      fileName: 'upload.pdf',
+      mimeType: 'application/pdf',
+      contentBase64: makeTestPdf('Knowledge base PDF upload works').toString('base64'),
+    })
+    // Row exists immediately (Cherry: created before processing)…
+    expect(service.listDocuments(base.id)).toHaveLength(1)
+    // …and the background pool settles it with indexed chunks.
+    await service.waitForIdle()
+    const settled = service.listDocuments(base.id)[0]
+    expect(settled.chunkCount).toBeGreaterThan(0)
+    const text = service.listChunks(doc.id).map(c => c.text).join(' ')
+    expect(text).toContain('Knowledge base PDF upload works')
   })
 
   it('rejects unsupported file types before creating a row', async () => {
