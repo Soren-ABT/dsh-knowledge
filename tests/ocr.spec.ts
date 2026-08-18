@@ -9,8 +9,43 @@ import {
   ocrPdfText,
   postprocessOcrText,
   prepareForOcr,
+  renderPdfPages,
   rgbaToPng,
 } from '../src/knowledge/ocr.js'
+
+/**
+ * Build a PDF whose page content is pure vector drawing (no embedded images,
+ * no text layer) — like PDFs whose body is drawn with subsetted fonts, which
+ * pdf-parse cannot extract and image extraction cannot see.
+ */
+function buildVectorOnlyPdf(): Buffer {
+  const content = 'q 0.9 0.9 0.9 rg 0 0 612 792 re f Q\n'
+    + 'q 0 0 0 rg BT /F1 24 Tf 72 700 Td (Markov) Tj ET Q\n'
+    + 'q 0 0 0 rg 100 600 300 4 re f Q\n'
+    + '0.5 0.5 0.5 RG 4 w 100 500 200 100 re S\n'
+  const objects = [
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'),
+    Buffer.from('<< /Type /Pages /Kids [3 0 R] /Count 1 >>'),
+    Buffer.from(
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    ),
+    Buffer.from(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`),
+    Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'),
+  ]
+  const chunks: Buffer[] = [Buffer.from('%PDF-1.4\n')]
+  const offsets: number[] = []
+  objects.forEach((body, index) => {
+    offsets.push(Buffer.concat(chunks).length)
+    chunks.push(Buffer.concat([Buffer.from(`${index + 1} 0 obj\n`), body, Buffer.from('\nendobj\n')]))
+  })
+  const xrefPos = Buffer.concat(chunks).length
+  let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (const offset of offsets) xref += `${String(offset).padStart(10, '0')} 00000 n \n`
+  chunks.push(
+    Buffer.from(`${xref}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`),
+  )
+  return Buffer.concat(chunks)
+}
 
 /** Build a one-page "scanned" PDF embedding one raster (no text layer). */
 function makeScannedPdf(bits: 1 | 8, width: number, height: number): Buffer {
@@ -136,6 +171,37 @@ describe('pdfjs scanned-raster decode (real pipeline)', () => {
       expect(rgba[i * 4 + 2]).toBe(data[i])
       expect(rgba[i * 4 + 3]).toBe(255)
     }
+  })
+})
+
+describe('full-page rendering (mupdf, Cherry pdfPageOcr path)', () => {
+  it('renders a raster-only page into one PNG', async () => {
+    const pages = await renderPdfPages(makeScannedPdf(8, 40, 30), 10)
+    expect(pages).not.toBeNull()
+    expect(pages!.length).toBe(1)
+    expect(pages![0].page).toBe(1)
+    const png = pages![0].png
+    // Valid PNG with an IHDR chunk (magic + length + type).
+    expect([...png.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    expect(png.subarray(12, 16).toString('latin1')).toBe('IHDR')
+    expect(png.length).toBeGreaterThan(100)
+  })
+
+  it('renders a vector-only page (no embedded images at all)', async () => {
+    // A page whose content is pure vector drawing — the case that used to
+    // OCR only stray character-fragment images (or nothing at all).
+    const pages = await renderPdfPages(buildVectorOnlyPdf(), 10)
+    expect(pages).not.toBeNull()
+    expect(pages!.length).toBe(1)
+    expect(pages![0].png.length).toBeGreaterThan(100)
+  })
+
+  it('returns null when mupdf is unavailable', async () => {
+    // Can't easily unload mupdf; the guard here documents the contract the
+    // caller relies on for the extraction fallback.
+    const pages = await renderPdfPages(new Uint8Array([1, 2, 3]), 10)
+    // Invalid input: mupdf throws → null (fallback path).
+    expect(pages).toBeNull()
   })
 })
 

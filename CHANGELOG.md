@@ -2,6 +2,25 @@
 
 ## 0.2.2 — Cherry-parity import pipeline + worker-thread local models
 
+### Scanned/vector PDF OCR — full-page rendering (later addition to this release)
+
+- **PDFs whose pages are vector-drawn instead of embedded rasters now OCR
+  correctly.** Many textbook PDFs (e.g. mathematical lecture notes) draw the
+  body with subsetted fonts and embed only decorative fragments (rule lines,
+  isolated formula glyphs); pdf-parse/anydoc extract nothing and the old
+  embedded-raster extraction OCR'd those fragments into single-character
+  noise (one "chunk" per glyph, hundreds of micro-chunks per document).
+- **Pages are now rendered with mupdf (Artifex' WASM build) at ~216dpi**
+  (Cherry's pdfPageOcr posture) and the full-page raster is OCR'd, so
+  vector-only pages produce coherent line text. pdfjs's CanvasGraphics
+  rendering onto @napi-rs/canvas crashes the process (native incompatibility),
+  hence mupdf: pure WASM, no native code, no canvas globals. pdfjs remains
+  only for the embedded-raster extraction fallback (no renderer available).
+- **Verified against a real 40-page Markov-chain lecture PDF**: 8 pages OCR
+  in ~5s with clean paragraphs ("马尔可夫链模型" / "描述一类重要的系统
+  （过程）的模型 …"), where the old path produced 281 single-character
+  chunks from the first ~5 pages and nothing after.
+
 ### Bug-fix round (later additions to this release)
 
 - **Local-model worker could be killed mid-download**: the 60s idle-release

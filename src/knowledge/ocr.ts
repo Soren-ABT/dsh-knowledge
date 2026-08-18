@@ -1,11 +1,11 @@
 /**
- * Local OCR for scanned PDFs (Cherry's local-document posture, adapted to
- * pure-JS dependencies). When pdf-parse and anydoc both fail to extract a
- * text layer, the PDF's pages are typically embedded rasters — pdfjs extracts
- * those images without rendering, they are PNG-encoded (node:zlib, no canvas
- * dependency), and Tesseract.js (WASM, its own worker thread) recognizes the
- * text. Traineddata downloads through our proxied fetch from mirror sources
- * into `<localModelCacheDir>/ocr/`.
+ * Local OCR for scanned PDFs (Cherry's local-document posture). When
+ * pdf-parse and anydoc both fail to extract a text layer, the PDF's pages are
+ * rendered at ~216dpi through pdfjs onto an @napi-rs/canvas surface (Cherry's
+ * pdfPageOcr renders each page) and PaddleOCR recognizes the full-page raster.
+ * Two fallbacks keep it working without a canvas: embedded rasters are
+ * extracted via pdfjs operator lists (no rendering), and a worker thread runs
+ * PaddleOCR (WASM/ONNX, isolated so a native crash cannot take down the host).
  * @module dsh-knowledge/knowledge/ocr
  */
 
@@ -245,6 +245,79 @@ const pdfjsWasmUrl: string | undefined = (() => {
   }
 })()
 
+/**
+ * Page renderer — mupdf (Artifex' WASM build). pdfjs's CanvasGraphics
+ * rendering onto @napi-rs/canvas crashes the process (native incompatibility
+ * with the 2d context), so page rendering uses mupdf instead: pure WASM, no
+ * native code, renders vector-only pages (subsetted-font PDFs) just as well
+ * as scanned rasters. pdfjs remains only for embedded-raster extraction
+ * (the no-renderer fallback).
+ */
+interface MupdfModule {
+  Document: {
+    openDocument(data: Uint8Array, magic: string): {
+      countPages(): number
+      loadPage(index: number): {
+        toPixmap(matrix: unknown, colorspace: unknown, alpha: boolean): { asPNG(): Uint8Array }
+        destroy(): void
+      }
+      destroy(): void
+    }
+  }
+  Matrix: { scale(x: number, y: number): unknown }
+  ColorSpace: { DeviceRGB: unknown }
+}
+
+let mupdfModule: MupdfModule | null | undefined
+async function loadMupdf(): Promise<MupdfModule | null> {
+  if (mupdfModule !== undefined) return mupdfModule
+  try {
+    mupdfModule = (await import('mupdf')) as unknown as MupdfModule
+  } catch {
+    mupdfModule = null
+  }
+  return mupdfModule
+}
+
+/**
+ * Render every page of a PDF to a full-page PNG (Cherry's pdfPageOcr: scanned
+ * pages and vector-only pages both end up as one image per page, so OCR sees
+ * the complete layout instead of isolated embedded fragments). Returns null
+ * when the renderer is unavailable — the caller falls back to embedded-raster
+ * extraction. Exported for tests.
+ */
+export async function renderPdfPages(bytes: Uint8Array, maxPages: number): Promise<Array<{ page: number; png: Buffer }> | null> {
+  const mupdf = await loadMupdf()
+  if (mupdf === null) return null
+  let document: ReturnType<MupdfModule['Document']['openDocument']> | null = null
+  try {
+    document = mupdf.Document.openDocument(Uint8Array.from(bytes), 'application/pdf')
+    const out: Array<{ page: number; png: Buffer }> = []
+    const pageCount = Math.min(document.countPages(), maxPages)
+    for (let index = 0; index < pageCount; index += 1) {
+      try {
+        const page = document.loadPage(index)
+        // ~216dpi on A4 (612x842pt * 3). mupdf renders into WASM memory, so
+        // large pages cost memory but never hit a canvas dimension limit.
+        const pixmap = page.toPixmap(mupdf.Matrix.scale(3, 3), mupdf.ColorSpace.DeviceRGB, false)
+        const png = Buffer.from(pixmap.asPNG())
+        page.destroy()
+        if (png.length > 0) out.push({ page: index + 1, png })
+      } catch (error) {
+        // A page that refuses to render (malformed content) is skipped — the
+        // rest of the document still gets OCR'd.
+        console.warn(`[dsh-knowledge] page ${index + 1} render failed, skipping: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return out
+  } catch (error) {
+    console.warn(`[dsh-knowledge] mupdf render failed, falling back to embedded rasters: ${error instanceof Error ? error.message : String(error)}`)
+    return null
+  } finally {
+    document?.destroy()
+  }
+}
+
 function failAllOcrPending(error: Error): void {
   for (const { reject } of ocrPending.values()) reject(error)
   ocrPending.clear()
@@ -471,27 +544,46 @@ function crc32(buffer: Buffer): number {
 }
 
 /**
- * OCR a scanned PDF: extract embedded page rasters and recognize them.
- * Returns '' when the OCR models are not downloaded (the caller keeps its
- * "no extractable text" error) or when nothing was recognized.
+ * OCR a scanned PDF. The preferred path renders every page to a full-page
+ * raster via mupdf (Cherry's pdfPageOcr) so vector-only pages — e.g. PDFs
+ * whose body is drawn with subsetted fonts instead of embedded bitmaps — are
+ * recognized as complete pages rather than as isolated character fragments.
+ * Without a renderer it falls back to extracting embedded rasters via pdfjs
+ * operator lists. Returns '' when the OCR models are not downloaded (the
+ * caller keeps its "no extractable text" error) or when nothing was
+ * recognized.
  */
 export async function ocrPdfText(bytes: Uint8Array): Promise<string> {
   if (!isOcrReady()) return ''
   try {
-    const images = await extractPdfImages(bytes)
-    if (images.length === 0) return ''
     const pageTexts = new Map<number, string[]>()
-    for (const image of images) {
-      // Cherry preprocesses OCR input (grayscale → normalize → sharpen, via
-      // sharp); here the same chain runs in pure JS. Low-resolution rasters
-      // are upscaled 2x first (Cherry renders PDF pages at ~216dpi instead).
-      const { width, height, data } = prepareForOcr(image.width, image.height, image.data)
-      const png = rgbaToPng(width, height, data)
-      const text = postprocessOcrText(await recognizePng(png))
-      if (text.length > 0) {
-        const bucket = pageTexts.get(image.page) ?? []
-        bucket.push(text)
-        pageTexts.set(image.page, bucket)
+    const rendered = await renderPdfPages(bytes, MAX_OCR_PAGES)
+    if (rendered !== null) {
+      // Full-page renders: one PNG per page, straight into the recognizer
+      // (mupdf output needs no grayscale/normalize chain).
+      for (const { page, png } of rendered) {
+        const text = postprocessOcrText(await recognizePng(png))
+        if (text.length > 0) {
+          const bucket = pageTexts.get(page) ?? []
+          bucket.push(text)
+          pageTexts.set(page, bucket)
+        }
+      }
+    } else {
+      // No renderer — fall back to the embedded-raster extraction path.
+      const images = await extractPdfImages(bytes)
+      for (const image of images) {
+        // Cherry preprocesses OCR input (grayscale → normalize → sharpen, via
+        // sharp); here the same chain runs in pure JS. Low-resolution rasters
+        // are upscaled 2x first (Cherry renders PDF pages at ~216dpi instead).
+        const { width, height, data } = prepareForOcr(image.width, image.height, image.data)
+        const png = rgbaToPng(width, height, data)
+        const text = postprocessOcrText(await recognizePng(png))
+        if (text.length > 0) {
+          const bucket = pageTexts.get(image.page) ?? []
+          bucket.push(text)
+          pageTexts.set(image.page, bucket)
+        }
       }
     }
     return [...pageTexts.entries()]

@@ -73,6 +73,7 @@ const hostExternal = [
   '@techstark/opencv-js',
   'onnxruntime-node',
   'undici',
+  'mupdf',
 ]
 
 const hostEntries = [
