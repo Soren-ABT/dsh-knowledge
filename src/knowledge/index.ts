@@ -86,6 +86,9 @@ export const MODEL_SUGGESTIONS = {
     'BAAI/bge-reranker-v2-m3',
     'bge-reranker-base',
     'bce-reranker-base_v1',
+    // Local cross-encoder: download it in Settings → Local Models, then use
+    // the `local:` prefix (e.g. `local:Xenova/bge-reranker-base`).
+    'local:Xenova/bge-reranker-base',
   ],
 } as const
 

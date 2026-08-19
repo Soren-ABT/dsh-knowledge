@@ -251,8 +251,8 @@ function postToWorker(message: unknown): void {
 }
 
 function callWorker(
-  type: 'embed' | 'load',
-  payload: { modelId: string; texts?: string[]; pooling?: Pooling },
+  type: 'embed' | 'load' | 'rerank',
+  payload: { modelId: string; texts?: string[]; query?: string; pooling?: Pooling; task?: 'feature-extraction' | 'reranking' },
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = ++localRequestSeq
@@ -273,7 +273,9 @@ function callWorker(
       hfEndpoint: hfEndpointOverride
         ?? (typeof process !== 'undefined' && process.env.HF_ENDPOINT !== undefined ? process.env.HF_ENDPOINT : undefined),
       texts: payload.texts,
+      query: payload.query,
       pooling: payload.pooling,
+      task: payload.task,
     })
   })
 }
@@ -283,9 +285,18 @@ async function embedLocal(modelId: string, texts: readonly string[]): Promise<nu
   return vectors as number[][]
 }
 
+/**
+ * Local cross-encoder rerank (bge-reranker family): scores each candidate
+ * text against the query, index-aligned. Runs in the same worker thread.
+ */
+export async function rerankLocal(modelId: string, query: string, texts: readonly string[]): Promise<number[]> {
+  const scores = await callWorker('rerank', { modelId, query, texts: [...texts], task: 'reranking' })
+  return scores as number[]
+}
+
 /** Download + load a local model in the worker (no inference; progress reports via /local-model-status). */
-export async function loadLocalModel(modelId: string): Promise<void> {
-  await callWorker('load', { modelId })
+export async function loadLocalModel(modelId: string, task: 'feature-extraction' | 'reranking' = 'feature-extraction'): Promise<void> {
+  await callWorker('load', { modelId, task })
 }
 
 /** Cancel an in-flight download; the next progress tick throws and aborts the load. */

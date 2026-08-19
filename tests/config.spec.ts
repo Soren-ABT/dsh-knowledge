@@ -61,12 +61,16 @@ describe('local model registry', () => {
     expect(LOCAL_MODELS.length).toBeGreaterThanOrEqual(3)
     for (const model of LOCAL_MODELS) {
       expect(model.id.length).toBeGreaterThan(0)
-      expect(model.dimensions).toBeGreaterThan(0)
-      expect(model.maxTokens).toBeGreaterThan(0)
+      if (model.kind === 'embedding') {
+        expect(model.dimensions).toBeGreaterThan(0)
+        expect(model.maxTokens).toBeGreaterThan(0)
+      }
     }
     expect(MODEL_SUGGESTIONS.local).toEqual(LOCAL_MODELS.map(model => model.id))
     // The default local model stays the flagship Chinese-capable one.
     expect(LOCAL_MODELS[0].id).toBe('onnx-community/Qwen3-Embedding-0.6B-ONNX')
+    // The registry also ships a local cross-encoder for reranking.
+    expect(LOCAL_MODELS.some(model => model.kind === 'reranking' && model.id === 'Xenova/bge-reranker-base')).toBe(true)
   })
 
   it('picks the pooling strategy per model family (Cherry pooling.ts)', () => {

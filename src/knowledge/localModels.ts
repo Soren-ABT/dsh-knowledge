@@ -9,12 +9,12 @@ import { cancelLocalModel, getLocalModelStatus, isLocalModelDownloaded, loadLoca
 export interface LocalModelDescriptor {
   readonly id: string
   readonly name: string
-  readonly kind: 'embedding'
+  readonly kind: 'embedding' | 'reranking'
   readonly subtitle: string
-  /** Embedding width the model produces (for the UI and dimension checks). */
-  readonly dimensions: number
+  /** Embedding width the model produces (embedding models only). */
+  readonly dimensions?: number
   /** Practical max input length in tokens (model context window). */
-  readonly maxTokens: number
+  readonly maxTokens?: number
 }
 
 export interface LocalModelSummary extends LocalModelDescriptor {
@@ -69,6 +69,12 @@ export const LOCAL_MODELS: readonly LocalModelDescriptor[] = [
     dimensions: 384,
     maxTokens: 512,
   },
+  {
+    id: 'Xenova/bge-reranker-base',
+    name: 'BGE Reranker Base',
+    kind: 'reranking',
+    subtitle: '本地重排 · 跨编码器 · 双语（检索质量提升明显，约 280MB）',
+  },
 ]
 
 function findModel(id: string): LocalModelDescriptor {
@@ -103,8 +109,9 @@ export async function downloadLocalModel(id: string): Promise<LocalModelSummary>
   // are observed through listLocalModels (the poller drives the UI,
   // Cherry-style). A background failure must NOT be swallowed — it lands in
   // the status map so the settings panel shows the error instead of looking
-  // like the button did nothing.
-  void loadLocalModel(id).catch((error: unknown) => {
+  // like the button did nothing. Rerankers load under the 'reranking' task.
+  const task = descriptor.kind === 'reranking' ? 'reranking' : 'feature-extraction'
+  void loadLocalModel(id, task).catch((error: unknown) => {
     markLocalModelError(descriptor.id, error instanceof Error ? error.message : String(error))
   })
   return summarize(descriptor)
