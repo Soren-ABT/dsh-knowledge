@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased — next npm release (everything after 0.2.2)
+
+### Retrieval quality
+
+- **Citations**: `knowledge_search` returns a `citations` array (Markdown
+  quote + source line per hit) for the model to quote verbatim; the recall
+  panel's copy button copies the full citation instead of bare text.
+- **Semantic chunking** (`semanticChunk` + `semanticChunkThreshold`):
+  paragraph-level segments are embedded and adjacent similar ones merged
+  (length-weighted mean vector — no extra embedding pass), per-base
+  overridable.
+- **Local reranking**: `rerankModel: local:Xenova/bge-reranker-base` runs a
+  cross-encoder in the model worker (offline); Settings → Local Models gains
+  the BGE Reranker Base card and the suggestion list offers the local option.
+- **Code-fence chunk protection**: fenced code blocks (``` / ~~~) never
+  split at internal blank lines or heading-like lines.
+- **Token-budget chunk refinement** (`chunkTokenLimit`): oversized chunks
+  split at preferred boundaries (blank line → 。/！/？ → ， → space).
+- **Multi-query retrieval** (`extraQueries`): each phrasing searches
+  independently and hits merge by chunk id keeping the best score.
+- **Vector lane in-memory cache**: decoded embeddings stay resident per base
+  (Float32Array, exact per-doc/per-base invalidation) — repeated searches no
+  longer re-fetch/re-decode the BLOBs.
+- **RAG-style evaluation** (`scripts/eval-rag.mjs`): Hit@k + sentence-level
+  Context Recall (RAGAS-style approximation, no LLM) + MRR against golden
+  answers.
+
+### Import & document processing
+
+- **Image/table captioning** (`imageCaptionProvider: openai|ollama`): embedded
+  PDF figures (size-filtered, ≤20 per document) are described by a vision
+  model and appended to the text — charts become searchable. OpenAI-compatible
+  vision API or a local Ollama VLM.
+- **Same-name conflict strategies** (`conflictStrategy`, default rename):
+  rename (auto `_1` suffix) / replace / keep; per-request `conflict: detect`
+  raises a conflict error (HTTP 409).
+- **Scheduled URL auto-refresh** (`urlRefreshHours`): stale URL documents are
+  re-fetched and re-indexed on an hourly sweep.
+- **Parse hardening**: per-glyph math text layers are reassembled from glyph
+  coordinates; corrupt-encoding layers fall back to render+OCR; SQLite
+  `busy_timeout` fixes "database is locked".
+
+### Local models & Ollama
+
+- **Configurable model cache directory** with native folder picker
+  (`ctx.workspaces.pickDirectory`), open-in-file-manager, and **migration**:
+  existing models move to the new location (rename, copy+delete across
+  drives; worker released first for Windows file locks) and the config
+  switches over — no re-downloads, no blind C-drive growth.
+- **Ollama model management**: pull with streamed progress + cancel, delete
+  (two-step confirm), installed-model chips, embedding/vision recommendations,
+  and clear install guidance (ollama.com/download).
+- **Download reliability**: worker progress messages throttled (250ms) so a
+  585MB download cannot starve the host's HTTP/UI work; Ollama pull streams
+  through an AbortController; a leaked rejection in the pull cleanup chain
+  (unhandledRejection killing the whole DSH process) is fixed and every void
+  promise chain audited.
+
+### Housekeeping
+
+- Emoji replaced with lucide icons (ISC, paths from lucide-static) — Cherry
+  Studio's icon library, no new dependency.
+- Stale `docs/compare-with-cherry.md` removed from the repo and the npm
+  tarball.
+
 ## 0.2.2 — Cherry-parity import pipeline + worker-thread local models (npm release)
 
 ### Whole-library PDF quality audit + parse decision tree (later addition)
