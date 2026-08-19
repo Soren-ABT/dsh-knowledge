@@ -154,6 +154,9 @@ export type KnowledgeKey =
   | 'ollamaDesc'
   | 'ollamaRefresh'
   | 'ollamaPull'
+  | 'ollamaRecommended'
+  | 'ollamaEmbeddingHint'
+  | 'ollamaVisionHint'
   | 'chunkSeparator'
   | 'chunkSeparatorHint'
   | 'reset'
@@ -387,6 +390,9 @@ export const zh: Record<KnowledgeKey, string> = {
   ollamaDesc: '通过 Ollama API 下载模型（嵌入、视觉等），下载后可在知识库设置中选用（嵌入提供方选 Ollama）',
   ollamaRefresh: '刷新已装模型',
   ollamaPull: '下载模型',
+  ollamaRecommended: '推荐模型（点击填入，再点下载）',
+  ollamaEmbeddingHint: '嵌入模型 — 知识库设置「嵌入提供方」选 Ollama 后填入',
+  ollamaVisionHint: '视觉模型 — 知识库设置「图表描述」选 Ollama 后填入',
   chunkSeparator: '分隔符',
   chunkSeparatorHint: '切分文本所用的分隔符（转义形式）。开启智能分段时作为额外切分点；关闭后仅按此分隔符切分。',
   reset: '恢复默认',
@@ -618,6 +624,9 @@ export const en: Record<KnowledgeKey, string> = {
   ollamaDesc: 'Pull models through the Ollama API (embeddings, VLMs); pulled models are selectable in the base settings (provider: Ollama)',
   ollamaRefresh: 'Refresh installed',
   ollamaPull: 'Pull model',
+  ollamaRecommended: 'Recommended models (click to fill, then pull)',
+  ollamaEmbeddingHint: 'Embedding model — pick provider Ollama in the base settings and fill this name',
+  ollamaVisionHint: 'Vision model — pick Ollama for image captioning in the base settings and fill this name',
   chunkSeparator: 'Separator',
   chunkSeparatorHint: 'Delimiter the text is split on, in escaped form. With smart chunking on it adds a break point; with it off the text is split only by this delimiter.',
   reset: 'Restore Defaults',

@@ -84,6 +84,10 @@ export interface ModelSuggestions {
   embedding: string[]
   local: string[]
   rerank: string[]
+  /** Ollama registry embedding recommendations (for provider `ollama`). */
+  ollamaEmbedding: string[]
+  /** Ollama registry vision-model recommendations (for image captioning). */
+  ollamaVision: string[]
 }
 
 export interface LocalModelSummary {

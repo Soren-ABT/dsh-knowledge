@@ -31,7 +31,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   }))
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [localStatus, setLocalStatus] = useState<LocalModelStatus | null>(null)
-  const [suggestions, setSuggestions] = useState<ModelSuggestions>({ embedding: [], local: [], rerank: [] })
+  const [suggestions, setSuggestions] = useState<ModelSuggestions>({ embedding: [], local: [], rerank: [], ollamaEmbedding: [], ollamaVision: [] })
   const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -414,7 +414,9 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
       </div>
 
       <datalist id={listId('embedding')}>
-        {suggestions.embedding.map(model => <option key={model} value={model} />)}
+        {(values.embeddingProvider === 'ollama'
+          ? [...suggestions.ollamaEmbedding, ...suggestions.embedding]
+          : suggestions.embedding).map(model => <option key={model} value={model} />)}
       </datalist>
       <datalist id={listId('local')}>
         {suggestions.local.map(model => <option key={model} value={model} />)}

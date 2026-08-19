@@ -105,6 +105,21 @@ export const MODEL_SUGGESTIONS = {
     // the `local:` prefix (e.g. `local:Xenova/bge-reranker-base`).
     'local:Xenova/bge-reranker-base',
   ],
+  // Ollama registry recommendations (embedding + vision), mirroring the local
+  // model registry posture: real, downloadable model names for the Ollama API.
+  ollamaEmbedding: [
+    'nomic-embed-text',
+    'bge-m3',
+    'qwen3-embedding:0.6b',
+    'mxbai-embed-large',
+    'snowflake-arctic-embed',
+  ],
+  ollamaVision: [
+    'llava',
+    'qwen2.5vl:7b',
+    'llama3.2-vision:11b',
+    'minicpm-v:8b',
+  ],
 } as const
 
 /** Candidate-pool cap for SQL retrieval lanes, bounding FTS + brute-force vector scans. */

@@ -41,6 +41,8 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const [ollamaInstalled, setOllamaInstalled] = useState<string[]>([])
   const [ollamaStatus, setOllamaStatus] = useState<{ status: string; progress: number; message: string }>({ status: 'idle', progress: 0, message: '' })
   const [ollamaBusy, setOllamaBusy] = useState(false)
+  // Recommended Ollama models (embedding + vision), mirroring the local-model registry posture.
+  const [ollamaSuggestions, setOllamaSuggestions] = useState<{ ollamaEmbedding: string[]; ollamaVision: string[] }>({ ollamaEmbedding: [], ollamaVision: [] })
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -75,6 +77,16 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       setCacheDir(config.localModelCacheDir)
       setMirrorLoaded(true)
     }).catch(() => { setMirrorLoaded(true) })
+  }, [api])
+
+  // Load the Ollama recommendations once.
+  useEffect(() => {
+    void api.getModelSuggestions().then(suggestions => {
+      setOllamaSuggestions({
+        ollamaEmbedding: suggestions.ollamaEmbedding ?? [],
+        ollamaVision: suggestions.ollamaVision ?? [],
+      })
+    }).catch(() => {})
   }, [api])
 
   const saveMirror = useCallback(async (): Promise<void> => {
@@ -388,6 +400,39 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
                 {name}
               </button>
             ))}
+          </div>
+        )}
+        {(ollamaSuggestions.ollamaEmbedding.length > 0 || ollamaSuggestions.ollamaVision.length > 0) && (
+          <div style={{ marginTop: 10, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>{t('ollamaRecommended')}</div>
+            {ollamaSuggestions.ollamaEmbedding.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                {ollamaSuggestions.ollamaEmbedding.map(name => (
+                  <button
+                    key={name}
+                    title={t('ollamaEmbeddingHint')}
+                    style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, border: `1px solid ${C.border}`, background: 'transparent', color: C.text, cursor: 'pointer' }}
+                    onClick={() => setOllamaModel(name)}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {ollamaSuggestions.ollamaVision.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {ollamaSuggestions.ollamaVision.map(name => (
+                  <button
+                    key={name}
+                    title={t('ollamaVisionHint')}
+                    style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, border: `1px solid ${C.border}`, background: 'transparent', color: C.text, cursor: 'pointer' }}
+                    onClick={() => setOllamaModel(name)}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
         <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
