@@ -152,6 +152,7 @@ export type KnowledgeKey =
   | 'cacheDirOpen'
   | 'ollamaTitle'
   | 'ollamaDesc'
+  | 'ollamaNeedInstall'
   | 'ollamaRefresh'
   | 'ollamaPull'
   | 'ollamaRecommended'
@@ -389,7 +390,8 @@ export const zh: Record<KnowledgeKey, string> = {
   cacheDirMigrate: '迁移模型到此处',
   cacheDirOpen: '打开目录',
   ollamaTitle: 'Ollama 模型',
-  ollamaDesc: '通过 Ollama API 下载模型（嵌入、视觉等），下载后可在知识库设置中选用（嵌入提供方选 Ollama）',
+  ollamaDesc: '通过 Ollama API 下载模型（嵌入、视觉等），下载后可在知识库设置中选用（嵌入提供方选 Ollama）。需先安装并启动 Ollama：https://ollama.com/download',
+  ollamaNeedInstall: '（提示：若持续连接失败，请确认已安装并启动 Ollama，或检查上方地址）',
   ollamaRefresh: '刷新已装模型',
   ollamaPull: '下载模型',
   ollamaRecommended: '推荐模型（点击填入，再点下载）',
@@ -625,7 +627,8 @@ export const en: Record<KnowledgeKey, string> = {
   cacheDirMigrate: 'Migrate models here',
   cacheDirOpen: 'Open folder',
   ollamaTitle: 'Ollama models',
-  ollamaDesc: 'Pull models through the Ollama API (embeddings, VLMs); pulled models are selectable in the base settings (provider: Ollama)',
+  ollamaDesc: 'Pull models through the Ollama API (embeddings, VLMs); pulled models are selectable in the base settings (provider: Ollama). Requires Ollama to be installed and running: https://ollama.com/download',
+  ollamaNeedInstall: '(Tip: if connections keep failing, make sure Ollama is installed and running, or check the address above)',
   ollamaRefresh: 'Refresh installed',
   ollamaPull: 'Pull model',
   ollamaRecommended: 'Recommended models (click to fill, then pull)',

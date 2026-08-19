@@ -156,11 +156,11 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       const { models: installed } = await api.listOllamaModels(ollamaBase)
       setOllamaInstalled(installed)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(`${err instanceof Error ? err.message : String(err)} ${t('ollamaNeedInstall')}`)
     } finally {
       setOllamaBusy(false)
     }
-  }, [api, ollamaBase])
+  }, [api, ollamaBase, t])
 
   // Two-step delete: the first click arms the chip, the second executes.
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
@@ -178,11 +178,11 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       const { models: installed } = await api.listOllamaModels(ollamaBase)
       setOllamaInstalled(installed)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(`${err instanceof Error ? err.message : String(err)} ${t('ollamaNeedInstall')}`)
     } finally {
       setOllamaBusy(false)
     }
-  }, [api, ollamaBase, pendingDelete])
+  }, [api, ollamaBase, pendingDelete, t])
 
   const pullOllama = useCallback(async (): Promise<void> => {
     const model = ollamaModel.trim()
@@ -193,10 +193,10 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       await api.pullOllamaModel(model, ollamaBase)
       setOllamaStatus({ status: 'pulling', progress: 0, message: '' })
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(`${err instanceof Error ? err.message : String(err)} ${t('ollamaNeedInstall')}`)
       setOllamaBusy(false)
     }
-  }, [api, ollamaModel, ollamaBase])
+  }, [api, ollamaModel, ollamaBase, t])
 
   const cancelOllama = useCallback(async (): Promise<void> => {
     const model = ollamaModel.trim()
