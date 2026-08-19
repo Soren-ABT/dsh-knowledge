@@ -125,6 +125,48 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
               </div>
             </div>
           )}
+          {/* 图表描述（VLM） */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+            <div style={{ fontSize: 12, color: C.muted }}>{t('imageCaptionHint')}</div>
+            <select
+              style={style.input}
+              value={values.imageCaptionProvider}
+              onChange={(e) => patch({ imageCaptionProvider: e.target.value as 'off' | 'openai' | 'ollama' })}
+            >
+              <option value="off">{t('imageCaptionOff')}</option>
+              <option value="openai">{t('imageCaptionOpenAI')}</option>
+              <option value="ollama">{t('imageCaptionOllama')}</option>
+            </select>
+            {values.imageCaptionProvider !== 'off' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <input
+                  style={style.input}
+                  placeholder={values.imageCaptionProvider === 'ollama'
+                    ? 'Ollama 视觉模型（如 llava、qwen2.5vl）'
+                    : '视觉模型（如 qwen-vl-plus、gpt-4o-mini）'}
+                  value={values.imageCaptionModel}
+                  onChange={(e) => patch({ imageCaptionModel: e.target.value })}
+                />
+                <input
+                  style={style.input}
+                  placeholder={values.imageCaptionProvider === 'ollama'
+                    ? 'Ollama 地址（默认 http://127.0.0.1:11434）'
+                    : 'API 地址（留空用嵌入模型地址）'}
+                  value={values.imageCaptionBaseUrl}
+                  onChange={(e) => patch({ imageCaptionBaseUrl: e.target.value })}
+                />
+                {values.imageCaptionProvider === 'openai' && (
+                  <input
+                    style={style.input}
+                    type="password"
+                    placeholder="API Key"
+                    value={values.imageCaptionApiKey}
+                    onChange={(e) => patch({ imageCaptionApiKey: e.target.value })}
+                  />
+                )}
+              </div>
+            )}
+          </div>
         </Section>
 
         {/* 嵌入模型 */}

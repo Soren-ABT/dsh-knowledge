@@ -32,6 +32,10 @@ export interface BaseConfig {
   chunkTokenLimit?: number
   conflictStrategy?: 'keep' | 'replace' | 'rename'
   urlRefreshHours?: number
+  imageCaptionProvider?: 'off' | 'openai' | 'ollama'
+  imageCaptionModel?: string
+  imageCaptionBaseUrl?: string
+  imageCaptionApiKey?: string
 }
 
 export interface BaseSummary {
@@ -125,6 +129,11 @@ export interface KnowledgeConfig {
   chunkTokenLimit: number
   conflictStrategy: 'keep' | 'replace' | 'rename'
   urlRefreshHours: number
+  imageCaptionProvider: 'off' | 'openai' | 'ollama'
+  imageCaptionModel: string
+  imageCaptionBaseUrl: string
+  imageCaptionApiKey: string
+  localModelCacheDir: string
   siblingChunks: number
   hfEndpoint: string
   documentProcessorProvider: 'builtin' | 'mineru'
@@ -259,6 +268,18 @@ export class KnowledgeApi {
 
   removeOcr(): Promise<{ deleted: boolean }> {
     return this.call('DELETE', '/local-ocr/remove')
+  }
+
+  listOllamaModels(baseUrl: string): Promise<{ models: string[] }> {
+    return this.call('GET', `/local-ollama/tags?baseUrl=${encodeURIComponent(baseUrl)}`)
+  }
+
+  pullOllamaModel(model: string, baseUrl: string): Promise<{ started: boolean }> {
+    return this.call('POST', '/local-ollama/pull', { model, baseUrl })
+  }
+
+  getOllamaPullStatus(model: string): Promise<{ status: string; progress: number; message: string }> {
+    return this.call('GET', `/local-ollama/status?model=${encodeURIComponent(model)}`)
   }
 
   setConfig(overrides: Partial<KnowledgeConfig>): Promise<KnowledgeConfig> {

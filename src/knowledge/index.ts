@@ -29,6 +29,12 @@ import { rerankCandidates } from './rerank.js'
 import { hashEmbeddingText } from './chunkdb.js'
 import { openStore } from './store.js'
 import type { StorageDomainFacility, Store } from './store.js'
+import {
+  getOllamaPullStatus as getOllamaPullStatusHelper,
+  listOllamaModels as listOllamaModelsHelper,
+  pullOllamaModel as pullOllamaModelHelper,
+  type OllamaPullStatus,
+} from './ollama.js'
 import type {
   AddFileDocumentRequest,
   AddTextDocumentRequest,
@@ -287,8 +293,10 @@ export class KnowledgeService extends Service {
   async setConfig(overrides: ConfigOverrides): Promise<KnowledgeConfig> {
     await this.requireStore().setConfigOverrides(overrides)
     const resolved = this.getConfig()
-    // Reapply the mirror switch live, so the panel can change it without a restart.
+    // Reapply the mirror switch and model cache dir live, so the panel can
+    // change them without a restart (new downloads use the new location).
     setHfEndpoint(resolved.hfEndpoint)
+    setLocalModelCacheDir(resolved.localModelCacheDir)
     return resolved
   }
 
@@ -643,6 +651,24 @@ export class KnowledgeService extends Service {
           text = await parseDocumentBuffer(bytes, fileName, request.mimeType)
         }
         if (text.trim().length === 0) throw new Error('parsed document is empty')
+        // Image/table captioning (NexusRAG-style visual intelligence): embedded
+        // PDF figures get VLM descriptions appended so charts become searchable.
+        // Best-effort — a provider failure leaves the parsed text untouched.
+        if (extensionOf(fileName) === 'pdf' && config.imageCaptionProvider !== 'off') {
+          try {
+            const { captionPdfImages } = await import('./caption.js')
+            const captioned = await captionPdfImages(bytes, {
+              provider: config.imageCaptionProvider,
+              model: config.imageCaptionModel,
+              baseUrl: config.imageCaptionBaseUrl,
+              apiKey: config.imageCaptionApiKey,
+              embeddingBaseUrl: config.embeddingBaseUrl,
+            })
+            if (captioned !== '') text = `${text}\n${captioned}`
+          } catch (error) {
+            this.ctx.logger.warn(`knowledge: captioning failed, importing text only: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
         await this.ingestDocument({
           baseId: request.baseId,
           title,
@@ -1285,6 +1311,20 @@ export class KnowledgeService extends Service {
 
   deleteOcr(): Promise<{ deleted: true }> {
     return removeOcrModels().then(() => ({ deleted: true }))
+  }
+
+  // ── Ollama model management (pull + installed list for the settings page) ──
+
+  listOllamaModels(baseUrl: string): Promise<string[]> {
+    return listOllamaModelsHelper(baseUrl)
+  }
+
+  pullOllamaModel(model: string, baseUrl: string): Promise<void> {
+    return pullOllamaModelHelper(model, baseUrl)
+  }
+
+  getOllamaPullStatus(model: string): OllamaPullStatus {
+    return getOllamaPullStatusHelper(model)
   }
 
   listChunks(documentId: string, limit?: number, offset?: number): KnowledgeChunk[] {

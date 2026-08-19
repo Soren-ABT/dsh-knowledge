@@ -41,6 +41,10 @@ export interface BaseConfig {
   readonly chunkTokenLimit?: number
   readonly conflictStrategy?: 'keep' | 'replace' | 'rename'
   readonly urlRefreshHours?: number
+  readonly imageCaptionProvider?: 'off' | 'openai' | 'ollama'
+  readonly imageCaptionModel?: string
+  readonly imageCaptionBaseUrl?: string
+  readonly imageCaptionApiKey?: string
 }
 
 /** One knowledge base (a namespace of documents). */
@@ -161,6 +165,16 @@ export interface KnowledgeConfig {
   readonly conflictStrategy: 'keep' | 'replace' | 'rename'
   /** Auto-refresh URL documents older than this many hours (0 = off). */
   readonly urlRefreshHours: number
+  /** Local-model cache root; empty = `<DSH_HOME>/cache/dsh-knowledge/local-models`. */
+  readonly localModelCacheDir: string
+  /** Image/table captioning: `off` / `openai` (vision chat API) / `ollama` (local VLM). */
+  readonly imageCaptionProvider: 'off' | 'openai' | 'ollama'
+  /** Captioning model id (OpenAI-compatible vision model, or an Ollama VLM like llava / qwen2.5vl). */
+  readonly imageCaptionModel: string
+  /** Captioning API root; empty = the embedding base URL (openai) or http://127.0.0.1:11434 (ollama). */
+  readonly imageCaptionBaseUrl: string
+  /** Captioning API key (openai provider). */
+  readonly imageCaptionApiKey: string
 }
 
 /** One ranked search result. */

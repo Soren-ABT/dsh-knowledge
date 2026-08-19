@@ -169,6 +169,25 @@ async function route(
     return undefined
   }
 
+  // /local-ollama (pull/tags/status) — Ollama model management
+  if (segments[0] === 'local-ollama') {
+    if (segments[1] === 'tags' && method === 'GET') {
+      return { models: await service.listOllamaModels(typeof query.get('baseUrl') === 'string' ? query.get('baseUrl')! : '') }
+    }
+    if (segments[1] === 'pull' && method === 'POST') {
+      const model = typeof body.model === 'string' ? body.model.trim() : ''
+      if (model === '') throw new Error('ollama model name is empty')
+      // Fire-and-forget with status polling (same posture as local models).
+      const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl : ''
+      void service.pullOllamaModel(model, baseUrl).catch(() => {})
+      return { started: true }
+    }
+    if (segments[1] === 'status' && method === 'GET') {
+      return service.getOllamaPullStatus(query.get('model') ?? '')
+    }
+    return undefined
+  }
+
   // /model-suggestions
   if (segments[0] === 'model-suggestions' && method === 'GET') {
     return service.modelSuggestions()

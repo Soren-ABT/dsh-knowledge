@@ -53,6 +53,14 @@ export interface Config {
   conflictStrategy: 'keep' | 'replace' | 'rename'
   /** Auto-refresh URL documents older than this many hours (0 = off). */
   urlRefreshHours: number
+  /** Image/table captioning: `off` / `openai` (vision chat API) / `ollama` (local VLM). */
+  imageCaptionProvider: 'off' | 'openai' | 'ollama'
+  /** Captioning model id (OpenAI-compatible vision model, or an Ollama VLM like llava / qwen2.5vl). */
+  imageCaptionModel: string
+  /** Captioning API root; empty = the embedding base URL (openai) or http://127.0.0.1:11434 (ollama). */
+  imageCaptionBaseUrl: string
+  /** Captioning API key (openai provider). */
+  imageCaptionApiKey: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -85,6 +93,10 @@ export const Config: Schema<Config> = Schema.object({
   chunkTokenLimit: Schema.number().default(0),
   conflictStrategy: Schema.union(['keep', 'replace', 'rename']).default('rename'),
   urlRefreshHours: Schema.number().default(0),
+  imageCaptionProvider: Schema.union(['off', 'openai', 'ollama']).default('off'),
+  imageCaptionModel: Schema.string().default(''),
+  imageCaptionBaseUrl: Schema.string().default(''),
+  imageCaptionApiKey: Schema.string().default(''),
 })
 
 /** Resolve a full config from deployment defaults plus runtime overrides. */
@@ -129,6 +141,11 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     chunkTokenLimit: clampInt(overrides.chunkTokenLimit ?? config.chunkTokenLimit, 0, 1_000_000, 0),
     conflictStrategy: overrides.conflictStrategy ?? config.conflictStrategy,
     urlRefreshHours: clampInt(overrides.urlRefreshHours ?? config.urlRefreshHours, 0, 24 * 365, 0),
+    imageCaptionProvider: overrides.imageCaptionProvider ?? config.imageCaptionProvider,
+    imageCaptionModel: overrides.imageCaptionModel ?? config.imageCaptionModel,
+    imageCaptionBaseUrl: overrides.imageCaptionBaseUrl ?? config.imageCaptionBaseUrl,
+    imageCaptionApiKey: overrides.imageCaptionApiKey ?? config.imageCaptionApiKey,
+    localModelCacheDir: overrides.localModelCacheDir ?? config.localModelCacheDir,
   }
 }
 
@@ -171,6 +188,10 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     chunkTokenLimit: clampInt(baseConfig.chunkTokenLimit ?? resolved.chunkTokenLimit, 0, 1_000_000, 0),
     conflictStrategy: baseConfig.conflictStrategy ?? resolved.conflictStrategy,
     urlRefreshHours: clampInt(baseConfig.urlRefreshHours ?? resolved.urlRefreshHours, 0, 24 * 365, 0),
+    imageCaptionProvider: baseConfig.imageCaptionProvider ?? resolved.imageCaptionProvider,
+    imageCaptionModel: baseConfig.imageCaptionModel ?? resolved.imageCaptionModel,
+    imageCaptionBaseUrl: baseConfig.imageCaptionBaseUrl ?? resolved.imageCaptionBaseUrl,
+    imageCaptionApiKey: baseConfig.imageCaptionApiKey ?? resolved.imageCaptionApiKey,
   }
 }
 

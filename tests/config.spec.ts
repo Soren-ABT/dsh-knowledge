@@ -35,11 +35,15 @@ const base: Config = {
   chunkTokenLimit: 0,
   conflictStrategy: 'rename',
   urlRefreshHours: 0,
+  imageCaptionProvider: 'off',
+  imageCaptionModel: '',
+  imageCaptionBaseUrl: '',
+  imageCaptionApiKey: '',
 }
 
 describe('resolveConfig', () => {
   it('uses deployment defaults with empty overrides', () => {
-    const { localModelCacheDir: _deploymentOnly, chunkStorePath: _chunkStorePath, ...expected } = base
+    const { chunkStorePath: _chunkStorePath, ...expected } = base
     expect(resolveConfig(base, {})).toEqual(expected)
   })
   it('applies runtime overrides', () => {

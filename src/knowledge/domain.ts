@@ -96,6 +96,11 @@ export const configOverridesSchema = z.object({
   chunkTokenLimit: z.number().int().gte(0).optional(),
   conflictStrategy: z.enum(['keep', 'replace', 'rename']).optional(),
   urlRefreshHours: z.number().int().gte(0).optional(),
+  imageCaptionProvider: z.enum(['off', 'openai', 'ollama']).optional(),
+  imageCaptionModel: z.string().optional(),
+  imageCaptionBaseUrl: z.string().optional(),
+  imageCaptionApiKey: z.string().optional(),
+  localModelCacheDir: z.string().optional(),
 })
 
 /** Partial runtime config stored in the domain global slot. */
@@ -127,6 +132,11 @@ export interface ConfigOverrides {
   chunkTokenLimit?: number
   conflictStrategy?: 'keep' | 'replace' | 'rename'
   urlRefreshHours?: number
+  imageCaptionProvider?: 'off' | 'openai' | 'ollama'
+  imageCaptionModel?: string
+  imageCaptionBaseUrl?: string
+  imageCaptionApiKey?: string
+  localModelCacheDir?: string
 }
 
 export const knowledgeDomainSpec = defineDomain({

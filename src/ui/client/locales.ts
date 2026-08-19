@@ -141,6 +141,16 @@ export type KnowledgeKey =
   | 'conflictKeep'
   | 'urlRefreshHours'
   | 'urlRefreshHoursHint'
+  | 'imageCaptionHint'
+  | 'imageCaptionOff'
+  | 'imageCaptionOpenAI'
+  | 'imageCaptionOllama'
+  | 'cacheDirTitle'
+  | 'cacheDirHint'
+  | 'ollamaTitle'
+  | 'ollamaDesc'
+  | 'ollamaRefresh'
+  | 'ollamaPull'
   | 'chunkSeparator'
   | 'chunkSeparatorHint'
   | 'reset'
@@ -361,6 +371,16 @@ export const zh: Record<KnowledgeKey, string> = {
   conflictKeep: '保留两者',
   urlRefreshHours: 'URL 自动刷新（小时）',
   urlRefreshHoursHint: '超过该时长的 URL 文档每小时自动重新抓取并更新索引（0 = 关闭）',
+  imageCaptionHint: '图表描述（可选）：用视觉模型描述 PDF 中的图片/图表，描述文本可被检索',
+  imageCaptionOff: '关闭',
+  imageCaptionOpenAI: 'OpenAI 兼容视觉模型',
+  imageCaptionOllama: 'Ollama 本地视觉模型',
+  cacheDirTitle: '本地模型缓存目录',
+  cacheDirHint: '嵌入 / 重排 / OCR 模型文件下载到这里（支持 ~ 与 DSH_HOME 变量）；改目录后新下载的模型会存到新位置',
+  ollamaTitle: 'Ollama 模型',
+  ollamaDesc: '通过 Ollama API 下载模型（嵌入、视觉等），下载后可在知识库设置中选用（嵌入提供方选 Ollama）',
+  ollamaRefresh: '刷新已装模型',
+  ollamaPull: '下载模型',
   chunkSeparator: '分隔符',
   chunkSeparatorHint: '切分文本所用的分隔符（转义形式）。开启智能分段时作为额外切分点；关闭后仅按此分隔符切分。',
   reset: '恢复默认',
@@ -579,6 +599,16 @@ export const en: Record<KnowledgeKey, string> = {
   conflictKeep: 'Keep both',
   urlRefreshHours: 'URL auto-refresh (hours)',
   urlRefreshHoursHint: 'URL documents older than this are re-fetched and re-indexed hourly (0 = off)',
+  imageCaptionHint: 'Image/table captioning (optional): a vision model describes embedded PDF figures so charts become searchable',
+  imageCaptionOff: 'Off',
+  imageCaptionOpenAI: 'OpenAI-compatible vision model',
+  imageCaptionOllama: 'Ollama local vision model',
+  cacheDirTitle: 'Local model cache directory',
+  cacheDirHint: 'Embedding / rerank / OCR model files download here (~ and DSH_HOME are expanded); new downloads go to the new location',
+  ollamaTitle: 'Ollama models',
+  ollamaDesc: 'Pull models through the Ollama API (embeddings, VLMs); pulled models are selectable in the base settings (provider: Ollama)',
+  ollamaRefresh: 'Refresh installed',
+  ollamaPull: 'Pull model',
   chunkSeparator: 'Separator',
   chunkSeparatorHint: 'Delimiter the text is split on, in escaped form. With smart chunking on it adds a break point; with it off the text is split only by this delimiter.',
   reset: 'Restore Defaults',

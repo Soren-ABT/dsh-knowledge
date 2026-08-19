@@ -27,8 +27,15 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const [busyId, setBusyId] = useState<string | null>(null)
   const [mirror, setMirror] = useState('')
   const [mirrorLoaded, setMirrorLoaded] = useState(false)
+  const [cacheDir, setCacheDir] = useState('')
   const [ocrStatus, setOcrStatus] = useState<{ status: string; progress: number; message: string }>({ status: 'idle', progress: 0, message: '' })
   const [ocrBusy, setOcrBusy] = useState(false)
+  // Ollama: base URL + model picker + pull progress.
+  const [ollamaBase, setOllamaBase] = useState('http://127.0.0.1:11434')
+  const [ollamaModel, setOllamaModel] = useState('')
+  const [ollamaInstalled, setOllamaInstalled] = useState<string[]>([])
+  const [ollamaStatus, setOllamaStatus] = useState<{ status: string; progress: number; message: string }>({ status: 'idle', progress: 0, message: '' })
+  const [ollamaBusy, setOllamaBusy] = useState(false)
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -47,10 +54,20 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     return () => window.clearInterval(timer)
   }, [refresh])
 
-  // Load the current mirror setting once.
+  // Live Ollama pull progress (polled only while pulling).
+  useEffect(() => {
+    if (ollamaModel === '' || ollamaStatus.status !== 'pulling') return
+    const timer = window.setInterval(() => {
+      void api.getOllamaPullStatus(ollamaModel).then(setOllamaStatus).catch(() => {})
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [api, ollamaModel, ollamaStatus.status])
+
+  // Load the current mirror + cache-dir settings once.
   useEffect(() => {
     void api.getConfig().then(config => {
       setMirror(config.hfEndpoint)
+      setCacheDir(config.localModelCacheDir)
       setMirrorLoaded(true)
     }).catch(() => { setMirrorLoaded(true) })
   }, [api])
@@ -64,6 +81,43 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       setError(err instanceof Error ? err.message : String(err))
     }
   }, [api, mirror])
+
+  const saveCacheDir = useCallback(async (): Promise<void> => {
+    setError(null)
+    try {
+      await api.setConfig({ localModelCacheDir: cacheDir.trim() })
+      setCacheDir(cacheDir.trim())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [api, cacheDir])
+
+  const refreshOllamaTags = useCallback(async (): Promise<void> => {
+    setOllamaBusy(true)
+    setError(null)
+    try {
+      const { models: installed } = await api.listOllamaModels(ollamaBase)
+      setOllamaInstalled(installed)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setOllamaBusy(false)
+    }
+  }, [api, ollamaBase])
+
+  const pullOllama = useCallback(async (): Promise<void> => {
+    const model = ollamaModel.trim()
+    if (model === '') return
+    setOllamaBusy(true)
+    setError(null)
+    try {
+      await api.pullOllamaModel(model, ollamaBase)
+      setOllamaStatus({ status: 'pulling', progress: 0, message: '' })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setOllamaBusy(false)
+    }
+  }, [api, ollamaModel, ollamaBase])
 
   const download = useCallback(async (id: string): Promise<void> => {
     setBusyId(id)
@@ -151,6 +205,22 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
         </div>
       )}
 
+      {mirrorLoaded && (
+        <div style={{ marginBottom: 14, padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t('cacheDirTitle')}</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              style={style.input}
+              placeholder="C:\\Users\\you\\.dsh\\cache\\dsh-knowledge\\local-models"
+              value={cacheDir}
+              onChange={(e) => setCacheDir(e.target.value)}
+            />
+            <button style={style.button} onClick={() => void saveCacheDir()}>{t('hfMirrorSave')}</button>
+          </div>
+          <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('cacheDirHint')}</p>
+        </div>
+      )}
+
       {error !== null && <div style={{ ...style.error, marginBottom: 12 }}>{error}</div>}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
@@ -230,6 +300,72 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
               {ocrStatus.status === 'error' ? t('localModelRetry') : t('ocrDownload')}
             </button>
           </div>
+        )}
+      </div>
+
+      {/* Ollama — pull local models through the Ollama API (embeddings, VLMs) */}
+      <div style={{ ...cardStyle, marginTop: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: C.surface2, color: C.muted, fontSize: 20 }}>
+            🦙
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>{t('ollamaTitle')}</div>
+            <p style={{ marginTop: 2, fontSize: 12, color: C.muted, lineHeight: 1.5 }}>{t('ollamaDesc')}</p>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+          <input
+            style={{ ...style.input, flex: 1 }}
+            placeholder="http://127.0.0.1:11434"
+            value={ollamaBase}
+            onChange={(e) => setOllamaBase(e.target.value)}
+          />
+          <button style={style.button} disabled={ollamaBusy} onClick={() => void refreshOllamaTags()}>
+            <IconRefresh size={13} />{t('ollamaRefresh')}
+          </button>
+        </div>
+        {ollamaInstalled.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+            {ollamaInstalled.map(name => (
+              <button
+                key={name}
+                style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, border: `1px solid ${C.border}`, background: C.surface2, color: C.text, cursor: 'pointer' }}
+                onClick={() => setOllamaModel(name)}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <input
+            style={{ ...style.input, flex: 1 }}
+            placeholder="llava / qwen2.5vl / nomic-embed-text …"
+            value={ollamaModel}
+            onChange={(e) => setOllamaModel(e.target.value)}
+          />
+          <button
+            style={style.button}
+            disabled={ollamaBusy || ollamaModel.trim() === '' || ollamaStatus.status === 'pulling'}
+            onClick={() => void pullOllama()}
+          >
+            <IconDownload size={13} />{t('ollamaPull')}
+          </button>
+        </div>
+        {ollamaStatus.status === 'pulling' && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ height: 6, width: '100%', borderRadius: 999, background: C.surface2, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${ollamaStatus.progress}%`, borderRadius: 999, background: C.accent, transition: 'width 0.2s' }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12, color: C.muted }}>
+              <span>{t('localModelDownloading')}{ollamaStatus.message !== '' ? ` · ${ollamaStatus.message}` : ''}</span>
+              <span>{Math.floor(ollamaStatus.progress)}%</span>
+            </div>
+          </div>
+        )}
+        {ollamaStatus.status === 'error' && ollamaStatus.message !== '' && (
+          <p style={{ marginTop: 8, fontSize: 12, color: C.danger, lineHeight: 1.5 }}>{ollamaStatus.message}</p>
         )}
       </div>
     </div>

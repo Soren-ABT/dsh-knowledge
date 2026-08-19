@@ -42,6 +42,10 @@ const TEST_CONFIG: Config = {
   chunkTokenLimit: 0,
   conflictStrategy: 'rename',
   urlRefreshHours: 0,
+  imageCaptionProvider: 'off',
+  imageCaptionModel: '',
+  imageCaptionBaseUrl: '',
+  imageCaptionApiKey: '',
 }
 
 /** Minimal in-memory KvTable matching the storage-domain runtime contract. */

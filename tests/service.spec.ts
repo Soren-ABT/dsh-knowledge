@@ -37,6 +37,10 @@ const DEFAULT_CONFIG: Config = {
   chunkTokenLimit: 0,
   conflictStrategy: 'rename',
   urlRefreshHours: 0,
+  imageCaptionProvider: 'off',
+  imageCaptionModel: '',
+  imageCaptionBaseUrl: '',
+  imageCaptionApiKey: '',
 }
 
 function fakeWebServer() {
