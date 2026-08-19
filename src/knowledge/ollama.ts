@@ -164,3 +164,16 @@ export function cancelOllamaPull(model: string): void {
   ollamaPullStatus.set(model, { status: 'idle', progress: 0, message: '' })
   controller?.abort()
 }
+
+/**
+ * Every pull currently in flight, for the settings panel to restore its
+ * progress cards after a close/reopen (the UI state is per-component; the
+ * pull itself lives here in the service and survives panel close).
+ */
+export function activeOllamaPulls(): Array<{ model: string; status: OllamaPullStatus['status']; progress: number; message: string }> {
+  const pulls: Array<{ model: string; status: OllamaPullStatus['status']; progress: number; message: string }> = []
+  for (const [model, status] of ollamaPullStatus) {
+    if (status.status === 'pulling') pulls.push({ model, ...status })
+  }
+  return pulls
+}

@@ -298,6 +298,11 @@ export class KnowledgeApi {
     return this.call('GET', `/local-ollama/status?model=${encodeURIComponent(model)}`)
   }
 
+  /** In-flight pulls, so the settings panel restores its cards after close/reopen. */
+  listActiveOllamaPulls(): Promise<{ pulls: Array<{ model: string; status: string; progress: number; message: string }> }> {
+    return this.call('GET', '/local-ollama/pulls')
+  }
+
   setConfig(overrides: Partial<KnowledgeConfig>): Promise<KnowledgeConfig> {
     return this.call('PUT', '/config', overrides)
   }

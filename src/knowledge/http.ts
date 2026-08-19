@@ -201,6 +201,9 @@ async function route(
     if (segments[1] === 'status' && method === 'GET') {
       return service.getOllamaPullStatus(query.get('model') ?? '')
     }
+    if (segments[1] === 'pulls' && method === 'GET') {
+      return { pulls: service.activeOllamaPulls() }
+    }
     return undefined
   }
 

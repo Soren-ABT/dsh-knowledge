@@ -39,11 +39,11 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const [ollamaBase, setOllamaBase] = useState('http://127.0.0.1:11434')
   const [ollamaModel, setOllamaModel] = useState('')
   const [ollamaInstalled, setOllamaInstalled] = useState<Array<{ name: string; size?: number }>>([])
-  const [ollamaStatus, setOllamaStatus] = useState<{ status: string; progress: number; message: string }>({ status: 'idle', progress: 0, message: '' })
-  // The model actually being pulled — independent of the input field, so
-  // editing the input mid-pull never desyncs the progress card or the cancel
-  // button (the status API is keyed by model name, not by the input value).
-  const [pullingModel, setPullingModel] = useState<string | null>(null)
+  // In-flight pulls keyed by model — independent of the input field, so
+  // editing the input mid-pull never desyncs the progress cards or the
+  // cancel buttons (the status API is keyed by model name, not the input).
+  // Survives panel close/reopen via listActiveOllamaPulls() on mount.
+  const [pullingModels, setPullingModels] = useState<Array<{ model: string; status: string; progress: number; message: string }>>([])
   const [ollamaBusy, setOllamaBusy] = useState(false)
   // Recommended Ollama models (embedding + vision), mirroring the local-model registry posture.
   const [ollamaSuggestions, setOllamaSuggestions] = useState<{ ollamaEmbedding: string[]; ollamaVision: string[] }>({ ollamaEmbedding: [], ollamaVision: [] })
@@ -168,21 +168,38 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   }, [api, ollamaBase, t])
 
   // Live Ollama pull progress (polled only while a pull is actually running).
-  // The moment the pull leaves the `pulling` state, the card clears and an
-  // installed-model refresh brings the new model into the list below.
+  // The moment a pull leaves the `pulling` state its card clears and, on
+  // success, an installed-model refresh brings the new model into the list.
+  // A failed pull stays visible as an error card until dismissed.
   useEffect(() => {
-    if (pullingModel === null) return
+    if (pullingModels.length === 0) return
     const timer = window.setInterval(() => {
-      void api.getOllamaPullStatus(pullingModel).then(status => {
-        setOllamaStatus(status)
-        if (status.status !== 'pulling') {
-          setPullingModel(null)
-          if (status.status === 'ready') void refreshOllamaTags()
+      void (async (): Promise<void> => {
+        let finishedReady = false
+        const next: Array<{ model: string; status: string; progress: number; message: string }> = []
+        for (const pull of pullingModels) {
+          const status = await api.getOllamaPullStatus(pull.model).catch(() => null)
+          if (status === null) continue
+          if (status.status === 'pulling' || status.status === 'error') {
+            next.push({ model: pull.model, ...status })
+          } else if (status.status === 'ready') {
+            finishedReady = true
+          }
         }
-      }).catch(() => {})
+        setPullingModels(next)
+        if (finishedReady) void refreshOllamaTags()
+      })()
     }, 1000)
     return () => window.clearInterval(timer)
-  }, [api, pullingModel, refreshOllamaTags])
+  }, [api, pullingModels, refreshOllamaTags])
+
+  // Restore progress cards after a panel close/reopen: the pull lives in the
+  // service (it survives the component), only the UI state was lost.
+  useEffect(() => {
+    void api.listActiveOllamaPulls().then(({ pulls }) => {
+      if (pulls.length > 0) setPullingModels(pulls)
+    }).catch(() => {})
+  }, [api])
 
   // Two-step delete: the first click arms the chip, the second executes.
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
@@ -213,25 +230,24 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     setError(null)
     try {
       await api.pullOllamaModel(model, ollamaBase)
-      setPullingModel(model)
-      setOllamaStatus({ status: 'pulling', progress: 0, message: '' })
+      setPullingModels(prev => prev.some(p => p.model === model)
+        ? prev
+        : [...prev, { model, status: 'pulling', progress: 0, message: '' }])
     } catch (err) {
       setError(`${err instanceof Error ? err.message : String(err)} ${t('ollamaNeedInstall')}`)
       setOllamaBusy(false)
     }
   }, [api, ollamaModel, ollamaBase, t])
 
-  const cancelOllama = useCallback(async (): Promise<void> => {
-    if (pullingModel === null) return
+  const cancelOllama = useCallback(async (model: string): Promise<void> => {
     try {
-      await api.cancelOllamaPull(pullingModel)
+      await api.cancelOllamaPull(model)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-    setOllamaStatus({ status: 'idle', progress: 0, message: '' })
-    setPullingModel(null)
+    setPullingModels(prev => prev.filter(p => p.model !== model))
     setOllamaBusy(false)
-  }, [api, pullingModel])
+  }, [api])
 
   const download = useCallback(async (id: string): Promise<void> => {
     setBusyId(id)
@@ -520,36 +536,39 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
           />
           <button
             style={style.button}
-            disabled={ollamaBusy || ollamaModel.trim() === '' || ollamaStatus.status === 'pulling'}
+            disabled={ollamaBusy || ollamaModel.trim() === '' || pullingModels.length > 0}
             onClick={() => void pullOllama()}
           >
             <IconDownload size={13} />{t('ollamaPull')}
           </button>
         </div>
-        {pullingModel !== null && (
-          <div style={{ marginTop: 10, padding: 10, borderRadius: 10, border: `1px solid ${C.border}`, background: C.surface2 }}>
+        {pullingModels.map(pull => (
+          <div key={pull.model} style={{ marginTop: 10, padding: 10, borderRadius: 10, border: `1px solid ${C.border}`, background: C.surface2 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: C.text }}>
-              <span style={{ color: C.accent, display: 'inline-flex' }}><IconDownload size={13} /></span>
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pullingModel}</span>
+              <span style={{ color: pull.status === 'error' ? C.danger : C.accent, display: 'inline-flex' }}><IconDownload size={13} /></span>
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pull.model}</span>
               <button
                 style={{ border: 0, padding: '2px 8px', borderRadius: 6, background: C.surface, color: C.text, cursor: 'pointer', fontSize: 11 }}
-                onClick={() => void cancelOllama()}
+                onClick={() => void cancelOllama(pull.model)}
               >
-                {t('localModelCancel')}
+                {pull.status === 'error' ? t('localModelCancel') : t('localModelCancel')}
               </button>
             </div>
-            <div style={{ height: 6, width: '100%', borderRadius: 999, background: C.surface, overflow: 'hidden', marginTop: 8 }}>
-              <div style={{ height: '100%', width: `${ollamaStatus.progress}%`, borderRadius: 999, background: C.accent, transition: 'width 0.2s' }} />
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 5, fontSize: 11, color: C.muted }}>
-              <span>{t('localModelDownloading')}{ollamaStatus.message !== '' ? ` · ${ollamaStatus.message}` : ''}</span>
-              <span>{Math.floor(ollamaStatus.progress)}%</span>
-            </div>
+            {pull.status !== 'error' ? (
+              <>
+                <div style={{ height: 6, width: '100%', borderRadius: 999, background: C.surface, overflow: 'hidden', marginTop: 8 }}>
+                  <div style={{ height: '100%', width: `${pull.progress}%`, borderRadius: 999, background: C.accent, transition: 'width 0.2s' }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 5, fontSize: 11, color: C.muted }}>
+                  <span>{t('localModelDownloading')}{pull.message !== '' ? ` · ${pull.message}` : ''}</span>
+                  <span>{Math.floor(pull.progress)}%</span>
+                </div>
+              </>
+            ) : (
+              <p style={{ marginTop: 8, fontSize: 12, color: C.danger, lineHeight: 1.5 }}>{pull.message !== '' ? pull.message : t('localModelError')}</p>
+            )}
           </div>
-        )}
-        {ollamaStatus.status === 'error' && ollamaStatus.message !== '' && (
-          <p style={{ marginTop: 8, fontSize: 12, color: C.danger, lineHeight: 1.5 }}>{ollamaStatus.message}</p>
-        )}
+        ))}
       </div>
     </div>
   )

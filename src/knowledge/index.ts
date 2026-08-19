@@ -40,6 +40,7 @@ import { hashEmbeddingText } from './chunkdb.js'
 import { openStore } from './store.js'
 import type { StorageDomainFacility, Store } from './store.js'
 import {
+  activeOllamaPulls as activeOllamaPullsHelper,
   cancelOllamaPull as cancelOllamaPullHelper,
   deleteOllamaModel as deleteOllamaModelHelper,
   getOllamaPullStatus as getOllamaPullStatusHelper,
@@ -1380,6 +1381,11 @@ export class KnowledgeService extends Service {
 
   getOllamaPullStatus(model: string): OllamaPullStatus {
     return getOllamaPullStatusHelper(model)
+  }
+
+  /** In-flight pulls (the panel restores its progress cards from this on open). */
+  activeOllamaPulls(): Array<{ model: string; status: OllamaPullStatus['status']; progress: number; message: string }> {
+    return activeOllamaPullsHelper()
   }
 
   /**
