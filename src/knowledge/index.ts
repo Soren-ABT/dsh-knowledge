@@ -1362,7 +1362,7 @@ export class KnowledgeService extends Service {
 
   // ── Ollama model management (pull + installed list for the settings page) ──
 
-  listOllamaModels(baseUrl: string): Promise<string[]> {
+  listOllamaModels(baseUrl: string): Promise<Array<{ name: string; size?: number }>> {
     return listOllamaModelsHelper(baseUrl)
   }
 

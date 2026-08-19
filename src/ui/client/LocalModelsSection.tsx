@@ -38,8 +38,12 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   // Ollama: base URL + model picker + pull progress.
   const [ollamaBase, setOllamaBase] = useState('http://127.0.0.1:11434')
   const [ollamaModel, setOllamaModel] = useState('')
-  const [ollamaInstalled, setOllamaInstalled] = useState<string[]>([])
+  const [ollamaInstalled, setOllamaInstalled] = useState<Array<{ name: string; size?: number }>>([])
   const [ollamaStatus, setOllamaStatus] = useState<{ status: string; progress: number; message: string }>({ status: 'idle', progress: 0, message: '' })
+  // The model actually being pulled — independent of the input field, so
+  // editing the input mid-pull never desyncs the progress card or the cancel
+  // button (the status API is keyed by model name, not by the input value).
+  const [pullingModel, setPullingModel] = useState<string | null>(null)
   const [ollamaBusy, setOllamaBusy] = useState(false)
   // Recommended Ollama models (embedding + vision), mirroring the local-model registry posture.
   const [ollamaSuggestions, setOllamaSuggestions] = useState<{ ollamaEmbedding: string[]; ollamaVision: string[] }>({ ollamaEmbedding: [], ollamaVision: [] })
@@ -60,15 +64,6 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     const timer = window.setInterval(() => { void refresh() }, 1000)
     return () => window.clearInterval(timer)
   }, [refresh])
-
-  // Live Ollama pull progress (polled only while pulling).
-  useEffect(() => {
-    if (ollamaModel === '' || ollamaStatus.status !== 'pulling') return
-    const timer = window.setInterval(() => {
-      void api.getOllamaPullStatus(ollamaModel).then(setOllamaStatus).catch(() => {})
-    }, 1000)
-    return () => window.clearInterval(timer)
-  }, [api, ollamaModel, ollamaStatus.status])
 
   // Load the current mirror + cache-dir settings once.
   useEffect(() => {
@@ -172,6 +167,23 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     }
   }, [api, ollamaBase, t])
 
+  // Live Ollama pull progress (polled only while a pull is actually running).
+  // The moment the pull leaves the `pulling` state, the card clears and an
+  // installed-model refresh brings the new model into the list below.
+  useEffect(() => {
+    if (pullingModel === null) return
+    const timer = window.setInterval(() => {
+      void api.getOllamaPullStatus(pullingModel).then(status => {
+        setOllamaStatus(status)
+        if (status.status !== 'pulling') {
+          setPullingModel(null)
+          if (status.status === 'ready') void refreshOllamaTags()
+        }
+      }).catch(() => {})
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [api, pullingModel, refreshOllamaTags])
+
   // Two-step delete: the first click arms the chip, the second executes.
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const deleteOllama = useCallback(async (model: string): Promise<void> => {
@@ -201,6 +213,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     setError(null)
     try {
       await api.pullOllamaModel(model, ollamaBase)
+      setPullingModel(model)
       setOllamaStatus({ status: 'pulling', progress: 0, message: '' })
     } catch (err) {
       setError(`${err instanceof Error ? err.message : String(err)} ${t('ollamaNeedInstall')}`)
@@ -209,16 +222,16 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   }, [api, ollamaModel, ollamaBase, t])
 
   const cancelOllama = useCallback(async (): Promise<void> => {
-    const model = ollamaModel.trim()
-    if (model === '') return
+    if (pullingModel === null) return
     try {
-      await api.cancelOllamaPull(model)
+      await api.cancelOllamaPull(pullingModel)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
     setOllamaStatus({ status: 'idle', progress: 0, message: '' })
+    setPullingModel(null)
     setOllamaBusy(false)
-  }, [api, ollamaModel])
+  }, [api, pullingModel])
 
   const download = useCallback(async (id: string): Promise<void> => {
     setBusyId(id)
@@ -434,25 +447,34 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
           </button>
         </div>
         {ollamaInstalled.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-            {ollamaInstalled.map(name => (
-              <span
-                key={name}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 6px 3px 8px', borderRadius: 999, border: `1px solid ${C.border}`, background: C.surface2, color: C.text }}
+          <div style={{ marginTop: 10, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>{t('ollamaInstalledTitle')}</div>
+            {ollamaInstalled.map(item => (
+              <div
+                key={item.name}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface2, marginBottom: 6 }}
               >
-                <button style={{ border: 0, padding: 0, background: 'transparent', color: C.text, cursor: 'pointer', fontSize: 11 }} onClick={() => setOllamaModel(name)}>
-                  {name}
-                </button>
+                <span style={{ color: C.muted, display: 'inline-flex' }}><IconBox size={14} /></span>
+                <span
+                  style={{ flex: 1, fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }}
+                  title={t('ollamaEmbeddingHint')}
+                  onClick={() => setOllamaModel(item.name)}
+                >
+                  {item.name}
+                </span>
+                {item.size !== undefined && (
+                  <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>{formatBytes(item.size)}</span>
+                )}
                 <button
-                  style={{ border: 0, padding: '0 2px', background: 'transparent', color: pendingDelete === name ? C.danger : C.muted, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}
+                  style={{ border: 0, padding: '2px 6px', background: 'transparent', color: pendingDelete === item.name ? C.danger : C.muted, cursor: 'pointer', fontSize: 11, fontWeight: 600, flexShrink: 0 }}
                   title={t('ollamaDelete')}
                   aria-label={t('ollamaDelete')}
                   disabled={ollamaBusy}
-                  onClick={() => void deleteOllama(name)}
+                  onClick={() => void deleteOllama(item.name)}
                 >
-                  {pendingDelete === name ? t('ollamaConfirmDelete') : '×'}
+                  {pendingDelete === item.name ? t('ollamaConfirmDelete') : '×'}
                 </button>
-              </span>
+              </div>
             ))}
           </div>
         )}
@@ -504,19 +526,24 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             <IconDownload size={13} />{t('ollamaPull')}
           </button>
         </div>
-        {ollamaStatus.status === 'pulling' && (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ height: 6, width: '100%', borderRadius: 999, background: C.surface2, overflow: 'hidden' }}>
+        {pullingModel !== null && (
+          <div style={{ marginTop: 10, padding: 10, borderRadius: 10, border: `1px solid ${C.border}`, background: C.surface2 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: C.text }}>
+              <span style={{ color: C.accent, display: 'inline-flex' }}><IconDownload size={13} /></span>
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pullingModel}</span>
+              <button
+                style={{ border: 0, padding: '2px 8px', borderRadius: 6, background: C.surface, color: C.text, cursor: 'pointer', fontSize: 11 }}
+                onClick={() => void cancelOllama()}
+              >
+                {t('localModelCancel')}
+              </button>
+            </div>
+            <div style={{ height: 6, width: '100%', borderRadius: 999, background: C.surface, overflow: 'hidden', marginTop: 8 }}>
               <div style={{ height: '100%', width: `${ollamaStatus.progress}%`, borderRadius: 999, background: C.accent, transition: 'width 0.2s' }} />
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, fontSize: 12, color: C.muted }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 5, fontSize: 11, color: C.muted }}>
               <span>{t('localModelDownloading')}{ollamaStatus.message !== '' ? ` · ${ollamaStatus.message}` : ''}</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span>{Math.floor(ollamaStatus.progress)}%</span>
-                <button style={{ border: 0, padding: '2px 6px', borderRadius: 6, background: C.surface2, color: C.text, cursor: 'pointer', fontSize: 11 }} onClick={() => void cancelOllama()}>
-                  {t('localModelCancel')}
-                </button>
-              </span>
+              <span>{Math.floor(ollamaStatus.progress)}%</span>
             </div>
           </div>
         )}
@@ -641,4 +668,11 @@ const readyBadge: CSSProperties = {
   background: C.surface2,
   color: C.muted,
   flexShrink: 0,
+}
+
+/** Human-readable size (Ollama reports bytes; show GB/MB). */
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MB`
+  return `${(bytes / 1024).toFixed(0)} KB`
 }

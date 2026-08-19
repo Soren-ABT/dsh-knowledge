@@ -33,12 +33,23 @@ function ollamaBase(baseUrl: string): string {
   return (baseUrl.trim() === '' ? 'http://127.0.0.1:11434' : baseUrl.trim()).replace(/\/+$/, '')
 }
 
-/** List models already installed in the Ollama server. */
-export async function listOllamaModels(baseUrl: string): Promise<string[]> {
+/** An installed Ollama model (name + on-disk size in bytes when reported). */
+export interface OllamaModelInfo {
+  name: string
+  size?: number
+}
+
+/** List models already installed in the Ollama server (with sizes when reported). */
+export async function listOllamaModels(baseUrl: string): Promise<OllamaModelInfo[]> {
   const response = await httpFetch(`${ollamaBase(baseUrl)}/api/tags`, { timeoutMs: 30000 })
   if (!response.ok) throw new Error(`ollama tags failed: HTTP ${response.status}`)
-  const json = (await response.json()) as { models?: Array<{ name?: string }> }
-  return (json.models ?? []).map(model => model.name ?? '').filter(name => name !== '')
+  const json = (await response.json()) as { models?: Array<{ name?: string; size?: number }> }
+  return (json.models ?? [])
+    .map(model => ({
+      name: model.name ?? '',
+      ...(typeof model.size === 'number' && model.size > 0 ? { size: model.size } : {}),
+    }))
+    .filter(model => model.name !== '')
 }
 
 /** Delete an installed model (Ollama refuses models that are currently running). */

@@ -278,7 +278,7 @@ export class KnowledgeApi {
     return this.call('POST', '/local-models/migrate', { to })
   }
 
-  listOllamaModels(baseUrl: string): Promise<{ models: string[] }> {
+  listOllamaModels(baseUrl: string): Promise<{ models: Array<{ name: string; size?: number }> }> {
     return this.call('GET', `/local-ollama/tags?baseUrl=${encodeURIComponent(baseUrl)}`)
   }
 
