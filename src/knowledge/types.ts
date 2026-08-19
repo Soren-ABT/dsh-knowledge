@@ -331,6 +331,11 @@ export interface SearchFilter {
 /** Payload for a search. */
 export interface SearchRequest {
   readonly query: string
+  /** Additional query phrasings searched alongside `query` (multi-query
+   *  retrieval): each variant retrieves independently and the hits are
+   *  merged by chunk id keeping the best score, so paraphrased/translated
+   *  rephrasings widen recall without a dedicated expansion model. */
+  readonly queries?: readonly string[]
   readonly baseId?: string
   /** Search only these bases (omitted baseId + empty/absent baseIds = every base). */
   readonly baseIds?: readonly string[]

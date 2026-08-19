@@ -43,6 +43,7 @@ export function apply(ctx: Context): void {
       sourceTypes: { type: 'array', items: { type: 'string' }, description: 'Optional source types to restrict to: file, text, url, directory.' },
       updatedAfter: { type: 'number', description: 'Optional epoch-ms lower bound on the document update time.' },
       updatedBefore: { type: 'number', description: 'Optional epoch-ms upper bound on the document update time.' },
+      extraQueries: { type: 'array', items: { type: 'string' }, description: 'Optional extra phrasings/translations of the query to search in parallel (multi-query retrieval widens recall); results are merged by chunk keeping the best score.' },
     },
     output: {
       schema: {
@@ -109,6 +110,9 @@ export function apply(ctx: Context): void {
       if (args.updatedBefore !== undefined) filter.updatedBefore = args.updatedBefore
       const value = await knowledge.search({
         query: args.query,
+        ...(args.extraQueries !== undefined && args.extraQueries.length > 0
+          ? { queries: args.extraQueries.filter((variant: unknown): variant is string => typeof variant === 'string') }
+          : {}),
         ...(args.baseId !== undefined ? { baseId: args.baseId } : {}),
         ...(args.baseId === undefined && scope !== undefined ? { baseIds: scope } : {}),
         ...(args.topK !== undefined ? { topK: args.topK } : {}),

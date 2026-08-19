@@ -785,4 +785,22 @@ describe('KnowledgeService', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('merges multi-query variants by chunk id keeping the best score', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'multi-query' })
+    await service.addTextDocument({ baseId: base.id, title: '排队论讲义', content: '排队论研究顾客到达与服务台服务的随机过程，Little 定律描述平均队长与等待时间的关系。' })
+    await service.addTextDocument({ baseId: base.id, title: '库存模型', content: '经济订货批量模型 EOQ 平衡订货成本与持有成本，确定最优订货量。' })
+    await service.waitForIdle()
+    // One variant hits 排队论, another hits 库存模型 — the merge keeps both.
+    const result = await service.search({
+      query: '排队论',
+      baseId: base.id,
+      queries: ['经济订货批量'],
+      topK: 5,
+    })
+    const texts = result.hits.map(hit => hit.text).join(' ')
+    expect(texts).toContain('排队论')
+    expect(texts).toContain('EOQ')
+  })
 })

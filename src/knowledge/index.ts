@@ -1440,14 +1440,40 @@ export class KnowledgeService extends Service {
     const config = this.getConfigFor(request.baseId)
     const query = request.query.trim()
     if (query.length === 0) return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] }
+    const requestedMode = request.mode ?? config.searchMode
+    const topK = clampInt(request.topK ?? config.topK, 1, 50, 6)
+    // Multi-query retrieval: each phrasing (including the primary query)
+    // searches independently; hits merge by chunk id keeping the best score.
+    // This widens recall for paraphrased/translated queries without a
+    // dedicated expansion model.
+    if (request.queries !== undefined && request.queries.length > 0) {
+      const variants = [query, ...request.queries.map(variant => variant.trim()).filter(variant => variant.length > 0)]
+      const results = await Promise.all(variants.map(variant => this.search({ ...request, query: variant, queries: undefined })))
+      const byId = new Map<string, SearchHit>()
+      let total = 0
+      for (const result of results) {
+        total += result.total
+        for (const hit of result.hits) {
+          const prev = byId.get(hit.chunkId)
+          if (prev === undefined || hit.score > prev.score) byId.set(hit.chunkId, hit)
+        }
+      }
+      const hits = [...byId.values()].sort((a, b) => b.score - a.score).slice(0, topK)
+      return {
+        query,
+        mode: requestedMode,
+        total,
+        reranked: results.some(result => result.reranked),
+        elapsedMs: Date.now() - startedAt,
+        hits,
+      }
+    }
     // A stale base id (e.g. a base deleted without sweeping child records)
     // must not surface orphaned content.
     if (request.baseId !== undefined && store.getBase(request.baseId) === undefined) {
       return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] }
     }
 
-    const requestedMode = request.mode ?? config.searchMode
-    const topK = clampInt(request.topK ?? config.topK, 1, 50, 6)
     const threshold = request.threshold ?? config.similarityThreshold
 
     // Metadata filters narrow the search to a subset of documents. Resolved
