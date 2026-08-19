@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — next npm release (everything after 0.2.2)
+## 0.3.0 — Semantic chunking, visual captioning, Ollama & local-model management (npm release, 2026-08-19)
 
 ### Retrieval quality
 
@@ -64,6 +64,26 @@
   Studio's icon library, no new dependency.
 - Stale `docs/compare-with-cherry.md` removed from the repo and the npm
   tarball.
+
+### Bug fixes (pre-open-source audit, 14 issues)
+
+- Per-base config overrides for `semanticChunk`, `chunkTokenLimit`,
+  `conflictStrategy`, MinerU and image-captioning settings were silently
+  stripped by the durable schema on save — the override vanished after a
+  refresh. The base-config schema now mirrors `BaseConfig` exactly.
+- "Move to 未分组" never persisted: the client sent `group: undefined`,
+  which JSON serialization drops; it now sends `''` and the server also
+  tolerates `null` from other clients (was a `null.trim()` 500).
+- `knowledge_delete_document` / `knowledge_reindex_document` ignored their
+  `baseId` argument and never checked the enabled invocation scope; they now
+  validate the document's owning base and scope like every other tool.
+- Renaming a base into a brand-new group left an orphan group that owned
+  bases but was absent from the sidebar list; the group is now registered.
+- Reindexing a whole base while an import was running aborted the entire
+  sweep on the first in-flight document; busy rows are now skipped
+  (Cherry's `REINDEX_ALLOWED_STATUSES` semantics).
+- Eval scripts printed `NaN%` on an empty eval set; they now exit with a
+  clear message.
 
 ## 0.2.2 — Cherry-parity import pipeline + worker-thread local models (npm release)
 
