@@ -8,7 +8,7 @@
 
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { KnowledgeService } from './index.js'
+import { ConflictError, type KnowledgeService } from './index.js'
 import type { ConfigOverrides } from './domain.js'
 import type {
   AddFileDocumentRequest,
@@ -68,6 +68,12 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
     }
     writeJson(res, 200, { ok: true, value })
   } catch (error) {
+    // Same-name conflicts surface as 409 so callers can re-submit with a
+    // conflict strategy instead of treating the import as a server error.
+    if (error instanceof ConflictError) {
+      writeJson(res, 409, { ok: false, error: { code: 'conflict', message: error.message } })
+      return
+    }
     const message = error instanceof Error ? error.message : String(error)
     writeJson(res, 500, { ok: false, error: { code: 'error', message } })
   }
@@ -239,12 +245,15 @@ async function route(
           }
           const request = body as Partial<AddTextDocumentRequest & AddFileDocumentRequest>
           if (typeof request.contentBase64 === 'string') {
+            const conflict = body.conflict
             return service.addFileDocument({
               baseId,
               fileName: typeof body.fileName === 'string' ? body.fileName : 'document',
               ...(typeof body.mimeType === 'string' ? { mimeType: body.mimeType } : {}),
               ...(typeof body.title === 'string' ? { title: body.title } : {}),
-              ...(body.conflict === 'replace' ? { conflict: 'replace' as const } : {}),
+              ...(conflict === 'keep' || conflict === 'replace' || conflict === 'rename' || conflict === 'detect'
+                ? { conflict: conflict as 'keep' | 'replace' | 'rename' | 'detect' }
+                : {}),
               ...(typeof body.parentDirectoryId === 'string' ? { parentDirectoryId: body.parentDirectoryId } : {}),
               contentBase64: request.contentBase64,
             })

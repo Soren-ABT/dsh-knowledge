@@ -40,6 +40,7 @@ const TEST_CONFIG: Config = {
   semanticChunk: false,
   semanticChunkThreshold: 0.75,
   chunkTokenLimit: 0,
+  conflictStrategy: 'rename',
 }
 
 /** Minimal in-memory KvTable matching the storage-domain runtime contract. */

@@ -39,6 +39,7 @@ export interface BaseConfig {
   readonly semanticChunk?: boolean
   readonly semanticChunkThreshold?: number
   readonly chunkTokenLimit?: number
+  readonly conflictStrategy?: 'keep' | 'replace' | 'rename'
 }
 
 /** One knowledge base (a namespace of documents). */
@@ -155,6 +156,8 @@ export interface KnowledgeConfig {
   readonly semanticChunkThreshold: number
   /** Token budget per chunk (0 = off); oversized chunks split at preferred boundaries. */
   readonly chunkTokenLimit: number
+  /** Same-name conflict strategy for file imports: keep / replace / rename (Cherry's default). */
+  readonly conflictStrategy: 'keep' | 'replace' | 'rename'
 }
 
 /** One ranked search result. */
@@ -287,8 +290,10 @@ export interface AddFileDocumentRequest {
   readonly mimeType?: string
   /** Base64-encoded file bytes. */
   readonly contentBase64: string
-  /** Same-name conflict handling: keep both (default) or replace the existing entry. */
-  readonly conflict?: 'keep' | 'replace'
+  /** Same-name conflict handling (overrides the base/global `conflictStrategy`):
+   *  `keep` both, `replace` the existing entry, `rename` with a `_1` suffix
+   *  (default), or `detect` and fail with a conflict error. */
+  readonly conflict?: 'keep' | 'replace' | 'rename' | 'detect'
   /** Parent directory id, when this file lives inside a directory container. */
   readonly parentDirectoryId?: string
 }

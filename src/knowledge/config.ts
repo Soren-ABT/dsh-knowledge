@@ -49,6 +49,8 @@ export interface Config {
   semanticChunkThreshold: number
   /** Token budget per chunk (0 = off); oversized chunks split at preferred boundaries. */
   chunkTokenLimit: number
+  /** Same-name conflict strategy for file imports: keep / replace / rename (Cherry's default). */
+  conflictStrategy: 'keep' | 'replace' | 'rename'
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -79,6 +81,7 @@ export const Config: Schema<Config> = Schema.object({
   semanticChunk: Schema.boolean().default(false),
   semanticChunkThreshold: Schema.number().default(0.75),
   chunkTokenLimit: Schema.number().default(0),
+  conflictStrategy: Schema.union(['keep', 'replace', 'rename']).default('rename'),
 })
 
 /** Resolve a full config from deployment defaults plus runtime overrides. */
@@ -121,6 +124,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     semanticChunk: overrides.semanticChunk ?? config.semanticChunk,
     semanticChunkThreshold: clampNumber(overrides.semanticChunkThreshold ?? config.semanticChunkThreshold, 0, 1, 0.75),
     chunkTokenLimit: clampInt(overrides.chunkTokenLimit ?? config.chunkTokenLimit, 0, 1_000_000, 0),
+    conflictStrategy: overrides.conflictStrategy ?? config.conflictStrategy,
   }
 }
 
@@ -161,6 +165,7 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     semanticChunk: baseConfig.semanticChunk ?? resolved.semanticChunk,
     semanticChunkThreshold: clampNumber(baseConfig.semanticChunkThreshold ?? resolved.semanticChunkThreshold, 0, 1, 0.75),
     chunkTokenLimit: clampInt(baseConfig.chunkTokenLimit ?? resolved.chunkTokenLimit, 0, 1_000_000, 0),
+    conflictStrategy: baseConfig.conflictStrategy ?? resolved.conflictStrategy,
   }
 }
 

@@ -62,6 +62,7 @@ const DEFAULT_CONFIG: Config = {
   semanticChunk: false,
   semanticChunkThreshold: 0.75,
   chunkTokenLimit: 0,
+  conflictStrategy: 'rename',
 }
 
 function fakeWebServer() {

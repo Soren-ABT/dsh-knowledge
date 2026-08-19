@@ -30,6 +30,7 @@ export interface BaseConfig {
   semanticChunk?: boolean
   semanticChunkThreshold?: number
   chunkTokenLimit?: number
+  conflictStrategy?: 'keep' | 'replace' | 'rename'
 }
 
 export interface BaseSummary {
@@ -121,6 +122,7 @@ export interface KnowledgeConfig {
   semanticChunk: boolean
   semanticChunkThreshold: number
   chunkTokenLimit: number
+  conflictStrategy: 'keep' | 'replace' | 'rename'
   siblingChunks: number
   hfEndpoint: string
   documentProcessorProvider: 'builtin' | 'mineru'
@@ -334,7 +336,7 @@ export class KnowledgeApi {
     fileName: string,
     mimeType: string,
     contentBase64: string,
-    conflict?: 'keep' | 'replace',
+    conflict?: 'keep' | 'replace' | 'rename' | 'detect',
     parentDirectoryId?: string,
   ): Promise<{ id: string; title: string; chunkCount: number }> {
     return this.call('POST', `/bases/${encodeURIComponent(baseId)}/documents`, {

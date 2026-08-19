@@ -108,6 +108,12 @@ interface BackgroundJob {
   done: boolean
 }
 
+/** Raised by same-name conflict detection (`conflict: 'detect'`); the HTTP
+ *  layer maps it to 409 Conflict so callers can re-submit with a strategy. */
+export class ConflictError extends Error {
+  readonly code = 'conflict'
+}
+
 export class KnowledgeService extends Service {
   static inject = ['webServer']
   static Config = Config
@@ -487,27 +493,53 @@ export class KnowledgeService extends Service {
     if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(request.fileName))) {
       throw new Error(`Unsupported knowledge file type: ${request.fileName}`)
     }
-    // Same-name conflict handling, Cherry Studio style: replace the existing entry first.
-    if (request.conflict === 'replace') {
+    // Same-name conflict handling (Cherry Studio's three strategies, plus
+    // keep): the effective strategy is the per-request override, else the
+    // base/global `conflictStrategy` config, else rename (Cherry's default).
+    const conflictStrategy = request.conflict ?? this.getConfigFor(request.baseId).conflictStrategy
+    if (conflictStrategy !== 'keep') {
       const existing = store.listDocuments(request.baseId).find(doc => doc.fileName === request.fileName)
       if (existing !== undefined) {
-        await store.deleteChunks(existing.id)
-        if (existing.rawFilePath !== undefined) await store.raw?.delete(existing.rawFilePath)
-        await store.deleteDocument(existing.id)
+        if (conflictStrategy === 'replace') {
+          await store.deleteChunks(existing.id)
+          if (existing.rawFilePath !== undefined) await store.raw?.delete(existing.rawFilePath)
+          await store.deleteDocument(existing.id)
+        } else if (conflictStrategy === 'detect') {
+          throw new ConflictError(`same-name document exists: ${request.fileName} (id ${existing.id}) — re-upload with conflict=replace or conflict=rename`)
+        }
+      }
+    }
+    // Rename strategy: bump to `name_1.ext`, `name_2.ext`, … until free
+    // (Cherry's automatic `_1` suffix). Applies to both fileName and title.
+    let fileName = request.fileName
+    let title = request.title?.trim() || request.fileName
+    if (conflictStrategy === 'rename') {
+      const taken = new Set(store.listDocuments(request.baseId).map(doc => doc.fileName))
+      let candidate = fileName
+      let counter = 1
+      while (taken.has(candidate)) {
+        const dot = fileName.lastIndexOf('.')
+        const base = dot > 0 ? fileName.slice(0, dot) : fileName
+        const ext = dot > 0 ? fileName.slice(dot) : ''
+        candidate = `${base}_${counter}${ext}`
+        counter += 1
+      }
+      if (candidate !== fileName) {
+        fileName = candidate
+        if (request.title !== undefined) title = `${request.title.trim()}_${counter - 1}`
       }
     }
     // Cherry Studio parity: publish the row FIRST (with "parsing" status) and
     // return immediately; the parse+embed runs on a per-base worker pool
     // (concurrency 5) and the row flips processing → completed/failed as it
     // goes, exactly like Cherry's create-then-index jobs.
-    const title = request.title?.trim() || request.fileName
     const docId = crypto.randomUUID()
     const placeholder: KnowledgeDocument = {
       id: docId,
       baseId: request.baseId,
       title,
       sourceType: 'file',
-      fileName: request.fileName,
+      fileName,
       ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
       ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
       charCount: 0,
@@ -520,7 +552,7 @@ export class KnowledgeService extends Service {
     // it, and a crash before/during parse is recoverable from the file
     // instead of being a lost upload.
     const rawFilePath = store.raw !== undefined
-      ? await store.raw.write(request.baseId, docId, safeRawExtension(request.fileName), decodeBase64(request.contentBase64))
+      ? await store.raw.write(request.baseId, docId, safeRawExtension(fileName), decodeBase64(request.contentBase64))
       : undefined
     const stored = { ...placeholder, ...(rawFilePath !== undefined ? { rawFilePath } : {}) }
     await store.putDocument(stored)
@@ -548,10 +580,10 @@ export class KnowledgeService extends Service {
         const config = this.getConfigFor(request.baseId)
         let text: string | null = null
         if (config.documentProcessorProvider === 'mineru' && config.mineruApiKey.trim() !== ''
-          && extensionOf(request.fileName) === 'pdf') {
+          && extensionOf(fileName) === 'pdf') {
           try {
             const { extractPdfWithMineru } = await import('./mineru.js')
-            text = await extractPdfWithMineru(bytes, request.fileName, {
+            text = await extractPdfWithMineru(bytes, fileName, {
               apiKey: config.mineruApiKey,
               apiHost: config.mineruApiHost,
             })
@@ -560,14 +592,14 @@ export class KnowledgeService extends Service {
           }
         }
         if (text === null) {
-          text = await parseDocumentBuffer(bytes, request.fileName, request.mimeType)
+          text = await parseDocumentBuffer(bytes, fileName, request.mimeType)
         }
         if (text.trim().length === 0) throw new Error('parsed document is empty')
         await this.ingestDocument({
           baseId: request.baseId,
           title,
           sourceType: 'file',
-          fileName: request.fileName,
+          fileName,
           ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
           ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
           placeholderId: docId,

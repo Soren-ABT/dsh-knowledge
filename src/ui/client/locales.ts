@@ -134,6 +134,11 @@ export type KnowledgeKey =
   | 'semanticChunkThresholdHint'
   | 'chunkTokenLimit'
   | 'chunkTokenLimitHint'
+  | 'conflictStrategy'
+  | 'conflictStrategyHint'
+  | 'conflictRename'
+  | 'conflictReplace'
+  | 'conflictKeep'
   | 'chunkSeparator'
   | 'chunkSeparatorHint'
   | 'reset'
@@ -347,6 +352,11 @@ export const zh: Record<KnowledgeKey, string> = {
   semanticChunkThresholdHint: '相邻段落余弦相似度低于该值（默认 0.75）时另起一块；调高 → 块更碎、更聚焦',
   chunkTokenLimit: '分块 Token 上限',
   chunkTokenLimitHint: '超过该 token 数的块会在句号/逗号/空格等边界处继续切分（0 = 不限制）；本地模型建议设为模型上下文窗口以内',
+  conflictStrategy: '同名文件策略',
+  conflictStrategyHint: '导入文件与库内同名时：重命名（自动加 _1 后缀）/ 替换 / 保留两者',
+  conflictRename: '重命名（自动 _1 后缀）',
+  conflictReplace: '替换旧文件',
+  conflictKeep: '保留两者',
   chunkSeparator: '分隔符',
   chunkSeparatorHint: '切分文本所用的分隔符（转义形式）。开启智能分段时作为额外切分点；关闭后仅按此分隔符切分。',
   reset: '恢复默认',
@@ -558,6 +568,11 @@ export const en: Record<KnowledgeKey, string> = {
   semanticChunkThresholdHint: 'Start a new chunk when adjacent segments fall below this cosine (default 0.75); higher = smaller, more focused chunks',
   chunkTokenLimit: 'Chunk token limit',
   chunkTokenLimitHint: 'Chunks above this token count split further at sentence/comma/space boundaries (0 = off); set within your local model\'s context window',
+  conflictStrategy: 'Same-name conflict',
+  conflictStrategyHint: 'When an imported file matches an existing name: rename (auto _1 suffix) / replace / keep both',
+  conflictRename: 'Rename (auto _1 suffix)',
+  conflictReplace: 'Replace the old file',
+  conflictKeep: 'Keep both',
   chunkSeparator: 'Separator',
   chunkSeparatorHint: 'Delimiter the text is split on, in escaped form. With smart chunking on it adds a break point; with it off the text is split only by this delimiter.',
   reset: 'Restore Defaults',

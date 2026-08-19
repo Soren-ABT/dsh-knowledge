@@ -35,6 +35,7 @@ const DEFAULT_CONFIG: Config = {
   semanticChunk: false,
   semanticChunkThreshold: 0.75,
   chunkTokenLimit: 0,
+  conflictStrategy: 'rename',
 }
 
 function fakeWebServer() {
@@ -303,6 +304,33 @@ describe('KnowledgeService', () => {
       conflict: 'replace',
     })
     expect(doc2.id).not.toBe(doc.id)
+    expect(service.listDocuments(base.id)).toHaveLength(1)
+  })
+
+  it('renames a same-name file entry by default (Cherry rename strategy)', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'rename-conflict' })
+    const content = Buffer.from('first version').toString('base64')
+    await service.addFileDocument({ baseId: base.id, fileName: 'notes.txt', contentBase64: content })
+    const content2 = Buffer.from('second version').toString('base64')
+    const renamed = await service.addFileDocument({ baseId: base.id, fileName: 'notes.txt', contentBase64: content2 })
+    expect(renamed.fileName).toBe('notes_1.txt')
+    expect(service.listDocuments(base.id)).toHaveLength(2)
+  })
+
+  it('detects a same-name conflict and raises ConflictError (409 on the HTTP layer)', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'detect-conflict' })
+    const content = Buffer.from('first version').toString('base64')
+    await service.addFileDocument({ baseId: base.id, fileName: 'notes.txt', contentBase64: content })
+    const content2 = Buffer.from('second version').toString('base64')
+    const { ConflictError } = await import('../src/knowledge/index.js')
+    await expect(service.addFileDocument({
+      baseId: base.id,
+      fileName: 'notes.txt',
+      contentBase64: content2,
+      conflict: 'detect',
+    })).rejects.toBeInstanceOf(ConflictError)
     expect(service.listDocuments(base.id)).toHaveLength(1)
   })
 

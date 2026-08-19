@@ -294,6 +294,17 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   onChange={(e) => patch({ chunkTokenLimit: Number(e.target.value) })}
                 />
               </FieldRow>
+              <FieldRow label={t('conflictStrategy')} hint={t('conflictStrategyHint')}>
+                <select
+                  style={{ ...style.input, width: 140 }}
+                  value={values.conflictStrategy}
+                  onChange={(e) => patch({ conflictStrategy: e.target.value as 'keep' | 'replace' | 'rename' })}
+                >
+                  <option value="rename">{t('conflictRename')}</option>
+                  <option value="replace">{t('conflictReplace')}</option>
+                  <option value="keep">{t('conflictKeep')}</option>
+                </select>
+              </FieldRow>
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
                 <input
                   style={{ ...style.input, width: 140 }}
