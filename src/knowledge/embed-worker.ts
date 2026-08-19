@@ -36,6 +36,22 @@ interface TransformersModule {
     | ((text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>)
     | ((query: string, texts: string[], options?: Record<string, unknown>) => Promise<Array<{ score: number }>>)
   >
+  AutoModel: {
+    from_pretrained(modelId: string, options?: Record<string, unknown>): Promise<{
+      (inputs: Record<string, unknown>): Promise<{ logits?: { data?: ArrayLike<number>; dims?: number[] } }>
+      dispose?(): Promise<void>
+    }>
+  }
+  AutoTokenizer: {
+    from_pretrained(modelId: string, options?: Record<string, unknown>): Promise<
+      (texts: unknown, options?: Record<string, unknown>) => Promise<Record<string, unknown>>
+    >
+  }
+}
+
+/** bge-reranker scores = sigmoid(logits); the reference pipeline does the same. */
+function sigmoid(value: number): number {
+  return 1 / (1 + Math.exp(-value))
 }
 
 interface EmbedRequest {
@@ -115,22 +131,32 @@ async function createRunner(
   //    so it does not pin ~600MB — inference reloads from disk below.
   if (!(await isDownloaded(modelId, cacheDir))) {
     post({ type: 'progress', modelId, status: 'downloading', progress: 0, message: '' })
+    const progressCallback = (info: { status?: string; progress?: number }): void => {
+      // Cancellation is checked on EVERY callback (never throttled) so
+      // an abort interrupts the download promptly.
+      if (cancelledModels.has(modelId)) throw new Error('download cancelled')
+      if (info.status === 'progress' && typeof info.progress === 'number') {
+        const now = Date.now()
+        if (now - lastProgressAt >= 250) {
+          lastProgressAt = now
+          post({ type: 'progress', modelId, status: 'downloading', progress: info.progress, message: '' })
+        }
+      }
+    }
     try {
-      await tf.pipeline(task, modelId, {
-        dtype: 'q8',
-        progress_callback: (info: { status?: string; progress?: number }): void => {
-          // Cancellation is checked on EVERY callback (never throttled) so
-          // an abort interrupts the download promptly.
-          if (cancelledModels.has(modelId)) throw new Error('download cancelled')
-          if (info.status === 'progress' && typeof info.progress === 'number') {
-            const now = Date.now()
-            if (now - lastProgressAt >= 250) {
-              lastProgressAt = now
-              post({ type: 'progress', modelId, status: 'downloading', progress: info.progress, message: '' })
-            }
-          }
-        },
-      })
+      if (task === 'reranking') {
+        // transformers.js < v4 has no `reranking` pipeline (3.7.0 throws
+        // "Unsupported pipeline"). Download through the primitive loaders
+        // instead — AutoModel/AutoTokenizer exist in every version — then
+        // run the cross-encoder manually below.
+        await tf.AutoModel.from_pretrained(modelId, { dtype: 'q8', progress_callback: progressCallback })
+        await tf.AutoTokenizer.from_pretrained(modelId, { progress_callback: progressCallback })
+      } else {
+        await tf.pipeline(task, modelId, {
+          dtype: 'q8',
+          progress_callback: progressCallback,
+        })
+      }
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error)
       const cancelled = cancelledModels.has(modelId)
@@ -149,19 +175,37 @@ async function createRunner(
   //    HF repo id, so transformers.js treats it as a local model and never
   //    touches the network.
   post({ type: 'progress', modelId, status: 'ready', progress: 100, message: '' })
-  const pipeline = await tf.pipeline(task, join(cacheDir, modelId), { dtype: 'q8' }) as
-    | ((text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>)
-    | ((query: string, texts: string[], options?: Record<string, unknown>) => Promise<Array<{ score: number }>>)
   if (task === 'reranking') {
-    const rerank = pipeline as (query: string, texts: string[], options?: Record<string, unknown>) => Promise<Array<{ score: number }>>
+    const model = await tf.AutoModel.from_pretrained(join(cacheDir, modelId), { dtype: 'q8' })
+    const tokenizer = await tf.AutoTokenizer.from_pretrained(join(cacheDir, modelId))
     return {
+      // Cross-encoder relevance scoring, hand-rolled for transformers.js
+      // versions without the `reranking` pipeline: tokenize [query, doc]
+      // pairs, run the model, sigmoid the logits (the reference pipeline's
+      // exact math). Batched so a large pool never allocates one giant tensor.
       rerank: async (query: string, texts: string[]): Promise<number[]> => {
         if (texts.length === 0) return []
-        const output = await rerank(query, texts)
-        return output.map(entry => entry.score ?? 0)
+        const scores: number[] = []
+        const BATCH = 16
+        for (let i = 0; i < texts.length; i += BATCH) {
+          const batch = texts.slice(i, i + BATCH)
+          const inputs = await tokenizer(batch.map(doc => [query, doc]), { padding: true, truncation: true })
+          const outputs = await model(inputs)
+          const logits = outputs.logits
+          if (logits === undefined || logits.data === undefined) {
+            throw new Error('rerank model returned no logits')
+          }
+          for (let j = 0; j < batch.length; j += 1) {
+            scores.push(sigmoid(logits.data[j] ?? 0))
+          }
+        }
+        return scores
       },
     }
   }
+  const pipeline = await tf.pipeline(task, join(cacheDir, modelId), { dtype: 'q8' }) as
+    | ((text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>)
+    | ((query: string, texts: string[], options?: Record<string, unknown>) => Promise<Array<{ score: number }>>)
   const embed = pipeline as (text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>
   return {
     embed: async (texts: string[], pooling: Pooling): Promise<number[][]> => {
