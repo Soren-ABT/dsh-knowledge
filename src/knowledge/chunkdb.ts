@@ -23,7 +23,6 @@ import { mkdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { cosineSimilarity } from './retrieval.js'
 import type { KnowledgeChunk } from './types.js'
 
 /** Resolve the chunk database path: explicit config, else `<DSH_HOME>/storages/`. */
@@ -129,6 +128,35 @@ function decodeEmbedding(blob: Buffer | null | undefined): number[] | undefined 
   return Array.from(new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4))
 }
 
+/** Decode an embedding BLOB straight into a Float32Array (cache path). */
+function decodeEmbeddingFloat32(blob: Buffer | null | undefined): Float32Array | undefined {
+  if (blob === undefined || blob === null || blob.byteLength === 0) return undefined
+  return new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4)
+}
+
+/** Cosine similarity between two equal-length float32 vectors. */
+function cosineFloat32(a: Float32Array, b: Float32Array): number {
+  if (a.length === 0 || a.length !== b.length) return 0
+  let dot = 0
+  for (let i = 0; i < a.length; i += 1) dot += a[i] * b[i]
+  return Math.max(0, Math.min(1, dot))
+}
+
+/** Rebuild a ChunkRow from a chunk for the vector cache. */
+function toChunkRow(chunk: KnowledgeChunk): ChunkRow {
+  return {
+    chunk_id: chunk.id,
+    doc_id: chunk.docId,
+    base_id: chunk.baseId,
+    idx: chunk.index,
+    text: chunk.text,
+    heading: chunk.heading ?? null,
+    context: chunk.context ?? null,
+    embedding: chunk.embedding !== undefined ? encodeEmbedding(chunk.embedding) : null,
+    embedding_model: chunk.embeddingModel ?? null,
+  }
+}
+
 /**
  * Stable hash of the exact text fed to the embedding model — the dedup key for
  * vector reuse (Cherry's `embedding_text_hash` / decision A4). Two chunks with
@@ -164,6 +192,15 @@ export interface RetrievalLane {
 /** The chunk store: bounded SQL reads, single-transaction writes. */
 export class ChunkDatabase implements RetrievalLane {
   private readonly db: DatabaseSync
+
+  /**
+   * Per-base vector cache for the brute-force lane: vectors load lazily on
+   * the first vector query for a base and stay in sync with every write
+   * path, so repeated searches never re-fetch/re-decode the BLOBs. Float32
+   * storage keeps the cosine loop on typed arrays. Invalidation stays
+   * exact (per doc / per base), never a whole-store flush.
+   */
+  private readonly vectorCache = new Map<string, Array<{ id: string; docId: string; vector: Float32Array; row: ChunkRow }>>()
 
   private static readonly SELECT_COLUMNS = 'chunk_id, doc_id, base_id, idx, text, heading, context, embedding, embedding_model'
 
@@ -350,6 +387,9 @@ export class ChunkDatabase implements RetrievalLane {
       this.db.exec('ROLLBACK')
       throw error
     }
+    // Keep the vector cache in sync: the document's rows were replaced.
+    this.dropVectorCacheByDoc(docId)
+    for (const chunk of chunks) this.upsertVectorCache(chunk)
   }
 
   /**
@@ -396,14 +436,17 @@ export class ChunkDatabase implements RetrievalLane {
       this.db.exec('ROLLBACK')
       throw error
     }
+    for (const chunk of chunks) this.upsertVectorCache(chunk)
   }
 
   deleteChunks(docId: string): void {
     this.db.prepare('DELETE FROM chunk WHERE doc_id = ?').run(docId)
+    this.dropVectorCacheByDoc(docId)
   }
 
   deleteChunksByBase(baseId: string): void {
     this.db.prepare('DELETE FROM chunk WHERE base_id = ?').run(baseId)
+    this.vectorCache.delete(baseId)
   }
 
   /**
@@ -567,21 +610,60 @@ export class ChunkDatabase implements RetrievalLane {
   async vector(embedding: readonly number[], baseIds: readonly string[], limit: number, docIds?: readonly string[]): Promise<LaneResult> {
     const scope = [...baseIds]
     if (scope.length === 0) return { total: 0, hits: [] }
-    const docFilter = docFilterSql(docIds, 'doc_id')
-    const placeholders = scope.map(() => '?').join(',')
-    const scopeSql = `base_id IN (${placeholders})${docFilter?.sql ?? ''}`
-    const params: Array<string | number> = [...scope, ...(docFilter?.params ?? [])]
-    const rows = this.db.prepare(
-      `SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk WHERE ${scopeSql} AND embedding IS NOT NULL`,
-    ).all(...params) as unknown as ChunkRow[]
+    const query = embedding.length > 0 ? Float32Array.from(embedding) : null
+    const docFilter = docIds !== undefined && docIds.length > 0 ? new Set(docIds) : undefined
     const scored: LaneHit[] = []
-    for (const row of rows) {
-      const vector = decodeEmbedding(row.embedding)
-      if (vector === undefined) continue
-      scored.push({ ...rowToChunk(row), score: cosineSimilarity(embedding, vector) })
+    let total = 0
+    for (const baseId of scope) {
+      for (const entry of this.ensureVectorCache(baseId)) {
+        if (docFilter !== undefined && !docFilter.has(entry.docId)) continue
+        total += 1
+        if (query === null || entry.vector.length !== query.length) continue
+        scored.push({ ...rowToChunk(entry.row), score: cosineFloat32(query, entry.vector) })
+      }
     }
     scored.sort((a, b) => b.score - a.score)
-    return { total: scored.length, hits: scored.slice(0, limit) }
+    return { total, hits: scored.slice(0, limit) }
+  }
+
+  /** Lazy-load a base's vectors into the cache (SQL once, then in-memory). */
+  private ensureVectorCache(baseId: string): Array<{ id: string; docId: string; vector: Float32Array; row: ChunkRow }> {
+    const cached = this.vectorCache.get(baseId)
+    if (cached !== undefined) return cached
+    const rows = this.db.prepare(
+      `SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk WHERE base_id = ? AND embedding IS NOT NULL`,
+    ).all(baseId) as unknown as ChunkRow[]
+    const entries = rows
+      .map(row => {
+        const vector = decodeEmbeddingFloat32(row.embedding)
+        return vector !== undefined ? { id: row.chunk_id, docId: row.doc_id, vector, row } : undefined
+      })
+      .filter((entry): entry is { id: string; docId: string; vector: Float32Array; row: ChunkRow } => entry !== undefined)
+    this.vectorCache.set(baseId, entries)
+    return entries
+  }
+
+  /** Rebuild one base's cache entry for a chunk after a write. */
+  private upsertVectorCache(chunk: KnowledgeChunk): void {
+    const list = this.vectorCache.get(chunk.baseId)
+    if (list === undefined) return
+    const index = list.findIndex(entry => entry.id === chunk.id)
+    if (chunk.embedding === undefined) {
+      if (index >= 0) list.splice(index, 1)
+      return
+    }
+    const entry = { id: chunk.id, docId: chunk.docId, vector: Float32Array.from(chunk.embedding), row: toChunkRow(chunk) }
+    if (index >= 0) list[index] = entry
+    else list.push(entry)
+  }
+
+  /** Drop a document's cached vectors (delete path). */
+  private dropVectorCacheByDoc(docId: string): void {
+    for (const list of this.vectorCache.values()) {
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        if (list[i].docId === docId) list.splice(i, 1)
+      }
+    }
   }
 
   close(): void {
