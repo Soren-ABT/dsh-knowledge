@@ -255,6 +255,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
         <Section title={t('rerankModel')} hint={t('rerankHint')}>
           <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ flex: 1 }}>
+              <label style={style.label}>{t('modelLabel')}</label>
               <input
                 list={listId('rerank')}
                 style={style.input}
@@ -263,8 +264,17 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
               />
             </div>
             <div style={{ flex: 1 }}>
-              <input style={style.input} placeholder={t('rerankBaseUrl')} value={values.rerankBaseUrl} onChange={(e) => patch({ rerankBaseUrl: e.target.value })} />
+              <label style={style.label}>{t('rerankBaseUrl')}</label>
+              <input style={style.input} value={values.rerankBaseUrl} onChange={(e) => patch({ rerankBaseUrl: e.target.value })} />
             </div>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <label style={style.label}>{t('rerankApiKey')}</label>
+            <input
+              style={style.input}
+              value={values.rerankApiKey ?? ''}
+              onChange={(e) => patch({ rerankApiKey: e.target.value })}
+            />
           </div>
         </Section>
 

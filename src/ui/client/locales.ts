@@ -119,6 +119,7 @@ export type KnowledgeKey =
   | 'rerankBaseUrl'
   | 'rerankApiKey'
   | 'rerankHint'
+  | 'modelLabel'
   | 'elapsed'
   | 'reranked'
   | 'recallTest'
@@ -358,6 +359,7 @@ export const zh: Record<KnowledgeKey, string> = {
   rerankBaseUrl: '重排接口地址',
   rerankApiKey: '重排 API Key（可选）',
   rerankHint: '对初步召回结果重新排序的模型，可提升最终片段相关性。',
+  modelLabel: '模型',
   elapsed: '耗时',
   reranked: '已重排',
   recallTest: '召回测试',
@@ -595,6 +597,7 @@ export const en: Record<KnowledgeKey, string> = {
   rerankBaseUrl: 'Rerank base URL',
   rerankApiKey: 'Rerank API key (optional)',
   rerankHint: 'Model used to rerank initial retrieval results and improve final chunk relevance.',
+  modelLabel: 'Model',
   elapsed: 'latency',
   reranked: 'reranked',
   recallTest: 'Recall Test',
