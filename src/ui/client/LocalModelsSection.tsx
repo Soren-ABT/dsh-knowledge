@@ -18,6 +18,11 @@ export interface LocalModelsSectionProps {
   close: () => void
   api: KnowledgeApi
   t: Translate
+  /** DSH's native directory picker + path opener (optional; absent in tests). */
+  workspaces?: {
+    pickDirectory(): Promise<string | null>
+    openPath(path: string): Promise<void>
+  }
 }
 
 export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element {
@@ -89,6 +94,46 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       setCacheDir(cacheDir.trim())
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [api, cacheDir])
+
+  const browseCacheDir = useCallback(async (): Promise<void> => {
+    setError(null)
+    if (props.workspaces === undefined) {
+      setError('文件夹选择不可用（当前环境无目录选择能力）')
+      return
+    }
+    try {
+      const picked = await props.workspaces.pickDirectory()
+      if (picked !== null) setCacheDir(picked)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [props.workspaces])
+
+  const openCacheDir = useCallback(async (): Promise<void> => {
+    setError(null)
+    if (props.workspaces === undefined) return
+    try {
+      await props.workspaces.openPath(cacheDir.trim() === '' ? '~' : cacheDir.trim())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [props.workspaces, cacheDir])
+
+  const [migrating, setMigrating] = useState(false)
+  const migrateCacheDir = useCallback(async (): Promise<void> => {
+    setMigrating(true)
+    setError(null)
+    try {
+      const result = await api.migrateLocalModels(cacheDir.trim())
+      setCacheDir(result.to)
+      setError(null)
+      if (result.moved > 0) setError(`${result.moved} 个模型目录已迁移到 ${result.to}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMigrating(false)
     }
   }, [api, cacheDir])
 
@@ -210,12 +255,19 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
           <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t('cacheDirTitle')}</label>
           <div style={{ display: 'flex', gap: 8 }}>
             <input
-              style={style.input}
+              style={{ ...style.input, flex: 1 }}
               placeholder="C:\\Users\\you\\.dsh\\cache\\dsh-knowledge\\local-models"
               value={cacheDir}
               onChange={(e) => setCacheDir(e.target.value)}
             />
+            <button style={style.button} onClick={() => void browseCacheDir()}>📁 {t('cacheDirBrowse')}</button>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <button style={style.button} onClick={() => void saveCacheDir()}>{t('hfMirrorSave')}</button>
+            <button style={style.button} disabled={migrating} onClick={() => void migrateCacheDir()}>
+              {migrating ? '…' : '🚚'} {t('cacheDirMigrate')}
+            </button>
+            <button style={style.button} onClick={() => void openCacheDir()}>📂 {t('cacheDirOpen')}</button>
           </div>
           <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('cacheDirHint')}</p>
         </div>

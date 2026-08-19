@@ -8,13 +8,22 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
-import { readdir, readFile } from 'node:fs/promises'
-import { basename, extname, join } from 'node:path'
+import { cp, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises'
+import { basename, extname, join, resolve } from 'node:path'
 import { chunkText, mergeSemanticSegments, refineChunksByTokenLimit, splitSemanticSegments } from './chunk.js'
 import type { ChunkPiece } from './chunk.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
 import type { ConfigOverrides } from './domain.js'
-import { DEFAULT_LOCAL_MODEL, disposeLocalModelWorker, embedTexts, getLocalModelStatus, setHfEndpoint, setLocalModelCacheDir } from './embed.js'
+import {
+  DEFAULT_LOCAL_MODEL,
+  disposeLocalModelWorker,
+  embedTexts,
+  expandHomePath,
+  getLocalModelStatus,
+  localModelCacheDir,
+  setHfEndpoint,
+  setLocalModelCacheDir,
+} from './embed.js'
 import type { LocalModelStatus } from './embed.js'
 import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, listLocalModels, LOCAL_MODELS } from './localModels.js'
 import type { LocalModelSummary } from './localModels.js'
@@ -1325,6 +1334,42 @@ export class KnowledgeService extends Service {
 
   getOllamaPullStatus(model: string): OllamaPullStatus {
     return getOllamaPullStatusHelper(model)
+  }
+
+  /**
+   * Migrate downloaded local models (and OCR files) from the current cache
+   * directory to `to`, then point the config there. Loaded models are
+   * released first so file locks (Windows) cannot block the move; moves fall
+   * back to copy+delete across drives. The directory may be empty — the
+   * config still switches, so future downloads land in the new location.
+   */
+  async migrateLocalModels(to: string): Promise<{ moved: number; from: string; to: string }> {
+    const store = this.requireStore()
+    const target = resolve(expandHomePath(to.trim() === '' ? '~/.dsh/cache/dsh-knowledge/local-models' : to.trim()))
+    const from = localModelCacheDir()
+    if (from === target) return { moved: 0, from, to: target }
+    // Release loaded models (up to ~600MB each) before touching the files.
+    disposeLocalModelWorker()
+    const entries = await readdir(from).catch(() => [] as string[])
+    let moved = 0
+    await mkdir(target, { recursive: true })
+    for (const entry of entries) {
+      const source = join(from, entry)
+      const dest = join(target, entry)
+      const info = await stat(source).catch(() => null)
+      if (info === null || !info.isDirectory()) continue
+      try {
+        await rename(source, dest)
+      } catch {
+        // Cross-device or locked rename — copy then remove.
+        await cp(source, dest, { recursive: true })
+        await rm(source, { recursive: true, force: true })
+      }
+      moved += 1
+    }
+    await store.setConfigOverrides({ localModelCacheDir: target })
+    setLocalModelCacheDir(target)
+    return { moved, from, to: target }
   }
 
   listChunks(documentId: string, limit?: number, offset?: number): KnowledgeChunk[] {

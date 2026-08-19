@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { KnowledgeService } from '../src/knowledge/index.js'
 import type { Config } from '../src/knowledge/config.js'
 import type { KnowledgeService as KnowledgeServiceType } from '../src/knowledge/index.js'
@@ -806,5 +807,43 @@ describe('KnowledgeService', () => {
     const texts = result.hits.map(hit => hit.text).join(' ')
     expect(texts).toContain('排队论')
     expect(texts).toContain('EOQ')
+  })
+
+  it('migrates local models to a new cache directory and switches the config', async () => {
+    const service = await mountService()
+    const tmp = await mkdtemp(join(tmpdir(), 'kb-migrate-'))
+    const from = join(tmp, 'from')
+    const to = join(tmp, 'to')
+    mkdirSync(join(from, 'fake-model'), { recursive: true })
+    writeFileSync(join(from, 'fake-model', 'model.onnx'), 'fake weights')
+    mkdirSync(join(from, 'ocr'), { recursive: true })
+    writeFileSync(join(from, 'ocr', 'ppocrv5_dict.txt'), 'a')
+    const { setLocalModelCacheDir } = await import('../src/knowledge/embed.js')
+    setLocalModelCacheDir(from)
+    try {
+      const result = await service.migrateLocalModels(to)
+      expect(result.moved).toBe(2)
+      expect(existsSync(join(to, 'fake-model', 'model.onnx'))).toBe(true)
+      expect(existsSync(join(to, 'ocr', 'ppocrv5_dict.txt'))).toBe(true)
+      expect(existsSync(join(from, 'fake-model'))).toBe(false)
+      expect(service.getConfig().localModelCacheDir).toBe(resolve(to))
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
+      setLocalModelCacheDir(undefined)
+    }
+  })
+
+  it('migrate to the same directory is a no-op', async () => {
+    const service = await mountService()
+    const tmp = await mkdtemp(join(tmpdir(), 'kb-migrate-same-'))
+    const { setLocalModelCacheDir } = await import('../src/knowledge/embed.js')
+    setLocalModelCacheDir(tmp)
+    try {
+      const result = await service.migrateLocalModels(tmp)
+      expect(result.moved).toBe(0)
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
+      setLocalModelCacheDir(undefined)
+    }
   })
 })

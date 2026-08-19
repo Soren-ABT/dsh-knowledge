@@ -270,6 +270,10 @@ export class KnowledgeApi {
     return this.call('DELETE', '/local-ocr/remove')
   }
 
+  migrateLocalModels(to: string): Promise<{ moved: number; from: string; to: string }> {
+    return this.call('POST', '/local-models/migrate', { to })
+  }
+
   listOllamaModels(baseUrl: string): Promise<{ models: string[] }> {
     return this.call('GET', `/local-ollama/tags?baseUrl=${encodeURIComponent(baseUrl)}`)
   }

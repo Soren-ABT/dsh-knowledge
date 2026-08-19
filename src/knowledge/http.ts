@@ -158,6 +158,9 @@ async function route(
     if (segments[1] === 'remove' && method === 'DELETE') {
       return service.deleteLocalModel(query.get('model') ?? '')
     }
+    if (segments[1] === 'migrate' && method === 'POST') {
+      return service.migrateLocalModels(typeof body.to === 'string' ? body.to : '')
+    }
     return undefined
   }
 

@@ -48,7 +48,7 @@ export function setHfEndpoint(url: string | undefined): void {
     : undefined
 }
 
-function expandHomePath(input: string): string {
+export function expandHomePath(input: string): string {
   if (input === '~') return homedir()
   if (input.startsWith('~/') || input.startsWith('~\\')) return join(homedir(), input.slice(2))
   return input

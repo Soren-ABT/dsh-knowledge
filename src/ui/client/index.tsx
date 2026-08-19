@@ -61,6 +61,6 @@ export function apply(ctx: Context): void {
     id: 'local-models',
     order: 60,
     label: () => t('localModelsNav'),
-    inject: () => ({ api, t }),
+    inject: () => ({ api, t, workspaces: ctx.get('workspaces') }),
   }, LocalModelsSection))
 }

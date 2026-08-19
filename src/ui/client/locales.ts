@@ -147,6 +147,9 @@ export type KnowledgeKey =
   | 'imageCaptionOllama'
   | 'cacheDirTitle'
   | 'cacheDirHint'
+  | 'cacheDirBrowse'
+  | 'cacheDirMigrate'
+  | 'cacheDirOpen'
   | 'ollamaTitle'
   | 'ollamaDesc'
   | 'ollamaRefresh'
@@ -376,7 +379,10 @@ export const zh: Record<KnowledgeKey, string> = {
   imageCaptionOpenAI: 'OpenAI 兼容视觉模型',
   imageCaptionOllama: 'Ollama 本地视觉模型',
   cacheDirTitle: '本地模型缓存目录',
-  cacheDirHint: '嵌入 / 重排 / OCR 模型文件下载到这里（支持 ~ 与 DSH_HOME 变量）；改目录后新下载的模型会存到新位置',
+  cacheDirHint: '嵌入 / 重排 / OCR 模型文件下载到这里（支持 ~ 与 DSH_HOME 变量）；「迁移」会把现有模型移动到新目录并切换配置',
+  cacheDirBrowse: '选择文件夹',
+  cacheDirMigrate: '迁移模型到此处',
+  cacheDirOpen: '打开目录',
   ollamaTitle: 'Ollama 模型',
   ollamaDesc: '通过 Ollama API 下载模型（嵌入、视觉等），下载后可在知识库设置中选用（嵌入提供方选 Ollama）',
   ollamaRefresh: '刷新已装模型',
@@ -604,7 +610,10 @@ export const en: Record<KnowledgeKey, string> = {
   imageCaptionOpenAI: 'OpenAI-compatible vision model',
   imageCaptionOllama: 'Ollama local vision model',
   cacheDirTitle: 'Local model cache directory',
-  cacheDirHint: 'Embedding / rerank / OCR model files download here (~ and DSH_HOME are expanded); new downloads go to the new location',
+  cacheDirHint: 'Embedding / rerank / OCR model files download here (~ and DSH_HOME are expanded); "Migrate" moves existing models to the new location and switches the config',
+  cacheDirBrowse: 'Pick folder',
+  cacheDirMigrate: 'Migrate models here',
+  cacheDirOpen: 'Open folder',
   ollamaTitle: 'Ollama models',
   ollamaDesc: 'Pull models through the Ollama API (embeddings, VLMs); pulled models are selectable in the base settings (provider: Ollama)',
   ollamaRefresh: 'Refresh installed',
