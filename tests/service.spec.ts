@@ -909,4 +909,32 @@ describe('KnowledgeService', () => {
       setLocalModelCacheDir(undefined)
     }
   })
+
+  it('migrating into a subdirectory of the configured cache dir skips the target itself and dot-entries', async () => {
+    // from = parent, target = parent/target: the target directory appears as
+    // an entry of `from` and must be skipped — copying a directory into
+    // itself is a hard EINVAL on every platform.
+    const service = await mountService()
+    const tmp = await mkdtemp(join(tmpdir(), 'kb-migrate-nested-'))
+    const from = join(tmp, 'models')
+    const to = join(from, '.dsh_native')
+    mkdirSync(join(from, 'fake-model'), { recursive: true })
+    writeFileSync(join(from, 'fake-model', 'model.onnx'), 'fake weights')
+    mkdirSync(join(from, '.ollama'), { recursive: true })
+    const { setLocalModelCacheDir } = await import('../src/knowledge/embed.js')
+    setLocalModelCacheDir(from)
+    try {
+      const result = await service.migrateLocalModels(to)
+      // Only the real model directory moves; the target itself and the
+      // unrelated dot-directory are never treated as models.
+      expect(result.moved).toBe(1)
+      expect(existsSync(join(to, 'fake-model', 'model.onnx'))).toBe(true)
+      expect(existsSync(join(to, '.ollama'))).toBe(false)
+      expect(existsSync(join(to, '.dsh_native'))).toBe(false)
+      expect(service.getConfig().localModelCacheDir).toBe(resolve(to))
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
+      setLocalModelCacheDir(undefined)
+    }
+  })
 })

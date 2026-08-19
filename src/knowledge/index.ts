@@ -9,7 +9,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
 import { cp, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises'
-import { basename, extname, join, resolve } from 'node:path'
+import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { chunkText, mergeSemanticSegments, refineChunksByTokenLimit, splitSemanticSegments } from './chunk.js'
 import type { ChunkPiece } from './chunk.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
@@ -1415,10 +1415,21 @@ export class KnowledgeService extends Service {
     let moved = 0
     await mkdir(target, { recursive: true })
     for (const entry of entries) {
+      // Hidden entries (dot-prefixed) are never models: when the configured
+      // cache dir is a parent of the target (e.g. from=E:\models,
+      // target=E:\models\.dsh_native), the target itself shows up as an
+      // entry — copying a directory into itself is a hard EINVAL. The same
+      // guard protects unrelated dot-dirs (e.g. .ollama) from being dragged
+      // into the migration.
+      if (entry.startsWith('.')) continue
       const source = join(from, entry)
       const dest = join(target, entry)
       const info = await stat(source).catch(() => null)
       if (info === null || !info.isDirectory()) continue
+      // Defense in depth: never move/copy a directory into itself or one of
+      // its descendants, whatever the entry name looks like.
+      const rel = relative(source, dest)
+      if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) continue
       // A destination entry that already exists is left untouched: a partial
       // previous migration (or a pre-existing model) must not be overwritten.
       if (await stat(dest).then(() => true).catch(() => false)) continue
