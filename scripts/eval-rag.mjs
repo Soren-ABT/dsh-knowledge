@@ -112,6 +112,10 @@ async function main() {
     })
   }
 
+  if (rows.length === 0) {
+    console.error('no questions in eval set — nothing to evaluate')
+    process.exit(1)
+  }
   const hitRate = rows.reduce((sum, row) => sum + row.hitAtK, 0) / rows.length
   const meanRecall = rows.filter(row => row.contextRecall !== undefined)
   const avgRecall = meanRecall.length > 0

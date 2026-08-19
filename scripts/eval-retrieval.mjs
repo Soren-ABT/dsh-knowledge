@@ -101,6 +101,10 @@ for (const row of rows) {
 }
 
 const n = rows.length
+if (n === 0) {
+  console.error('no questions in eval set — nothing to evaluate')
+  process.exit(1)
+}
 console.log('── summary ────────────────────────────────────────────────')
 console.log(`questions: ${n}${forceMode ? `  mode: ${forceMode}` : ''}${forceBase ? `  base: ${forceBase.slice(0, 8)}` : ''}`)
 console.log(`Hit@${defaultTopK}   : ${(hitSum / n).toFixed(3)} (${hitSum}/${n} questions surfaced an expected doc)`)

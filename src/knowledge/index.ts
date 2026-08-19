@@ -449,13 +449,20 @@ export class KnowledgeService extends Service {
       ...existing,
       name: request.name?.trim() || existing.name,
       description: request.description?.trim() ?? existing.description,
-      ...(request.group !== undefined
+      ...(request.group !== undefined && request.group !== null
         ? { group: request.group.trim().length > 0 ? request.group.trim() : undefined }
         : {}),
       ...(request.config !== undefined
         ? { config: mergeBaseConfig(existing.config, request.config) }
         : {}),
       updatedAt: Date.now(),
+    }
+    // A base moved into a new group must register that group (createBase does;
+    // renaming must not leave a group that owns bases but is absent from the
+    // sidebar's group list).
+    const nextGroup = next.group
+    if (nextGroup !== undefined && !store.getGroups().includes(nextGroup)) {
+      await store.setGroups([...store.getGroups(), nextGroup])
     }
     // Cherry's embedding-model change routes (resolveEmbeddingModelChangeRoute):
     // an empty base saves directly; a BM25-only base gaining a model backfills
@@ -1052,6 +1059,10 @@ export class KnowledgeService extends Service {
     // so its descendants must not be reindexed a second time as siblings.
     let reindexed = 0
     for (const id of this.outermostSelectedIds(ids)) {
+      // In-flight documents are skipped (Cherry's REINDEX_ALLOWED_STATUSES),
+      // never failed: a base reindex triggered while an import is running must
+      // not abort the whole sweep because one row is busy.
+      if (this.indexing.has(id)) continue
       await this.reindexDocument(id)
       reindexed += 1
     }

@@ -34,6 +34,20 @@ export const baseConfigSchema = z.object({
   rrfVectorWeight: z.number().gte(0.1).lte(5).optional(),
   embeddingBatchSize: z.number().int().gt(0).optional(),
   siblingChunks: z.number().int().gte(0).lte(3).optional(),
+  // Mirrors BaseConfig: every base-settable field must survive the durable
+  // boundary — a missing key here makes zod strip the override on save.
+  documentProcessorProvider: z.enum(['builtin', 'mineru']).optional(),
+  mineruApiKey: z.string().optional(),
+  mineruApiHost: z.string().optional(),
+  semanticChunk: z.boolean().optional(),
+  semanticChunkThreshold: z.number().gte(0).lte(1).optional(),
+  chunkTokenLimit: z.number().int().gte(0).optional(),
+  conflictStrategy: z.enum(['keep', 'replace', 'rename']).optional(),
+  urlRefreshHours: z.number().int().gte(0).optional(),
+  imageCaptionProvider: z.enum(['off', 'openai', 'ollama']).optional(),
+  imageCaptionModel: z.string().optional(),
+  imageCaptionBaseUrl: z.string().optional(),
+  imageCaptionApiKey: z.string().optional(),
 })
 
 const baseSchema = z.object({

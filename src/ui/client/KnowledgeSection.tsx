@@ -401,7 +401,10 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
   const moveBase = useCallback(async (base: BaseSummary, group?: string): Promise<void> => {
     await run(async () => {
-      await api.updateBase(base.id, { group })
+      // `group: ''` (not undefined) so the server clears the group: an
+      // undefined field is dropped by JSON serialization and would leave a
+      // base stuck in its old group when moving to 未分组.
+      await api.updateBase(base.id, { group: group ?? '' })
       await refreshBases()
     })
   }, [api, run, refreshBases])

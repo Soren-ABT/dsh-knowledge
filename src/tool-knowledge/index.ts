@@ -338,7 +338,14 @@ export function apply(ctx: Context): void {
       render: () => [{ type: 'text', text: 'deleted document' }],
     },
     async execute(args) {
-      void args.baseId
+      const doc = knowledge.getDocument(args.documentId, { includeChunks: false })
+      if (doc.baseId !== args.baseId) {
+        throw new Error(`document "${doc.title}" does not belong to knowledge base ${args.baseId}`)
+      }
+      const scope = knowledge.enabledScope()
+      if (scope !== undefined && !scope.includes(doc.baseId)) {
+        throw new Error(`document "${doc.title}" belongs to a knowledge base that is not enabled`)
+      }
       await knowledge.deleteDocument(args.documentId)
       return { deleted: true }
     },
@@ -520,9 +527,16 @@ export function apply(ctx: Context): void {
       ],
     },
     async execute(args) {
-      void args.baseId
-      const doc = await knowledge.reindexDocument(args.documentId)
-      return { id: doc.id, title: doc.title, chunkCount: doc.chunkCount }
+      const doc = knowledge.getDocument(args.documentId, { includeChunks: false })
+      if (doc.baseId !== args.baseId) {
+        throw new Error(`document "${doc.title}" does not belong to knowledge base ${args.baseId}`)
+      }
+      const scope = knowledge.enabledScope()
+      if (scope !== undefined && !scope.includes(doc.baseId)) {
+        throw new Error(`document "${doc.title}" belongs to a knowledge base that is not enabled`)
+      }
+      const reindexed = await knowledge.reindexDocument(args.documentId)
+      return { id: reindexed.id, title: reindexed.title, chunkCount: reindexed.chunkCount }
     },
   }))
 
