@@ -104,10 +104,14 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     try {
       await api.setConfig({ localModelCacheDir: cacheDir.trim() })
       setCacheDir(cacheDir.trim())
+      // Saving only points the config at the new directory; the files stay
+      // where they are. Say so explicitly — a silent save read as "no
+      // reaction" and left users believing the models had moved.
+      setError(t('cacheDirSaved'))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [api, cacheDir])
+  }, [api, cacheDir, t])
 
   const browseCacheDir = useCallback(async (): Promise<void> => {
     setError(null)
@@ -141,13 +145,19 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       const result = await api.migrateLocalModels(cacheDir.trim())
       setCacheDir(result.to)
       setError(null)
-      if (result.moved > 0) setError(`${result.moved} 个模型目录已迁移到 ${result.to}`)
+      if (result.moved > 0) {
+        setError(`${result.moved} 个模型目录已迁移到 ${result.to}`)
+      } else {
+        // Also silent before: a no-op migration (same dir, or the target
+        // already holds the entries) showed nothing at all.
+        setError(t('cacheDirMigrateNone'))
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setMigrating(false)
     }
-  }, [api, cacheDir])
+  }, [api, cacheDir, t])
 
   const refreshOllamaTags = useCallback(async (): Promise<void> => {
     setOllamaBusy(true)

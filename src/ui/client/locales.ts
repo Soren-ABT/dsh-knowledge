@@ -151,6 +151,8 @@ export type KnowledgeKey =
   | 'cacheDirBrowse'
   | 'cacheDirMigrate'
   | 'cacheDirOpen'
+  | 'cacheDirSaved'
+  | 'cacheDirMigrateNone'
   | 'ollamaTitle'
   | 'ollamaDesc'
   | 'ollamaNeedInstall'
@@ -387,10 +389,12 @@ export const zh: Record<KnowledgeKey, string> = {
   imageCaptionOpenAI: 'OpenAI 兼容视觉模型',
   imageCaptionOllama: 'Ollama 本地视觉模型',
   cacheDirTitle: '本地模型缓存目录',
-  cacheDirHint: '嵌入 / 重排 / OCR 模型文件下载到这里（支持 ~ 与 DSH_HOME 变量）；「迁移」会把现有模型移动到新目录并切换配置',
+  cacheDirHint: '嵌入 / 重排 / OCR 模型文件下载到这里（支持 ~ 与 DSH_HOME 变量）。注意：「保存」只切换配置指向、不移动文件；要搬动已有模型请点「迁移模型到此处」。',
   cacheDirBrowse: '选择文件夹',
   cacheDirMigrate: '迁移模型到此处',
   cacheDirOpen: '打开目录',
+  cacheDirSaved: '已保存缓存目录（仅切换配置，文件未移动；如需移动已有模型请点「迁移模型到此处」）',
+  cacheDirMigrateNone: '没有可迁移的模型目录（源与目标相同，或目标目录已存在同名条目）',
   ollamaTitle: 'Ollama 模型',
   ollamaDesc: '通过 Ollama API 下载模型（嵌入、视觉等），下载后可在知识库设置中选用（嵌入提供方选 Ollama）。需先安装并启动 Ollama：https://ollama.com/download',
   ollamaNeedInstall: '（提示：若持续连接失败，请确认已安装并启动 Ollama，或检查上方地址）',
@@ -625,10 +629,12 @@ export const en: Record<KnowledgeKey, string> = {
   imageCaptionOpenAI: 'OpenAI-compatible vision model',
   imageCaptionOllama: 'Ollama local vision model',
   cacheDirTitle: 'Local model cache directory',
-  cacheDirHint: 'Embedding / rerank / OCR model files download here (~ and DSH_HOME are expanded); "Migrate" moves existing models to the new location and switches the config',
+  cacheDirHint: 'Embedding / rerank / OCR model files download here (~ and DSH_HOME are expanded). Note: "Save" only points the config here — it does NOT move files; use "Migrate models here" to move existing models.',
   cacheDirBrowse: 'Pick folder',
   cacheDirMigrate: 'Migrate models here',
   cacheDirOpen: 'Open folder',
+  cacheDirSaved: 'Cache directory saved (config only, files not moved; use "Migrate models here" to move existing models)',
+  cacheDirMigrateNone: 'Nothing to migrate (source equals target, or the target already has the same entries)',
   ollamaTitle: 'Ollama models',
   ollamaDesc: 'Pull models through the Ollama API (embeddings, VLMs); pulled models are selectable in the base settings (provider: Ollama). Requires Ollama to be installed and running: https://ollama.com/download',
   ollamaNeedInstall: '(Tip: if connections keep failing, make sure Ollama is installed and running, or check the address above)',
