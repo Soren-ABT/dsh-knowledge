@@ -166,6 +166,12 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId> --mode hybrid
 ```
 
+**RAG 评估（Context Recall / Precision）**：需要验证"检索上下文是否真的覆盖答案内容"时，用带参考答案（`groundTruth`）的评测集跑 `scripts/eval-rag.mjs`——输出 Hit@k、句子级 Context Recall（RAGAS 风格近似，无需 LLM）与 MRR：
+
+```bash
+node scripts/eval-rag.mjs --file scripts/eval-rag.example.json --base <baseId>
+```
+
 ---
 
 ## 使用
