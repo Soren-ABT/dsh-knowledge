@@ -39,6 +39,7 @@ const TEST_CONFIG: Config = {
   mineruApiHost: '',
   semanticChunk: false,
   semanticChunkThreshold: 0.75,
+  chunkTokenLimit: 0,
 }
 
 /** Minimal in-memory KvTable matching the storage-domain runtime contract. */

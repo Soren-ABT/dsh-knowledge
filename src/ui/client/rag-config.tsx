@@ -285,6 +285,15 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   />
                 </FieldRow>
               )}
+              <FieldRow label={t('chunkTokenLimit')} hint={t('chunkTokenLimitHint')}>
+                <input
+                  style={{ ...style.input, width: 100 }}
+                  type="number"
+                  min={0}
+                  value={values.chunkTokenLimit}
+                  onChange={(e) => patch({ chunkTokenLimit: Number(e.target.value) })}
+                />
+              </FieldRow>
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
                 <input
                   style={{ ...style.input, width: 140 }}

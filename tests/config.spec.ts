@@ -32,6 +32,7 @@ const base: Config = {
   mineruApiHost: '',
   semanticChunk: false,
   semanticChunkThreshold: 0.75,
+  chunkTokenLimit: 0,
 }
 
 describe('resolveConfig', () => {

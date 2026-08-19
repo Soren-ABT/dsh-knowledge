@@ -47,6 +47,8 @@ export interface Config {
   semanticChunk: boolean
   /** Cosine threshold below which adjacent segments start a new chunk (0–1). */
   semanticChunkThreshold: number
+  /** Token budget per chunk (0 = off); oversized chunks split at preferred boundaries. */
+  chunkTokenLimit: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -76,6 +78,7 @@ export const Config: Schema<Config> = Schema.object({
   mineruApiHost: Schema.string().default(''),
   semanticChunk: Schema.boolean().default(false),
   semanticChunkThreshold: Schema.number().default(0.75),
+  chunkTokenLimit: Schema.number().default(0),
 })
 
 /** Resolve a full config from deployment defaults plus runtime overrides. */
@@ -117,6 +120,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     mineruApiHost: overrides.mineruApiHost ?? config.mineruApiHost,
     semanticChunk: overrides.semanticChunk ?? config.semanticChunk,
     semanticChunkThreshold: clampNumber(overrides.semanticChunkThreshold ?? config.semanticChunkThreshold, 0, 1, 0.75),
+    chunkTokenLimit: clampInt(overrides.chunkTokenLimit ?? config.chunkTokenLimit, 0, 1_000_000, 0),
   }
 }
 
@@ -156,6 +160,7 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     mineruApiHost: baseConfig.mineruApiHost ?? resolved.mineruApiHost,
     semanticChunk: baseConfig.semanticChunk ?? resolved.semanticChunk,
     semanticChunkThreshold: clampNumber(baseConfig.semanticChunkThreshold ?? resolved.semanticChunkThreshold, 0, 1, 0.75),
+    chunkTokenLimit: clampInt(baseConfig.chunkTokenLimit ?? resolved.chunkTokenLimit, 0, 1_000_000, 0),
   }
 }
 

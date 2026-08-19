@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chunkText, mergeSemanticSegments, normalizeText, splitSemanticSegments } from '../src/knowledge/chunk.js'
+import { chunkText, mergeSemanticSegments, normalizeText, refineChunksByTokenLimit, splitSemanticSegments } from '../src/knowledge/chunk.js'
 
 describe('chunkText', () => {
   it('returns [] for empty input', () => {
@@ -108,5 +108,58 @@ describe('mergeSemanticSegments', () => {
     const merged = mergeSemanticSegments(segments, [undefined, undefined], 150)
     expect(merged.length).toBe(2)
     expect(merged[0].embedding).toBeUndefined()
+  })
+})
+
+describe('code-fence protection', () => {
+  it('keeps a fenced code block intact across blank lines and headings', () => {
+    const text = '# Intro\nparagraph one\n\n```python\n# not a heading\n\ndef f():\n    pass\n\n```\nparagraph two'
+    const chunks = chunkText(text, 800, 100)
+    const code = chunks.find(chunk => chunk.text.includes('def f()'))
+    expect(code).toBeDefined()
+    expect(code!.text).toContain('# not a heading')
+    expect(code!.text).toContain('pass')
+    // The fence body stays in ONE block (blank lines inside did not split it).
+    const fenceChunks = chunks.filter(chunk => chunk.text.includes('```'))
+    expect(fenceChunks).toHaveLength(1)
+  })
+
+  it('treats code blocks as one segment for semantic chunking', () => {
+    const text = 'before\n\n```\nline1\n\nline2\n```\n\nafter'
+    const segments = splitSemanticSegments(text)
+    expect(segments.length).toBe(3)
+    expect(segments[1].text).toContain('line1')
+    expect(segments[1].text).toContain('line2')
+  })
+})
+
+describe('refineChunksByTokenLimit', () => {
+  const estimate = (text: string): number => Math.ceil(text.length / 2)
+
+  it('splits oversized chunks at preferred boundaries recursively', () => {
+    const chunk = { text: 'a'.repeat(40) + '。' + 'b'.repeat(40) + '。' + 'c'.repeat(40) }
+    const refined = refineChunksByTokenLimit([chunk], 30, estimate)
+    expect(refined.length).toBeGreaterThan(1)
+    for (const piece of refined) expect(estimate(piece.text)).toBeLessThanOrEqual(30)
+    // Joined back, the content is preserved.
+    expect(refined.map(piece => piece.text).join('')).toBe(chunk.text)
+  })
+
+  it('keeps pieces without a boundary whole instead of mid-word cutting', () => {
+    const chunk = { text: 'x'.repeat(200) }
+    const refined = refineChunksByTokenLimit([chunk], 50, estimate)
+    expect(refined).toEqual([chunk])
+  })
+
+  it('is a no-op when the limit is 0', () => {
+    const chunk = { text: 'y'.repeat(1000) }
+    expect(refineChunksByTokenLimit([chunk], 0, estimate)).toEqual([chunk])
+  })
+
+  it('propagates the heading to every refined piece', () => {
+    const chunk = { text: 'a'.repeat(40) + '。' + 'b'.repeat(40), heading: 'Top > Deep' }
+    const refined = refineChunksByTokenLimit([chunk], 30, estimate)
+    expect(refined.length).toBe(2)
+    for (const piece of refined) expect(piece.heading).toBe('Top > Deep')
   })
 })

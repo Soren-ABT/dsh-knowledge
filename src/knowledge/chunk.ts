@@ -168,6 +168,57 @@ function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
   return Math.max(0, Math.min(1, dot))
 }
 
+/**
+ * Refine chunks to a token budget (Cherry's `refineChunksByTokenLimit`): any
+ * chunk whose estimated token count exceeds `tokenLimit` is split at the
+ * nearest preferred boundary (blank line → 。/！/？ → ， → space) around the
+ * midpoint, recursively, until every piece fits. Pieces with no usable
+ * boundary are kept whole (splitting mid-word would hurt retrieval). A
+ * `tokenLimit` of 0 (or below) is a no-op.
+ */
+export function refineChunksByTokenLimit(
+  chunks: readonly ChunkPiece[],
+  tokenLimit: number,
+  estimateTokens: (text: string) => number,
+): ChunkPiece[] {
+  if (tokenLimit <= 0) return [...chunks]
+  const out: ChunkPiece[] = []
+  const refine = (piece: ChunkPiece): void => {
+    if (estimateTokens(piece.text) <= tokenLimit || piece.text.length < 40) {
+      out.push(piece)
+      return
+    }
+    const split = splitAtPreferredBoundary(piece.text)
+    if (split === null) {
+      out.push(piece)
+      return
+    }
+    const heading = piece.heading !== undefined ? { heading: piece.heading } : {}
+    refine({ text: split[0], ...heading })
+    refine({ text: split[1], ...heading })
+  }
+  for (const chunk of chunks) refine(chunk)
+  return out
+}
+
+/** Split `text` at the last preferred boundary within ±25% of the midpoint. */
+function splitAtPreferredBoundary(text: string): [string, string] | null {
+  const mid = Math.floor(text.length / 2)
+  const radius = Math.max(1, Math.floor(text.length * 0.25))
+  const lo = Math.max(0, mid - radius)
+  const hi = Math.min(text.length, mid + radius)
+  const window = text.slice(lo, hi)
+  for (const separator of ['\n\n', '。', '！', '？', '，', ', ', ' ']) {
+    const idx = window.lastIndexOf(separator)
+    if (idx < 0) continue
+    const cut = lo + idx + separator.length
+    const left = text.slice(0, cut).trim()
+    const right = text.slice(cut).trim()
+    if (left.length > 0 && right.length > 0) return [left, right]
+  }
+  return null
+}
+
 interface Block {
   readonly text: string
   readonly heading?: string
@@ -177,6 +228,10 @@ interface Block {
 function splitBlocks(text: string): Block[] {
   const blocks: Block[] = []
   let current = ''
+  /** Fence marker (` ``` ` or `~~~`) when inside a code block — blank lines and
+   *  headings inside the fence must not break the block (Cherry's splitter
+   *  code-fence protection). */
+  let fence = ''
   const headings: string[] = []
   const headingPath = (): string | undefined => {
     // Skip levels never seen (e.g. `#` directly under `###`) so the path has no empty segments.
@@ -193,6 +248,19 @@ function splitBlocks(text: string): Block[] {
   }
 
   for (const line of text.split('\n')) {
+    if (fence !== '') {
+      // Inside a fence: keep everything (including blank lines) in the block.
+      current += (current.length > 0 ? '\n' : '') + line
+      if (/^\s*(```|~~~)\s*$/.test(line)) fence = ''
+      continue
+    }
+    const fenceStart = /^\s*(```+|~~~+)/.exec(line)
+    if (fenceStart !== null) {
+      flush()
+      fence = fenceStart[1].slice(0, 3)
+      current = line
+      continue
+    }
     const heading = matchHeading(line)
     if (heading !== undefined) {
       flush()

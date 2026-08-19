@@ -93,6 +93,7 @@ export const configOverridesSchema = z.object({
   mineruApiHost: z.string().optional(),
   semanticChunk: z.boolean().optional(),
   semanticChunkThreshold: z.number().gte(0).lte(1).optional(),
+  chunkTokenLimit: z.number().int().gte(0).optional(),
 })
 
 /** Partial runtime config stored in the domain global slot. */
@@ -121,6 +122,7 @@ export interface ConfigOverrides {
   mineruApiHost?: string
   semanticChunk?: boolean
   semanticChunkThreshold?: number
+  chunkTokenLimit?: number
 }
 
 export const knowledgeDomainSpec = defineDomain({

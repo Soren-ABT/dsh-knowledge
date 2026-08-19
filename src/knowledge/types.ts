@@ -38,6 +38,7 @@ export interface BaseConfig {
   readonly mineruApiHost?: string
   readonly semanticChunk?: boolean
   readonly semanticChunkThreshold?: number
+  readonly chunkTokenLimit?: number
 }
 
 /** One knowledge base (a namespace of documents). */
@@ -152,6 +153,8 @@ export interface KnowledgeConfig {
   readonly semanticChunk: boolean
   /** Cosine threshold below which adjacent segments start a new chunk (0–1). */
   readonly semanticChunkThreshold: number
+  /** Token budget per chunk (0 = off); oversized chunks split at preferred boundaries. */
+  readonly chunkTokenLimit: number
 }
 
 /** One ranked search result. */

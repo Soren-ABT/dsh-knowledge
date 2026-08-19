@@ -61,6 +61,7 @@ const DEFAULT_CONFIG: Config = {
   mineruApiHost: '',
   semanticChunk: false,
   semanticChunkThreshold: 0.75,
+  chunkTokenLimit: 0,
 }
 
 function fakeWebServer() {

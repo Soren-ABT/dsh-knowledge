@@ -29,6 +29,7 @@ export interface BaseConfig {
   siblingChunks?: number
   semanticChunk?: boolean
   semanticChunkThreshold?: number
+  chunkTokenLimit?: number
 }
 
 export interface BaseSummary {
@@ -119,6 +120,7 @@ export interface KnowledgeConfig {
   embeddingBatchSize: number
   semanticChunk: boolean
   semanticChunkThreshold: number
+  chunkTokenLimit: number
   siblingChunks: number
   hfEndpoint: string
   documentProcessorProvider: 'builtin' | 'mineru'

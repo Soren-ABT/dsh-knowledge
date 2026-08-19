@@ -132,6 +132,8 @@ export type KnowledgeKey =
   | 'semanticChunkHint'
   | 'semanticChunkThreshold'
   | 'semanticChunkThresholdHint'
+  | 'chunkTokenLimit'
+  | 'chunkTokenLimitHint'
   | 'chunkSeparator'
   | 'chunkSeparatorHint'
   | 'reset'
@@ -343,6 +345,8 @@ export const zh: Record<KnowledgeKey, string> = {
   semanticChunkHint: '对段落做嵌入并合并语义相近的相邻段（需要已配置嵌入模型；关闭则按标题/段落分块）',
   semanticChunkThreshold: '合并阈值',
   semanticChunkThresholdHint: '相邻段落余弦相似度低于该值（默认 0.75）时另起一块；调高 → 块更碎、更聚焦',
+  chunkTokenLimit: '分块 Token 上限',
+  chunkTokenLimitHint: '超过该 token 数的块会在句号/逗号/空格等边界处继续切分（0 = 不限制）；本地模型建议设为模型上下文窗口以内',
   chunkSeparator: '分隔符',
   chunkSeparatorHint: '切分文本所用的分隔符（转义形式）。开启智能分段时作为额外切分点；关闭后仅按此分隔符切分。',
   reset: '恢复默认',
@@ -552,6 +556,8 @@ export const en: Record<KnowledgeKey, string> = {
   semanticChunkHint: 'Embed paragraphs and merge adjacent similar ones (needs an embedding provider; off = heading/paragraph chunking)',
   semanticChunkThreshold: 'Merge threshold',
   semanticChunkThresholdHint: 'Start a new chunk when adjacent segments fall below this cosine (default 0.75); higher = smaller, more focused chunks',
+  chunkTokenLimit: 'Chunk token limit',
+  chunkTokenLimitHint: 'Chunks above this token count split further at sentence/comma/space boundaries (0 = off); set within your local model\'s context window',
   chunkSeparator: 'Separator',
   chunkSeparatorHint: 'Delimiter the text is split on, in escaped form. With smart chunking on it adds a break point; with it off the text is split only by this delimiter.',
   reset: 'Restore Defaults',

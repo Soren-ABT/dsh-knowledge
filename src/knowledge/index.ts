@@ -10,7 +10,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
-import { chunkText, mergeSemanticSegments, splitSemanticSegments } from './chunk.js'
+import { chunkText, mergeSemanticSegments, refineChunksByTokenLimit, splitSemanticSegments } from './chunk.js'
 import type { ChunkPiece } from './chunk.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
 import type { ConfigOverrides } from './domain.js'
@@ -1765,6 +1765,12 @@ export class KnowledgeService extends Service {
         smartChunk: config.smartChunk,
         separator: config.chunkSeparator,
       })
+    }
+    // Token budget: oversized chunks split at preferred boundaries (Cherry's
+    // refineChunksByTokenLimit) so local models never see inputs past their
+    // context window.
+    if (config.chunkTokenLimit > 0) {
+      slices = refineChunksByTokenLimit(slices, config.chunkTokenLimit, estimateTokens)
     }
     const chunks: KnowledgeChunk[] = slices.map((piece, index) => ({
       id: crypto.randomUUID(),
