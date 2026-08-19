@@ -1827,9 +1827,14 @@ export class KnowledgeService extends Service {
       const task = entry.pending.shift()
       if (task === undefined) break
       entry.running += 1
+      // Swallow the finally chain's rejection: a task that throws (e.g. an
+      // unexpected store error) would otherwise become an unhandledRejection
+      // and kill the whole DSH process.
       void task().finally(() => {
         entry.running -= 1
         this.pumpIngestQueue(baseId)
+      }).catch((error: unknown) => {
+        this.ctx.logger.warn(`knowledge: ingest task failed: ${error instanceof Error ? error.message : String(error)}`)
       })
     }
     if (entry.running === 0 && entry.pending.length === 0) this.ingestQueues.delete(baseId)

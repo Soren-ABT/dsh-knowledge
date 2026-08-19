@@ -130,7 +130,11 @@ export async function pullOllamaModel(model: string, baseUrl: string): Promise<v
     }
   })()
   ollamaPullInFlight.set(model, run)
-  void run.finally(() => { ollamaPullInFlight.delete(model) })
+  // The finally chain must not leak a rejection: `run.finally(...)` yields a
+  // NEW promise that rejects when `run` rejects (e.g. the Ollama server went
+  // away mid-pull) — leaving it `void` would trigger Node's
+  // unhandledRejection and kill the whole DSH process.
+  void run.finally(() => { ollamaPullInFlight.delete(model) }).catch(() => {})
   return run
 }
 
