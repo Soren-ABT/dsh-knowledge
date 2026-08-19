@@ -185,6 +185,13 @@ async function route(
       void service.pullOllamaModel(model, baseUrl).catch(() => {})
       return { started: true }
     }
+    if (segments[1] === 'delete' && method === 'DELETE') {
+      const model = typeof body.model === 'string' ? body.model.trim() : ''
+      if (model === '') throw new Error('ollama model name is empty')
+      const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl : ''
+      await service.deleteOllamaModel(model, baseUrl)
+      return { deleted: true }
+    }
     if (segments[1] === 'status' && method === 'GET') {
       return service.getOllamaPullStatus(query.get('model') ?? '')
     }

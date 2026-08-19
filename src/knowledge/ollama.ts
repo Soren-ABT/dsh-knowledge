@@ -39,6 +39,19 @@ export async function listOllamaModels(baseUrl: string): Promise<string[]> {
   return (json.models ?? []).map(model => model.name ?? '').filter(name => name !== '')
 }
 
+/** Delete an installed model (Ollama refuses models that are currently running). */
+export async function deleteOllamaModel(model: string, baseUrl: string): Promise<void> {
+  const response = await httpFetch(`${ollamaBase(baseUrl)}/api/delete`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model }),
+    timeoutMs: 120000,
+  })
+  if (!response.ok) {
+    throw new Error(`ollama delete failed: HTTP ${response.status} ${(await response.text()).slice(0, 200)}`)
+  }
+}
+
 /**
  * Pull a model from Ollama's registry with streamed progress. Idempotent per
  * model while a pull is in flight; progress is observed through

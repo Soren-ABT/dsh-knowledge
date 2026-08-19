@@ -157,6 +157,8 @@ export type KnowledgeKey =
   | 'ollamaRecommended'
   | 'ollamaEmbeddingHint'
   | 'ollamaVisionHint'
+  | 'ollamaDelete'
+  | 'ollamaConfirmDelete'
   | 'chunkSeparator'
   | 'chunkSeparatorHint'
   | 'reset'
@@ -393,6 +395,8 @@ export const zh: Record<KnowledgeKey, string> = {
   ollamaRecommended: '推荐模型（点击填入，再点下载）',
   ollamaEmbeddingHint: '嵌入模型 — 知识库设置「嵌入提供方」选 Ollama 后填入',
   ollamaVisionHint: '视觉模型 — 知识库设置「图表描述」选 Ollama 后填入',
+  ollamaDelete: '移除该模型（Ollama 正在运行该模型时会失败）',
+  ollamaConfirmDelete: '确认移除？',
   chunkSeparator: '分隔符',
   chunkSeparatorHint: '切分文本所用的分隔符（转义形式）。开启智能分段时作为额外切分点；关闭后仅按此分隔符切分。',
   reset: '恢复默认',
@@ -627,6 +631,8 @@ export const en: Record<KnowledgeKey, string> = {
   ollamaRecommended: 'Recommended models (click to fill, then pull)',
   ollamaEmbeddingHint: 'Embedding model — pick provider Ollama in the base settings and fill this name',
   ollamaVisionHint: 'Vision model — pick Ollama for image captioning in the base settings and fill this name',
+  ollamaDelete: 'Delete this model (fails while Ollama is running it)',
+  ollamaConfirmDelete: 'Confirm delete?',
   chunkSeparator: 'Separator',
   chunkSeparatorHint: 'Delimiter the text is split on, in escaped form. With smart chunking on it adds a break point; with it off the text is split only by this delimiter.',
   reset: 'Restore Defaults',

@@ -162,6 +162,28 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     }
   }, [api, ollamaBase])
 
+  // Two-step delete: the first click arms the chip, the second executes.
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  const deleteOllama = useCallback(async (model: string): Promise<void> => {
+    if (pendingDelete !== model) {
+      setPendingDelete(model)
+      window.setTimeout(() => setPendingDelete(current => (current === model ? null : current)), 3000)
+      return
+    }
+    setPendingDelete(null)
+    setOllamaBusy(true)
+    setError(null)
+    try {
+      await api.deleteOllamaModel(model, ollamaBase)
+      const { models: installed } = await api.listOllamaModels(ollamaBase)
+      setOllamaInstalled(installed)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setOllamaBusy(false)
+    }
+  }, [api, ollamaBase, pendingDelete])
+
   const pullOllama = useCallback(async (): Promise<void> => {
     const model = ollamaModel.trim()
     if (model === '') return
@@ -392,13 +414,23 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
         {ollamaInstalled.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
             {ollamaInstalled.map(name => (
-              <button
+              <span
                 key={name}
-                style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, border: `1px solid ${C.border}`, background: C.surface2, color: C.text, cursor: 'pointer' }}
-                onClick={() => setOllamaModel(name)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '3px 6px 3px 8px', borderRadius: 999, border: `1px solid ${C.border}`, background: C.surface2, color: C.text }}
               >
-                {name}
-              </button>
+                <button style={{ border: 0, padding: 0, background: 'transparent', color: C.text, cursor: 'pointer', fontSize: 11 }} onClick={() => setOllamaModel(name)}>
+                  {name}
+                </button>
+                <button
+                  style={{ border: 0, padding: '0 2px', background: 'transparent', color: pendingDelete === name ? C.danger : C.muted, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}
+                  title={t('ollamaDelete')}
+                  aria-label={t('ollamaDelete')}
+                  disabled={ollamaBusy}
+                  onClick={() => void deleteOllama(name)}
+                >
+                  {pendingDelete === name ? t('ollamaConfirmDelete') : '×'}
+                </button>
+              </span>
             ))}
           </div>
         )}

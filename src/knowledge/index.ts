@@ -39,6 +39,7 @@ import { hashEmbeddingText } from './chunkdb.js'
 import { openStore } from './store.js'
 import type { StorageDomainFacility, Store } from './store.js'
 import {
+  deleteOllamaModel as deleteOllamaModelHelper,
   getOllamaPullStatus as getOllamaPullStatusHelper,
   listOllamaModels as listOllamaModelsHelper,
   pullOllamaModel as pullOllamaModelHelper,
@@ -1341,6 +1342,10 @@ export class KnowledgeService extends Service {
 
   listOllamaModels(baseUrl: string): Promise<string[]> {
     return listOllamaModelsHelper(baseUrl)
+  }
+
+  deleteOllamaModel(model: string, baseUrl: string): Promise<void> {
+    return deleteOllamaModelHelper(model, baseUrl)
   }
 
   pullOllamaModel(model: string, baseUrl: string): Promise<void> {
