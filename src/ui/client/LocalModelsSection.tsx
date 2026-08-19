@@ -329,7 +329,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
               value={mirror}
               onChange={(e) => setMirror(e.target.value)}
             />
-            <button style={style.button} onClick={() => void saveMirror()}>{t('hfMirrorSave')}</button>
+            <button className="kb-btn" style={style.button} onClick={() => void saveMirror()}>{t('hfMirrorSave')}</button>
           </div>
           <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('hfMirrorHint')}</p>
         </div>
@@ -345,14 +345,14 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
               value={cacheDir}
               onChange={(e) => setCacheDir(e.target.value)}
             />
-            <button style={style.button} onClick={() => void browseCacheDir()}><IconFolderSearch size={13} /> {t('cacheDirBrowse')}</button>
+            <button className="kb-btn" style={style.button} onClick={() => void browseCacheDir()}><IconFolderSearch size={13} /> {t('cacheDirBrowse')}</button>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button style={style.button} onClick={() => void saveCacheDir()}>{t('hfMirrorSave')}</button>
-            <button style={style.button} disabled={migrating} onClick={() => void migrateCacheDir()}>
+            <button className="kb-btn" style={style.button} onClick={() => void saveCacheDir()}>{t('hfMirrorSave')}</button>
+            <button className="kb-btn" style={style.button} disabled={migrating} onClick={() => void migrateCacheDir()}>
               <IconFolderInput size={13} /> {t('cacheDirMigrate')}
             </button>
-            <button style={style.button} onClick={() => void openCacheDir()}><IconFolderOpen size={13} /> {t('cacheDirOpen')}</button>
+            <button className="kb-btn" style={style.button} onClick={() => void openCacheDir()}><IconFolderOpen size={13} /> {t('cacheDirOpen')}</button>
           </div>
           <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('cacheDirHint')}</p>
         </div>
@@ -429,6 +429,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
         {!ocrReady && ocrStatus.status !== 'downloading' && (
           <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
             <button
+              className="kb-btn"
               style={{ ...style.button, width: '100%', justifyContent: 'center' }}
               disabled={ocrBusy}
               onClick={() => void downloadOcr()}
@@ -458,7 +459,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             value={ollamaBase}
             onChange={(e) => setOllamaBase(e.target.value)}
           />
-          <button style={style.button} disabled={ollamaBusy} onClick={() => void refreshOllamaTags()}>
+          <button className="kb-btn" style={style.button} disabled={ollamaBusy} onClick={() => void refreshOllamaTags()}>
             <IconRefresh size={13} />{t('ollamaRefresh')}
           </button>
         </div>
@@ -535,6 +536,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             onChange={(e) => setOllamaModel(e.target.value)}
           />
           <button
+            className="kb-btn"
             style={style.button}
             disabled={ollamaBusy || ollamaModel.trim() === '' || pullingModels.length > 0}
             onClick={() => void pullOllama()}
@@ -644,6 +646,7 @@ function ModelCard(props: {
           </div>
           <div style={{ marginTop: 10, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
             <button
+              className="kb-btn"
               style={{ ...style.button, width: '100%', justifyContent: 'center' }}
               disabled={busy}
               onClick={onCancel}
@@ -657,6 +660,7 @@ function ModelCard(props: {
       {!ready && !downloading && (
         <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
           <button
+            className="kb-btn"
             style={{ ...style.button, width: '100%', justifyContent: 'center' }}
             disabled={busy}
             onClick={onDownload}

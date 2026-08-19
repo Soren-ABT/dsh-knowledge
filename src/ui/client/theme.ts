@@ -35,6 +35,13 @@ export const PANEL_CSS = `
 .kb-card:hover { border-color: var(--dsw-alias-border-l2, #c7ccd4) }
 .kb-iconbtn { transition: color 0.15s ease, background 0.15s ease }
 .kb-iconbtn:hover { color: var(--dsw-alias-brand-primary, #3b6ef6); background: ${accentSoft} }
+/* Buttons styled with style.button get a hover tint like the shell's own
+   buttons. The tint rides a CSS variable referenced from the inline
+   background, because inline styles outrank plain class rules: on hover the
+   variable flips and the inline background follows it. */
+.kb-btn { transition: background 0.15s ease, border-color 0.15s ease }
+.kb-btn:hover { --kb-btn-bg: var(--dsw-alias-interactive-bg-hover, #eceef1) }
+.kb-btn:disabled:hover { --kb-btn-bg: var(--dsw-alias-bg-layer-1, #ffffff) }
 /* Backgrounds live in classes (not inline) so :hover can override them, the
    same way the shell's Settings trigger styles itself. */
 .kb-sidebar-action { background: transparent }
@@ -93,7 +100,7 @@ export const style = {
   cardTitle: { fontSize: 13, fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' } as CSSProperties,
   button: {
     display: 'inline-flex', alignItems: 'center', gap: 5, border: `1px solid ${C.border}`,
-    borderRadius: 8, padding: '6px 12px', background: C.surface, color: C.text, cursor: 'pointer', fontSize: 13,
+    borderRadius: 8, padding: '6px 12px', background: `var(--kb-btn-bg, ${C.surface})`, color: C.text, cursor: 'pointer', fontSize: 13,
   } as CSSProperties,
   primary: {
     display: 'inline-flex', alignItems: 'center', gap: 5, border: '1px solid transparent',
