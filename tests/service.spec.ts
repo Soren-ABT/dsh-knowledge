@@ -871,4 +871,42 @@ describe('KnowledgeService', () => {
       setLocalModelCacheDir(undefined)
     }
   })
+
+  it('migrates the real transformers.js layout (namespaced dirs + nested onnx/) and keeps models discoverable', async () => {
+    const service = await mountService()
+    const tmp = await mkdtemp(join(tmpdir(), 'kb-migrate-real-'))
+    const from = join(tmp, 'from')
+    const to = join(tmp, 'to')
+    // Real download layout: <namespace>/<model>/onnx/model_quantized.onnx,
+    // plus the ocr/ directory next to the namespaces.
+    const qwenOnnx = join(from, 'onnx-community', 'Qwen3-Embedding-0.6B-ONNX', 'onnx')
+    mkdirSync(qwenOnnx, { recursive: true })
+    writeFileSync(join(qwenOnnx, 'model_quantized.onnx'), 'fake weights')
+    writeFileSync(join(from, 'onnx-community', 'Qwen3-Embedding-0.6B-ONNX', 'config.json'), '{}')
+    const bgeOnnx = join(from, 'Xenova', 'bge-small-zh-v1.5', 'onnx')
+    mkdirSync(bgeOnnx, { recursive: true })
+    writeFileSync(join(bgeOnnx, 'model_quantized.onnx'), 'fake weights')
+    mkdirSync(join(from, 'ocr'), { recursive: true })
+    writeFileSync(join(from, 'ocr', 'ppocrv5_det.onnx'), 'x')
+    const { setLocalModelCacheDir, isLocalModelDownloaded } = await import('../src/knowledge/embed.js')
+    setLocalModelCacheDir(from)
+    try {
+      expect(await isLocalModelDownloaded('onnx-community/Qwen3-Embedding-0.6B-ONNX')).toBe(true)
+      const result = await service.migrateLocalModels(to)
+      expect(result.moved).toBe(3)
+      // Discoverability follows the new cache dir: same check, new location.
+      expect(await isLocalModelDownloaded('onnx-community/Qwen3-Embedding-0.6B-ONNX')).toBe(true)
+      expect(await isLocalModelDownloaded('Xenova/bge-small-zh-v1.5')).toBe(true)
+      expect(existsSync(join(to, 'onnx-community', 'Qwen3-Embedding-0.6B-ONNX', 'onnx', 'model_quantized.onnx'))).toBe(true)
+      expect(existsSync(join(to, 'Xenova', 'bge-small-zh-v1.5', 'onnx', 'model_quantized.onnx'))).toBe(true)
+      expect(existsSync(join(to, 'ocr', 'ppocrv5_det.onnx'))).toBe(true)
+      expect(existsSync(join(from, 'onnx-community'))).toBe(false)
+      expect(existsSync(join(from, 'Xenova'))).toBe(false)
+      expect(existsSync(join(from, 'ocr'))).toBe(false)
+      expect(service.getConfig().localModelCacheDir).toBe(resolve(to))
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
+      setLocalModelCacheDir(undefined)
+    }
+  })
 })
