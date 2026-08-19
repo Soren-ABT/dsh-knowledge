@@ -286,6 +286,10 @@ export class KnowledgeApi {
     return this.call('POST', '/local-ollama/pull', { model, baseUrl })
   }
 
+  cancelOllamaPull(model: string): Promise<{ cancelled: boolean }> {
+    return this.call('DELETE', `/local-ollama/pull?model=${encodeURIComponent(model)}`)
+  }
+
   deleteOllamaModel(model: string, baseUrl: string): Promise<{ deleted: boolean }> {
     return this.call('DELETE', '/local-ollama/delete', { model, baseUrl })
   }

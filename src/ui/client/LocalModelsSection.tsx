@@ -198,6 +198,18 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     }
   }, [api, ollamaModel, ollamaBase])
 
+  const cancelOllama = useCallback(async (): Promise<void> => {
+    const model = ollamaModel.trim()
+    if (model === '') return
+    try {
+      await api.cancelOllamaPull(model)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+    setOllamaStatus({ status: 'idle', progress: 0, message: '' })
+    setOllamaBusy(false)
+  }, [api, ollamaModel])
+
   const download = useCallback(async (id: string): Promise<void> => {
     setBusyId(id)
     setError(null)
@@ -487,9 +499,14 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             <div style={{ height: 6, width: '100%', borderRadius: 999, background: C.surface2, overflow: 'hidden' }}>
               <div style={{ height: '100%', width: `${ollamaStatus.progress}%`, borderRadius: 999, background: C.accent, transition: 'width 0.2s' }} />
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12, color: C.muted }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, fontSize: 12, color: C.muted }}>
               <span>{t('localModelDownloading')}{ollamaStatus.message !== '' ? ` · ${ollamaStatus.message}` : ''}</span>
-              <span>{Math.floor(ollamaStatus.progress)}%</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>{Math.floor(ollamaStatus.progress)}%</span>
+                <button style={{ border: 0, padding: '2px 6px', borderRadius: 6, background: C.surface2, color: C.text, cursor: 'pointer', fontSize: 11 }} onClick={() => void cancelOllama()}>
+                  {t('localModelCancel')}
+                </button>
+              </span>
             </div>
           </div>
         )}

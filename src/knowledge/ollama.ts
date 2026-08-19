@@ -19,6 +19,8 @@ export interface OllamaPullStatus {
 const ollamaPullStatus = new Map<string, OllamaPullStatus>()
 /** One in-flight pull per model (concurrent callers share it). */
 const ollamaPullInFlight = new Map<string, Promise<void>>()
+/** Abort handles for in-flight pulls (cancel support). */
+const ollamaPullAborts = new Map<string, AbortController>()
 
 /** 6h ceiling for a slow full-model pull (no per-attempt timeout in practice). */
 const PULL_TIMEOUT_MS = 6 * 60 * 60_000
@@ -56,27 +58,34 @@ export async function deleteOllamaModel(model: string, baseUrl: string): Promise
  * Pull a model from Ollama's registry with streamed progress. Idempotent per
  * model while a pull is in flight; progress is observed through
  * {@link getOllamaPullStatus}. Failures land in the status map (never
- * swallowed) and rethrow.
+ * swallowed) and rethrow. {@link cancelOllamaPull} aborts the stream; the
+ * partial download stays in Ollama's store (it resumes on the next pull).
  */
 export async function pullOllamaModel(model: string, baseUrl: string): Promise<void> {
   const existing = ollamaPullInFlight.get(model)
   if (existing !== undefined) return existing
   const run = (async (): Promise<void> => {
     ollamaPullStatus.set(model, { status: 'pulling', progress: 0, message: '' })
+    const controller = new AbortController()
+    ollamaPullAborts.set(model, controller)
+    const watchdog = setTimeout(() => controller.abort(), PULL_TIMEOUT_MS)
     try {
-      const response = await httpFetch(`${ollamaBase(baseUrl)}/api/pull`, {
+      const response = await fetch(`${ollamaBase(baseUrl)}/api/pull`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model, stream: true }),
-        timeoutMs: PULL_TIMEOUT_MS,
+        signal: controller.signal,
       })
       if (!response.ok) {
         throw new Error(`ollama pull failed: HTTP ${response.status} ${(await response.text()).slice(0, 200)}`)
       }
       // NDJSON stream: { status: 'pulling'|'success'|..., total, completed }.
+      // TextDecoder streaming avoids re-encoding each chunk; cancellation
+      // surfaces as an AbortError from the stream iterator.
+      const decoder = new TextDecoder()
       let buffer = ''
       for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-        buffer += Buffer.from(chunk).toString('utf8')
+        buffer += decoder.decode(chunk, { stream: true })
         let newline = buffer.indexOf('\n')
         while (newline >= 0) {
           const line = buffer.slice(0, newline).trim()
@@ -107,15 +116,27 @@ export async function pullOllamaModel(model: string, baseUrl: string): Promise<v
         ollamaPullStatus.set(model, { status: 'ready', progress: 100, message: '' })
       }
     } catch (error) {
+      const aborted = controller.signal.aborted
       ollamaPullStatus.set(model, {
-        status: 'error',
+        status: aborted ? 'idle' : 'error',
         progress: 0,
-        message: error instanceof Error ? error.message : String(error),
+        message: aborted ? '' : error instanceof Error ? error.message : String(error),
       })
+      if (aborted) return
       throw error
+    } finally {
+      clearTimeout(watchdog)
+      ollamaPullAborts.delete(model)
     }
   })()
   ollamaPullInFlight.set(model, run)
   void run.finally(() => { ollamaPullInFlight.delete(model) })
   return run
+}
+
+/** Abort an in-flight pull: the stream closes, the status resets to idle. */
+export function cancelOllamaPull(model: string): void {
+  const controller = ollamaPullAborts.get(model)
+  ollamaPullStatus.set(model, { status: 'idle', progress: 0, message: '' })
+  controller?.abort()
 }

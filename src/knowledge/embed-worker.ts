@@ -106,6 +106,11 @@ async function createRunner(
   applyEndpoint(tf, hfEndpoint)
   tf.env.cacheDir = cacheDir
 
+  // Throttle progress messages: transformers.js can fire per-chunk callbacks
+  // for large model files; flooding the main process with postMessage during
+  // a 585MB download would starve its HTTP/UI work.
+  let lastProgressAt = 0
+
   // 1. Download through the repo id (progress reported); discard the pipeline
   //    so it does not pin ~600MB — inference reloads from disk below.
   if (!(await isDownloaded(modelId, cacheDir))) {
@@ -114,9 +119,15 @@ async function createRunner(
       await tf.pipeline(task, modelId, {
         dtype: 'q8',
         progress_callback: (info: { status?: string; progress?: number }): void => {
+          // Cancellation is checked on EVERY callback (never throttled) so
+          // an abort interrupts the download promptly.
           if (cancelledModels.has(modelId)) throw new Error('download cancelled')
           if (info.status === 'progress' && typeof info.progress === 'number') {
-            post({ type: 'progress', modelId, status: 'downloading', progress: info.progress, message: '' })
+            const now = Date.now()
+            if (now - lastProgressAt >= 250) {
+              lastProgressAt = now
+              post({ type: 'progress', modelId, status: 'downloading', progress: info.progress, message: '' })
+            }
           }
         },
       })
