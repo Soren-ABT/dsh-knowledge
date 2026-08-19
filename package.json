@@ -59,7 +59,6 @@
     "README.en.md",
     "CHANGELOG.md",
     "LICENSE",
-    "docs",
     "scripts"
   ],
   "scripts": {
