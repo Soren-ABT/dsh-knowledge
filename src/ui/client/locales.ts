@@ -139,6 +139,8 @@ export type KnowledgeKey =
   | 'conflictRename'
   | 'conflictReplace'
   | 'conflictKeep'
+  | 'urlRefreshHours'
+  | 'urlRefreshHoursHint'
   | 'chunkSeparator'
   | 'chunkSeparatorHint'
   | 'reset'
@@ -357,6 +359,8 @@ export const zh: Record<KnowledgeKey, string> = {
   conflictRename: '重命名（自动 _1 后缀）',
   conflictReplace: '替换旧文件',
   conflictKeep: '保留两者',
+  urlRefreshHours: 'URL 自动刷新（小时）',
+  urlRefreshHoursHint: '超过该时长的 URL 文档每小时自动重新抓取并更新索引（0 = 关闭）',
   chunkSeparator: '分隔符',
   chunkSeparatorHint: '切分文本所用的分隔符（转义形式）。开启智能分段时作为额外切分点；关闭后仅按此分隔符切分。',
   reset: '恢复默认',
@@ -573,6 +577,8 @@ export const en: Record<KnowledgeKey, string> = {
   conflictRename: 'Rename (auto _1 suffix)',
   conflictReplace: 'Replace the old file',
   conflictKeep: 'Keep both',
+  urlRefreshHours: 'URL auto-refresh (hours)',
+  urlRefreshHoursHint: 'URL documents older than this are re-fetched and re-indexed hourly (0 = off)',
   chunkSeparator: 'Separator',
   chunkSeparatorHint: 'Delimiter the text is split on, in escaped form. With smart chunking on it adds a break point; with it off the text is split only by this delimiter.',
   reset: 'Restore Defaults',

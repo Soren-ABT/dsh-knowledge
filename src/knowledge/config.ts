@@ -51,6 +51,8 @@ export interface Config {
   chunkTokenLimit: number
   /** Same-name conflict strategy for file imports: keep / replace / rename (Cherry's default). */
   conflictStrategy: 'keep' | 'replace' | 'rename'
+  /** Auto-refresh URL documents older than this many hours (0 = off). */
+  urlRefreshHours: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -82,6 +84,7 @@ export const Config: Schema<Config> = Schema.object({
   semanticChunkThreshold: Schema.number().default(0.75),
   chunkTokenLimit: Schema.number().default(0),
   conflictStrategy: Schema.union(['keep', 'replace', 'rename']).default('rename'),
+  urlRefreshHours: Schema.number().default(0),
 })
 
 /** Resolve a full config from deployment defaults plus runtime overrides. */
@@ -125,6 +128,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     semanticChunkThreshold: clampNumber(overrides.semanticChunkThreshold ?? config.semanticChunkThreshold, 0, 1, 0.75),
     chunkTokenLimit: clampInt(overrides.chunkTokenLimit ?? config.chunkTokenLimit, 0, 1_000_000, 0),
     conflictStrategy: overrides.conflictStrategy ?? config.conflictStrategy,
+    urlRefreshHours: clampInt(overrides.urlRefreshHours ?? config.urlRefreshHours, 0, 24 * 365, 0),
   }
 }
 
@@ -166,6 +170,7 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     semanticChunkThreshold: clampNumber(baseConfig.semanticChunkThreshold ?? resolved.semanticChunkThreshold, 0, 1, 0.75),
     chunkTokenLimit: clampInt(baseConfig.chunkTokenLimit ?? resolved.chunkTokenLimit, 0, 1_000_000, 0),
     conflictStrategy: baseConfig.conflictStrategy ?? resolved.conflictStrategy,
+    urlRefreshHours: clampInt(baseConfig.urlRefreshHours ?? resolved.urlRefreshHours, 0, 24 * 365, 0),
   }
 }
 

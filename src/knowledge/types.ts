@@ -40,6 +40,7 @@ export interface BaseConfig {
   readonly semanticChunkThreshold?: number
   readonly chunkTokenLimit?: number
   readonly conflictStrategy?: 'keep' | 'replace' | 'rename'
+  readonly urlRefreshHours?: number
 }
 
 /** One knowledge base (a namespace of documents). */
@@ -158,6 +159,8 @@ export interface KnowledgeConfig {
   readonly chunkTokenLimit: number
   /** Same-name conflict strategy for file imports: keep / replace / rename (Cherry's default). */
   readonly conflictStrategy: 'keep' | 'replace' | 'rename'
+  /** Auto-refresh URL documents older than this many hours (0 = off). */
+  readonly urlRefreshHours: number
 }
 
 /** One ranked search result. */

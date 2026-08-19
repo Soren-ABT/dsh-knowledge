@@ -34,6 +34,7 @@ const base: Config = {
   semanticChunkThreshold: 0.75,
   chunkTokenLimit: 0,
   conflictStrategy: 'rename',
+  urlRefreshHours: 0,
 }
 
 describe('resolveConfig', () => {

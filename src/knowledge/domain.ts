@@ -95,6 +95,7 @@ export const configOverridesSchema = z.object({
   semanticChunkThreshold: z.number().gte(0).lte(1).optional(),
   chunkTokenLimit: z.number().int().gte(0).optional(),
   conflictStrategy: z.enum(['keep', 'replace', 'rename']).optional(),
+  urlRefreshHours: z.number().int().gte(0).optional(),
 })
 
 /** Partial runtime config stored in the domain global slot. */
@@ -125,6 +126,7 @@ export interface ConfigOverrides {
   semanticChunkThreshold?: number
   chunkTokenLimit?: number
   conflictStrategy?: 'keep' | 'replace' | 'rename'
+  urlRefreshHours?: number
 }
 
 export const knowledgeDomainSpec = defineDomain({

@@ -305,6 +305,15 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   <option value="keep">{t('conflictKeep')}</option>
                 </select>
               </FieldRow>
+              <FieldRow label={t('urlRefreshHours')} hint={t('urlRefreshHoursHint')}>
+                <input
+                  style={{ ...style.input, width: 100 }}
+                  type="number"
+                  min={0}
+                  value={values.urlRefreshHours}
+                  onChange={(e) => patch({ urlRefreshHours: Number(e.target.value) })}
+                />
+              </FieldRow>
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
                 <input
                   style={{ ...style.input, width: 140 }}

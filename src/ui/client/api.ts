@@ -31,6 +31,7 @@ export interface BaseConfig {
   semanticChunkThreshold?: number
   chunkTokenLimit?: number
   conflictStrategy?: 'keep' | 'replace' | 'rename'
+  urlRefreshHours?: number
 }
 
 export interface BaseSummary {
@@ -123,6 +124,7 @@ export interface KnowledgeConfig {
   semanticChunkThreshold: number
   chunkTokenLimit: number
   conflictStrategy: 'keep' | 'replace' | 'rename'
+  urlRefreshHours: number
   siblingChunks: number
   hfEndpoint: string
   documentProcessorProvider: 'builtin' | 'mineru'

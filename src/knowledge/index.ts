@@ -163,6 +163,54 @@ export class KnowledgeService extends Service {
       }
     })
     void resume.catch(error => this.ctx.logger.warn(`knowledge: interrupted-import recovery failed: ${error instanceof Error ? error.message : String(error)}`))
+    this.armUrlRefreshTimer()
+  }
+
+  // ── scheduled URL refresh (Cherry's snapshot + manual refresh, automated) ──
+
+  private urlRefreshTimer: ReturnType<typeof setInterval> | null = null
+  private urlRefreshing = false
+
+  /** Arm the hourly sweep that refreshes URL documents older than `urlRefreshHours`. */
+  private armUrlRefreshTimer(): void {
+    const hours = this.getConfigFor(undefined).urlRefreshHours
+    if (hours <= 0) return
+    const run = (): void => {
+      if (this.urlRefreshing) return
+      this.urlRefreshing = true
+      void this.refreshStaleUrls(hours).catch(error => {
+        this.ctx.logger.warn(`knowledge: URL refresh sweep failed: ${error instanceof Error ? error.message : String(error)}`)
+      }).finally(() => { this.urlRefreshing = false })
+    }
+    // First sweep shortly after startup (imports settle first), then hourly.
+    const first = setTimeout(run, 5 * 60_000)
+    first.unref?.()
+    this.urlRefreshTimer = setInterval(run, 60 * 60_000)
+    this.urlRefreshTimer.unref?.()
+    this.ctx.effect(() => () => {
+      clearTimeout(first)
+      if (this.urlRefreshTimer !== null) clearInterval(this.urlRefreshTimer)
+    }, 'knowledge: URL refresh timer')
+  }
+
+  /** Re-fetch every URL document whose last update predates `hours`; failures are logged, never thrown. */
+  private async refreshStaleUrls(hours: number): Promise<void> {
+    const store = this.requireStore()
+    const cutoff = Date.now() - hours * 3600_000
+    const stale: string[] = []
+    for (const base of store.listBases()) {
+      for (const doc of store.listDocuments(base.id)) {
+        if (doc.sourceType === 'url' && doc.url !== undefined && (doc.updatedAt ?? 0) < cutoff) stale.push(doc.id)
+      }
+    }
+    for (const id of stale) {
+      try {
+        const result = await this.refreshUrlDocument(id)
+        if (result.changed) this.ctx.logger.info(`knowledge: URL auto-refreshed: ${result.title}`)
+      } catch (error) {
+        this.ctx.logger.warn(`knowledge: URL auto-refresh failed for ${id}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
   }
 
   /**
