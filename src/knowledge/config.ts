@@ -43,6 +43,10 @@ export interface Config {
   mineruApiKey: string
   /** MinerU API host; empty = https://mineru.net */
   mineruApiHost: string
+  /** Semantic chunking: embed paragraph-level segments and merge similar adjacent ones. */
+  semanticChunk: boolean
+  /** Cosine threshold below which adjacent segments start a new chunk (0–1). */
+  semanticChunkThreshold: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -70,6 +74,8 @@ export const Config: Schema<Config> = Schema.object({
   documentProcessorProvider: Schema.union(['builtin', 'mineru']).default('builtin'),
   mineruApiKey: Schema.string().default(''),
   mineruApiHost: Schema.string().default(''),
+  semanticChunk: Schema.boolean().default(false),
+  semanticChunkThreshold: Schema.number().default(0.75),
 })
 
 /** Resolve a full config from deployment defaults plus runtime overrides. */
@@ -109,6 +115,8 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     documentProcessorProvider: overrides.documentProcessorProvider ?? config.documentProcessorProvider,
     mineruApiKey: overrides.mineruApiKey ?? config.mineruApiKey,
     mineruApiHost: overrides.mineruApiHost ?? config.mineruApiHost,
+    semanticChunk: overrides.semanticChunk ?? config.semanticChunk,
+    semanticChunkThreshold: clampNumber(overrides.semanticChunkThreshold ?? config.semanticChunkThreshold, 0, 1, 0.75),
   }
 }
 
@@ -146,6 +154,8 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     documentProcessorProvider: baseConfig.documentProcessorProvider ?? resolved.documentProcessorProvider,
     mineruApiKey: baseConfig.mineruApiKey ?? resolved.mineruApiKey,
     mineruApiHost: baseConfig.mineruApiHost ?? resolved.mineruApiHost,
+    semanticChunk: baseConfig.semanticChunk ?? resolved.semanticChunk,
+    semanticChunkThreshold: clampNumber(baseConfig.semanticChunkThreshold ?? resolved.semanticChunkThreshold, 0, 1, 0.75),
   }
 }
 

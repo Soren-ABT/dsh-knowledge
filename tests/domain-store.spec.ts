@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { Context } from '@deepseek-ai/cordis'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -37,6 +37,8 @@ const TEST_CONFIG: Config = {
   documentProcessorProvider: 'builtin',
   mineruApiKey: '',
   mineruApiHost: '',
+  semanticChunk: false,
+  semanticChunkThreshold: 0.75,
 }
 
 /** Minimal in-memory KvTable matching the storage-domain runtime contract. */

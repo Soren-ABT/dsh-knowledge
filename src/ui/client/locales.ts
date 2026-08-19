@@ -128,6 +128,10 @@ export type KnowledgeKey =
   | 'processorBuiltin'
   | 'smartChunk'
   | 'smartChunkHint'
+  | 'semanticChunk'
+  | 'semanticChunkHint'
+  | 'semanticChunkThreshold'
+  | 'semanticChunkThresholdHint'
   | 'chunkSeparator'
   | 'chunkSeparatorHint'
   | 'reset'
@@ -335,6 +339,10 @@ export const zh: Record<KnowledgeKey, string> = {
   processorBuiltin: '内置解析器（PDF / DOCX / PPTX / XLSX / EPUB / HTML / 文本）',
   smartChunk: '智能分段',
   smartChunkHint: '自动沿 Markdown 结构（标题、代码块、段落）分段，且不从代码块内部切开。关闭后仅按分隔符切分。',
+  semanticChunk: '语义分块',
+  semanticChunkHint: '对段落做嵌入并合并语义相近的相邻段（需要已配置嵌入模型；关闭则按标题/段落分块）',
+  semanticChunkThreshold: '合并阈值',
+  semanticChunkThresholdHint: '相邻段落余弦相似度低于该值（默认 0.75）时另起一块；调高 → 块更碎、更聚焦',
   chunkSeparator: '分隔符',
   chunkSeparatorHint: '切分文本所用的分隔符（转义形式）。开启智能分段时作为额外切分点；关闭后仅按此分隔符切分。',
   reset: '恢复默认',
@@ -370,7 +378,7 @@ export const zh: Record<KnowledgeKey, string> = {
   recallResultsSuffix: '个结果',
   recallTopScore: '最高',
   recallRelevance: '相关度',
-  recallCopy: '复制片段',
+  recallCopy: '复制引用',
   recallExpand: '展开片段',
   recallCollapse: '收起片段',
   recallHistoryClear: '清空',
@@ -540,6 +548,10 @@ export const en: Record<KnowledgeKey, string> = {
   processorBuiltin: 'Built-in parser (PDF / DOCX / PPTX / XLSX / EPUB / HTML / text)',
   smartChunk: 'Smart Chunking',
   smartChunkHint: 'Automatically split along Markdown structure (headings, code blocks, paragraphs) and never split inside a code block. Turn off to split purely by the separator.',
+  semanticChunk: 'Semantic chunking',
+  semanticChunkHint: 'Embed paragraphs and merge adjacent similar ones (needs an embedding provider; off = heading/paragraph chunking)',
+  semanticChunkThreshold: 'Merge threshold',
+  semanticChunkThresholdHint: 'Start a new chunk when adjacent segments fall below this cosine (default 0.75); higher = smaller, more focused chunks',
   chunkSeparator: 'Separator',
   chunkSeparatorHint: 'Delimiter the text is split on, in escaped form. With smart chunking on it adds a break point; with it off the text is split only by this delimiter.',
   reset: 'Restore Defaults',
@@ -575,7 +587,7 @@ export const en: Record<KnowledgeKey, string> = {
   recallResultsSuffix: 'results',
   recallTopScore: 'Top',
   recallRelevance: 'Relevance',
-  recallCopy: 'Copy',
+  recallCopy: 'Copy citation',
   recallExpand: 'Expand',
   recallCollapse: 'Collapse',
   recallHistoryClear: 'Clear',

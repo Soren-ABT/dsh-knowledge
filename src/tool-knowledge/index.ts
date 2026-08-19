@@ -11,7 +11,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 // Activates the `Context.knowledge` merge declared by the knowledge service.
 import type {} from '../knowledge/index.js'
 import type { KnowledgeService } from '../knowledge/index.js'
-import type { SearchResult } from '../knowledge/types.js'
+import type { SearchHit, SearchResult } from '../knowledge/types.js'
 
 /** Services required before the tools can register. */
 export const inject = ['knowledge', 'tools']
@@ -75,9 +75,14 @@ export function apply(ctx: Context): void {
               },
             },
           },
+          citations: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Markdown citation blocks (quote + source) for the top hits, index-aligned with hits — quote these verbatim when answering so the answer stays traceable to the source.',
+          },
         },
       },
-      render: (_args, value: SearchResult) => {
+      render: (_args, value: SearchResult & { citations?: string[] }) => {
         if (value.hits.length === 0) return [{ type: 'text', text: `no matches for "${value.query}"` }]
         const lines = value.hits.map((hit, i) => {
           const excerpt = hit.siblingContext !== undefined && hit.siblingContext.length > 0
@@ -85,7 +90,10 @@ export function apply(ctx: Context): void {
             : hit.text
           return `[${i + 1}] (score ${hit.score.toFixed(3)}) ${hit.documentTitle}: ${excerpt}`
         })
-        return [{ type: 'text', text: `${value.hits.length} result(s) for "${value.query}" (${value.mode}):\n${lines.join('\n')}` }]
+        const citations = value.citations !== undefined && value.citations.length > 0
+          ? `\n\nCitations to quote in your answer:\n${value.citations.map((citation, i) => `[${i + 1}] ${citation}`).join('\n')}`
+          : ''
+        return [{ type: 'text', text: `${value.hits.length} result(s) for "${value.query}" (${value.mode}):\n${lines.join('\n')}${citations}` }]
       },
     },
     async execute(args) {
@@ -99,7 +107,7 @@ export function apply(ctx: Context): void {
       if (args.sourceTypes !== undefined && args.sourceTypes.length > 0) filter.sourceTypes = args.sourceTypes
       if (args.updatedAfter !== undefined) filter.updatedAfter = args.updatedAfter
       if (args.updatedBefore !== undefined) filter.updatedBefore = args.updatedBefore
-      return knowledge.search({
+      const value = await knowledge.search({
         query: args.query,
         ...(args.baseId !== undefined ? { baseId: args.baseId } : {}),
         ...(args.baseId === undefined && scope !== undefined ? { baseIds: scope } : {}),
@@ -107,6 +115,9 @@ export function apply(ctx: Context): void {
         ...(args.mode !== undefined ? { mode: args.mode as SearchResult['mode'] } : {}),
         ...(Object.keys(filter).length > 0 ? { filter } : {}),
       })
+      // Traceable citations: quote blocks + source line, one per top hit —
+      // the model can quote them verbatim so answers stay grounded.
+      return { ...value, citations: value.hits.map(hit => citationOf(hit)) }
     },
   }))
 
@@ -604,4 +615,13 @@ export function apply(ctx: Context): void {
   }))
 
   void (knowledge as KnowledgeService)
+}
+
+/** A Markdown citation block for one search hit: quote + source line. */
+function citationOf(hit: SearchHit): string {
+  const quote = hit.text.split('\n').map(line => `> ${line}`).join('\n')
+  const source = hit.heading !== undefined && hit.heading.length > 0
+    ? `${hit.documentTitle} / ${hit.heading}`
+    : hit.documentTitle
+  return `${quote}\n>\n> — ${source}（知识库 ${hit.baseId}）`
 }

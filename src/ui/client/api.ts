@@ -27,6 +27,8 @@ export interface BaseConfig {
   rrfVectorWeight?: number
   embeddingBatchSize?: number
   siblingChunks?: number
+  semanticChunk?: boolean
+  semanticChunkThreshold?: number
 }
 
 export interface BaseSummary {
@@ -115,6 +117,8 @@ export interface KnowledgeConfig {
   mmrDiversity: number
   rrfVectorWeight: number
   embeddingBatchSize: number
+  semanticChunk: boolean
+  semanticChunkThreshold: number
   siblingChunks: number
   hfEndpoint: string
   documentProcessorProvider: 'builtin' | 'mineru'

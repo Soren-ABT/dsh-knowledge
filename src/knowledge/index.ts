@@ -10,7 +10,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
-import { chunkText } from './chunk.js'
+import { chunkText, mergeSemanticSegments, splitSemanticSegments } from './chunk.js'
 import type { ChunkPiece } from './chunk.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
 import type { ConfigOverrides } from './domain.js'
@@ -1729,10 +1729,40 @@ export class KnowledgeService extends Service {
     pieces?: readonly ChunkPiece[],
     onBatch?: (chunks: KnowledgeChunk[]) => Promise<void>,
   ): Promise<{ chunks: KnowledgeChunk[]; embeddingError?: string }> {
-    const slices = pieces ?? chunkText(text, config.chunkSize, config.chunkOverlap, {
-      smartChunk: config.smartChunk,
-      separator: config.chunkSeparator,
-    })
+    let slices: ReadonlyArray<ChunkPiece & { embedding?: number[] }>
+    if (pieces !== undefined) {
+      slices = pieces
+    } else if (config.semanticChunk) {
+      // Semantic chunking: embed paragraph-level segments, merge adjacent
+      // similar ones (length-weighted mean vector — no extra embedding pass).
+      // Segment embedding is best-effort: any failure falls back to the
+      // regular chunker and the normal embedding flow below still runs.
+      const segments = splitSemanticSegments(text, { separator: config.chunkSeparator })
+      let merged: Array<ChunkPiece & { embedding?: number[] }> | null = null
+      if (segments.length > 0 && config.embeddingProvider !== 'none') {
+        try {
+          const vectors: Array<number[] | undefined> = []
+          const batchSize = Math.max(1, config.embeddingBatchSize)
+          for (let i = 0; i < segments.length; i += batchSize) {
+            const batch = segments.slice(i, i + batchSize)
+            const embedded = await this.embedTextsOnce(config, batch.map(segment => segment.text))
+            for (const vector of embedded) vectors.push(vector)
+          }
+          merged = mergeSemanticSegments(segments, vectors, config.chunkSize, config.semanticChunkThreshold)
+        } catch (error) {
+          this.ctx.logger.warn(`knowledge: semantic chunking embedding failed, using regular chunker: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      slices = merged !== null && merged.length > 0 ? merged : chunkText(text, config.chunkSize, config.chunkOverlap, {
+        smartChunk: config.smartChunk,
+        separator: config.chunkSeparator,
+      })
+    } else {
+      slices = chunkText(text, config.chunkSize, config.chunkOverlap, {
+        smartChunk: config.smartChunk,
+        separator: config.chunkSeparator,
+      })
+    }
     const chunks: KnowledgeChunk[] = slices.map((piece, index) => ({
       id: crypto.randomUUID(),
       docId,
@@ -1740,6 +1770,7 @@ export class KnowledgeService extends Service {
       index,
       text: piece.text,
       ...(piece.heading !== undefined ? { heading: piece.heading } : {}),
+      ...(piece.embedding !== undefined ? { embedding: piece.embedding } : {}),
       context: piece.heading !== undefined ? `${title} > ${piece.heading}` : title,
     }))
     let embeddingError: string | undefined
@@ -1765,6 +1796,12 @@ export class KnowledgeService extends Service {
         const need: number[] = []
         const needTexts: string[] = []
         for (let i = 0; i < chunks.length; i += 1) {
+          // Semantic merging already produced this chunk's vector (mean of its
+          // segments) — tag the model and skip the API call.
+          if (chunks[i].embedding !== undefined && key !== undefined) {
+            chunks[i] = { ...chunks[i], embeddingModel: key }
+            continue
+          }
           const cached = stored.get(hashes[i])
           if (cached !== undefined) {
             chunks[i] = { ...chunks[i], embedding: cached, ...(key !== undefined ? { embeddingModel: key } : {}) }

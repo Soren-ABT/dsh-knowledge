@@ -36,6 +36,8 @@ export interface BaseConfig {
   readonly documentProcessorProvider?: 'builtin' | 'mineru'
   readonly mineruApiKey?: string
   readonly mineruApiHost?: string
+  readonly semanticChunk?: boolean
+  readonly semanticChunkThreshold?: number
 }
 
 /** One knowledge base (a namespace of documents). */
@@ -146,6 +148,10 @@ export interface KnowledgeConfig {
   readonly mineruApiKey: string
   /** MinerU API host; empty = https://mineru.net */
   readonly mineruApiHost: string
+  /** Semantic chunking: embed paragraph-level segments and merge similar adjacent ones. */
+  readonly semanticChunk: boolean
+  /** Cosine threshold below which adjacent segments start a new chunk (0–1). */
+  readonly semanticChunkThreshold: number
 }
 
 /** One ranked search result. */

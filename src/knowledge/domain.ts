@@ -91,6 +91,8 @@ export const configOverridesSchema = z.object({
   documentProcessorProvider: z.enum(['builtin', 'mineru']).optional(),
   mineruApiKey: z.string().optional(),
   mineruApiHost: z.string().optional(),
+  semanticChunk: z.boolean().optional(),
+  semanticChunkThreshold: z.number().gte(0).lte(1).optional(),
 })
 
 /** Partial runtime config stored in the domain global slot. */
@@ -117,6 +119,8 @@ export interface ConfigOverrides {
   documentProcessorProvider?: KnowledgeConfig['documentProcessorProvider']
   mineruApiKey?: string
   mineruApiHost?: string
+  semanticChunk?: boolean
+  semanticChunkThreshold?: number
 }
 
 export const knowledgeDomainSpec = defineDomain({

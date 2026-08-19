@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { hashEmbeddingText } from '../src/knowledge/chunkdb.js'
 import type { Config } from '../src/knowledge/config.js'
@@ -59,6 +59,8 @@ const DEFAULT_CONFIG: Config = {
   documentProcessorProvider: 'builtin',
   mineruApiKey: '',
   mineruApiHost: '',
+  semanticChunk: false,
+  semanticChunkThreshold: 0.75,
 }
 
 function fakeWebServer() {

@@ -32,6 +32,8 @@ const DEFAULT_CONFIG: Config = {
   documentProcessorProvider: 'builtin',
   mineruApiKey: '',
   mineruApiHost: '',
+  semanticChunk: false,
+  semanticChunkThreshold: 0.75,
 }
 
 function fakeWebServer() {

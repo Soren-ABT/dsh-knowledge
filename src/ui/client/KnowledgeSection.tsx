@@ -1483,7 +1483,9 @@ function RecallResultCard(props: { hit: SearchHit; index: number; t: Translate }
   const [copied, setCopied] = useState(false)
   const copy = async (): Promise<void> => {
     try {
-      await navigator.clipboard.writeText(hit.text)
+      // Copy a full Markdown citation (quote + source) so the excerpt can be
+      // pasted into the conversation with its traceable source line.
+      await navigator.clipboard.writeText(citationMarkdown(hit))
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
     } catch {
@@ -1812,6 +1814,15 @@ function scoreColor(score: number, palette: typeof C): string {
   if (score >= 0.7) return palette.success
   if (score >= 0.4) return palette.warn
   return palette.muted
+}
+
+/** Markdown citation block for one search hit: quote + source line. */
+function citationMarkdown(hit: SearchHit): string {
+  const quote = hit.text.split('\n').map(line => `> ${line}`).join('\n')
+  const source = hit.heading !== undefined && hit.heading.length > 0
+    ? `${hit.documentTitle} / ${hit.heading}`
+    : hit.documentTitle
+  return `${quote}\n>\n> — ${source}（知识库 ${hit.baseId}）`
 }
 
 function highlightMatches(text: string, query: string, markStyle: CSSProperties): JSX.Element {

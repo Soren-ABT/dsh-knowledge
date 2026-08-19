@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { resolveConfig } from '../src/knowledge/config.js'
 import type { Config } from '../src/knowledge/config.js'
 import { LOCAL_MODELS } from '../src/knowledge/localModels.js'
@@ -30,6 +30,8 @@ const base: Config = {
   documentProcessorProvider: 'builtin',
   mineruApiKey: '',
   mineruApiHost: '',
+  semanticChunk: false,
+  semanticChunkThreshold: 0.75,
 }
 
 describe('resolveConfig', () => {

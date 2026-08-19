@@ -269,6 +269,22 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
               <FieldRow label={t('smartChunk')} hint={t('smartChunkHint')}>
                 <Switch checked={values.smartChunk} onChange={(v) => patch({ smartChunk: v })} />
               </FieldRow>
+              <FieldRow label={t('semanticChunk')} hint={t('semanticChunkHint')}>
+                <Switch checked={values.semanticChunk} onChange={(v) => patch({ semanticChunk: v })} />
+              </FieldRow>
+              {values.semanticChunk && (
+                <FieldRow label={t('semanticChunkThreshold')} hint={t('semanticChunkThresholdHint')}>
+                  <input
+                    style={{ ...style.input, width: 100 }}
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={values.semanticChunkThreshold}
+                    onChange={(e) => patch({ semanticChunkThreshold: Number(e.target.value) })}
+                  />
+                </FieldRow>
+              )}
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
                 <input
                   style={{ ...style.input, width: 140 }}
