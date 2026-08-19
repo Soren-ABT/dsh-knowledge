@@ -20,6 +20,7 @@ import {
   embedTexts,
   expandHomePath,
   getLocalModelStatus,
+  hasActiveLocalModelDownload,
   localModelCacheDir,
   setHfEndpoint,
   setLocalModelCacheDir,
@@ -181,8 +182,8 @@ export class KnowledgeService extends Service {
     this.ctx.effect(() => async () => { await store.close() }, 'knowledge: close store')
     // Terminate the local-model inference worker on teardown so a loaded
     // ~600MB model can never outlive the plugin (Cherry: lifecycle-managed worker).
-    this.ctx.effect(() => () => { disposeLocalModelWorker() }, 'knowledge: dispose local model worker')
-    this.ctx.effect(() => () => { disposeOcrWorker() }, 'knowledge: dispose OCR worker')
+    this.ctx.effect(() => () => { void disposeLocalModelWorker() }, 'knowledge: dispose local model worker')
+    this.ctx.effect(() => () => { void disposeOcrWorker() }, 'knowledge: dispose OCR worker')
     // Resume documents a previous process left mid-embedding: their chunks are
     // partially persisted, so re-running the embed with hash reuse completes
     // them without re-embedding the batches that already landed. (openStore
@@ -1392,9 +1393,24 @@ export class KnowledgeService extends Service {
     const store = this.requireStore()
     const target = resolve(expandHomePath(to.trim() === '' ? '~/.dsh/cache/dsh-knowledge/local-models' : to.trim()))
     const from = localModelCacheDir()
-    if (from === target) return { moved: 0, from, to: target }
-    // Release loaded models (up to ~600MB each) before touching the files.
-    disposeLocalModelWorker()
+    // Windows paths are case-insensitive: `C:\Users\...` vs `c:\users\...`
+    // are the same directory and must not run a migration against itself.
+    const samePath = process.platform === 'win32'
+      ? from.toLowerCase() === target.toLowerCase()
+      : from === target
+    if (samePath) return { moved: 0, from, to: target }
+    // A download in flight writes into the current cache directory; moving
+    // its half-written files out from under the worker would corrupt the
+    // model. Refuse instead of silently breaking the download.
+    if (hasActiveLocalModelDownload()) {
+      throw new Error('模型正在下载，请先等待下载完成或取消后再迁移')
+    }
+    // Release loaded models (up to ~600MB each) and the OCR worker BEFORE
+    // touching the files, and wait for the worker threads to actually exit:
+    // onnxruntime keeps model files mmap'd, and a Windows file lock makes
+    // both the rename and the copy+delete fallback fail.
+    await disposeLocalModelWorker()
+    await disposeOcrWorker()
     const entries = await readdir(from).catch(() => [] as string[])
     let moved = 0
     await mkdir(target, { recursive: true })

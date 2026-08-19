@@ -335,8 +335,10 @@ export async function removeLocalModel(modelId: string): Promise<void> {
   await rm(join(localModelCacheDir(), modelId), { recursive: true, force: true })
 }
 
-/** Terminate the worker (plugin teardown). Idempotent. */
-export function disposeLocalModelWorker(): void {
+/** Terminate the worker (plugin teardown). Idempotent; resolves once the
+ *  worker thread has actually exited so callers can then move/delete the
+ *  cached weights without a Windows mmap file lock blocking the operation. */
+export async function disposeLocalModelWorker(): Promise<void> {
   clearIdleTimer()
   const worker = localWorker
   localWorker = null
@@ -347,8 +349,16 @@ export function disposeLocalModelWorker(): void {
     } catch {
       // worker already dead — nothing to do
     }
-    void worker.terminate()
+    await worker.terminate()
   }
+}
+
+/** Whether any local model download is currently in flight (migration guard). */
+export function hasActiveLocalModelDownload(): boolean {
+  for (const status of localModelStatus.values()) {
+    if (status.status === 'downloading') return true
+  }
+  return false
 }
 
 // ── remote providers ─────────────────────────────────────────────────────────

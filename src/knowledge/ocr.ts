@@ -176,7 +176,7 @@ export async function downloadOcrModels(mirror?: string): Promise<OcrModelStatus
  * weights for the same reason).
  */
 export async function removeOcrModels(): Promise<void> {
-  disposeOcrWorker()
+  await disposeOcrWorker()
   setOcrStatus({ status: 'idle', progress: 0, message: '' })
   await rm(ocrCacheDir(), { recursive: true, force: true })
 }
@@ -362,8 +362,10 @@ function recognizePng(png: Buffer): Promise<string> {
   })
 }
 
-/** Release the worker (plugin teardown). Idempotent. */
-export function disposeOcrWorker(): void {
+/** Release the worker (plugin teardown). Idempotent; resolves once the
+ *  worker thread has actually exited so callers can move/delete the OCR
+ *  weights without a Windows file lock blocking the operation. */
+export async function disposeOcrWorker(): Promise<void> {
   const worker = ocrWorker
   ocrWorker = null
   failAllOcrPending(new Error('OCR worker disposed'))
@@ -373,7 +375,7 @@ export function disposeOcrWorker(): void {
     } catch {
       // already dead
     }
-    void worker.terminate()
+    await worker.terminate()
   }
 }
 
