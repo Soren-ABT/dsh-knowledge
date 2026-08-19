@@ -223,21 +223,31 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
             </div>
           )}
           {values.embeddingProvider !== 'none' && values.embeddingProvider !== 'local' && (
-            <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-              <div style={{ flex: 1 }}>
-                <label style={style.label}>{t('embeddingModel')}</label>
+            <>
+              <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={style.label}>{t('embeddingModel')}</label>
+                  <input
+                    list={listId('embedding')}
+                    style={style.input}
+                    value={values.embeddingModel}
+                    onChange={(e) => patch({ embeddingModel: e.target.value })}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={style.label}>{t('embeddingBaseUrl')}</label>
+                  <input style={style.input} value={values.embeddingBaseUrl} onChange={(e) => patch({ embeddingBaseUrl: e.target.value })} />
+                </div>
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <label style={style.label}>{t('embeddingApiKey')}</label>
                 <input
-                  list={listId('embedding')}
                   style={style.input}
-                  value={values.embeddingModel}
-                  onChange={(e) => patch({ embeddingModel: e.target.value })}
+                  value={values.embeddingApiKey ?? ''}
+                  onChange={(e) => patch({ embeddingApiKey: e.target.value })}
                 />
               </div>
-              <div style={{ flex: 1 }}>
-                <label style={style.label}>{t('embeddingBaseUrl')}</label>
-                <input style={style.input} value={values.embeddingBaseUrl} onChange={(e) => patch({ embeddingBaseUrl: e.target.value })} />
-              </div>
-            </div>
+            </>
           )}
         </Section>
 
