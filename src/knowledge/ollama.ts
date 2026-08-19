@@ -68,7 +68,13 @@ export async function pullOllamaModel(model: string, baseUrl: string): Promise<v
     ollamaPullStatus.set(model, { status: 'pulling', progress: 0, message: '' })
     const controller = new AbortController()
     ollamaPullAborts.set(model, controller)
-    const watchdog = setTimeout(() => controller.abort(), PULL_TIMEOUT_MS)
+    // Distinguish the watchdog abort from a user cancel: a timeout is a
+    // failure, a cancel is a deliberate stop.
+    let timedOut = false
+    const watchdog = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, PULL_TIMEOUT_MS)
     try {
       const response = await fetch(`${ollamaBase(baseUrl)}/api/pull`, {
         method: 'POST',
@@ -86,6 +92,9 @@ export async function pullOllamaModel(model: string, baseUrl: string): Promise<v
       let buffer = ''
       for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
         buffer += decoder.decode(chunk, { stream: true })
+        // Defensive bound: a misbehaving server streaming an endless line must
+        // not grow the buffer without limit.
+        if (buffer.length > 1_000_000) buffer = buffer.slice(-65_536)
         let newline = buffer.indexOf('\n')
         while (newline >= 0) {
           const line = buffer.slice(0, newline).trim()
@@ -118,11 +127,11 @@ export async function pullOllamaModel(model: string, baseUrl: string): Promise<v
     } catch (error) {
       const aborted = controller.signal.aborted
       ollamaPullStatus.set(model, {
-        status: aborted ? 'idle' : 'error',
+        status: timedOut ? 'error' : aborted ? 'idle' : 'error',
         progress: 0,
-        message: aborted ? '' : error instanceof Error ? error.message : String(error),
+        message: timedOut ? 'pull timed out' : aborted ? '' : error instanceof Error ? error.message : String(error),
       })
-      if (aborted) return
+      if (aborted || timedOut) return
       throw error
     } finally {
       clearTimeout(watchdog)

@@ -575,69 +575,78 @@ export class KnowledgeService extends Service {
     if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(request.fileName))) {
       throw new Error(`Unsupported knowledge file type: ${request.fileName}`)
     }
-    // Same-name conflict handling (Cherry Studio's three strategies, plus
-    // keep): the effective strategy is the per-request override, else the
-    // base/global `conflictStrategy` config, else rename (Cherry's default).
-    const conflictStrategy = request.conflict ?? this.getConfigFor(request.baseId).conflictStrategy
-    if (conflictStrategy !== 'keep') {
-      const existing = store.listDocuments(request.baseId).find(doc => doc.fileName === request.fileName)
-      if (existing !== undefined) {
-        if (conflictStrategy === 'replace') {
-          await store.deleteChunks(existing.id)
-          if (existing.rawFilePath !== undefined) await store.raw?.delete(existing.rawFilePath)
-          await store.deleteDocument(existing.id)
-        } else if (conflictStrategy === 'detect') {
-          throw new ConflictError(`same-name document exists: ${request.fileName} (id ${existing.id}) — re-upload with conflict=replace or conflict=rename`)
-        }
-      }
-    }
-    // Rename strategy: bump to `name_1.ext`, `name_2.ext`, … until free
-    // (Cherry's automatic `_1` suffix). Applies to both fileName and title.
-    let fileName = request.fileName
-    let title = request.title?.trim() || request.fileName
-    if (conflictStrategy === 'rename') {
-      const taken = new Set(store.listDocuments(request.baseId).map(doc => doc.fileName))
-      let candidate = fileName
-      let counter = 1
-      while (taken.has(candidate)) {
-        const dot = fileName.lastIndexOf('.')
-        const base = dot > 0 ? fileName.slice(0, dot) : fileName
-        const ext = dot > 0 ? fileName.slice(dot) : ''
-        candidate = `${base}_${counter}${ext}`
-        counter += 1
-      }
-      if (candidate !== fileName) {
-        fileName = candidate
-        if (request.title !== undefined) title = `${request.title.trim()}_${counter - 1}`
-      }
-    }
     // Cherry Studio parity: publish the row FIRST (with "parsing" status) and
     // return immediately; the parse+embed runs on a per-base worker pool
     // (concurrency 5) and the row flips processing → completed/failed as it
     // goes, exactly like Cherry's create-then-index jobs.
-    const docId = crypto.randomUUID()
-    const placeholder: KnowledgeDocument = {
-      id: docId,
-      baseId: request.baseId,
-      title,
-      sourceType: 'file',
-      fileName,
-      ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
-      ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
-      charCount: 0,
-      chunkCount: 0,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }
-    // Persist the original bytes FIRST (Cherry's "import means copy"): the
-    // base keeps its own stable source copy, reindex can re-read and re-parse
-    // it, and a crash before/during parse is recoverable from the file
-    // instead of being a lost upload.
-    const rawFilePath = store.raw !== undefined
-      ? await store.raw.write(request.baseId, docId, safeRawExtension(fileName), decodeBase64(request.contentBase64))
-      : undefined
-    const stored = { ...placeholder, ...(rawFilePath !== undefined ? { rawFilePath } : {}) }
-    await store.putDocument(stored)
+    //
+    // Conflict resolution, rename suffixing and the placeholder persist all
+    // run under the per-base write lock: two concurrent imports of the same
+    // file name must not both pass the "taken" check and end up with the same
+    // fileName (the rename strategy would silently degrade to keep).
+    let fileName = request.fileName
+    let title = request.title?.trim() || request.fileName
+    const { fileName: resolvedFileName, title: resolvedTitle, docId, rawFilePath, stored } = await this.withBaseWriteLock(request.baseId, async () => {
+      // Re-run the conflict check against the freshest document list (a
+      // concurrent add may have landed since the first pass above).
+      const conflictStrategyNow = request.conflict ?? this.getConfigFor(request.baseId).conflictStrategy
+      if (conflictStrategyNow !== 'keep') {
+        const existing = store.listDocuments(request.baseId).find(doc => doc.fileName === request.fileName)
+        if (existing !== undefined) {
+          if (conflictStrategyNow === 'replace') {
+            await store.deleteChunks(existing.id)
+            if (existing.rawFilePath !== undefined) await store.raw?.delete(existing.rawFilePath)
+            await store.deleteDocument(existing.id)
+          } else if (conflictStrategyNow === 'detect') {
+            throw new ConflictError(`same-name document exists: ${request.fileName} (id ${existing.id}) — re-upload with conflict=replace or conflict=rename`)
+          }
+        }
+      }
+      let resolvedFileName = request.fileName
+      let resolvedTitle = request.title?.trim() || request.fileName
+      if (conflictStrategyNow === 'rename') {
+        const taken = new Set(store.listDocuments(request.baseId).map(doc => doc.fileName))
+        let candidate = resolvedFileName
+        let counter = 1
+        while (taken.has(candidate)) {
+          const dot = resolvedFileName.lastIndexOf('.')
+          const base = dot > 0 ? resolvedFileName.slice(0, dot) : resolvedFileName
+          const ext = dot > 0 ? resolvedFileName.slice(dot) : ''
+          candidate = `${base}_${counter}${ext}`
+          counter += 1
+        }
+        if (candidate !== resolvedFileName) {
+          resolvedFileName = candidate
+          resolvedTitle = request.title !== undefined ? `${request.title.trim()}_${counter - 1}` : candidate
+        }
+      }
+      const newDocId = crypto.randomUUID()
+      const placeholder: KnowledgeDocument = {
+        id: newDocId,
+        baseId: request.baseId,
+        title: resolvedTitle,
+        sourceType: 'file',
+        fileName: resolvedFileName,
+        ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
+        ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
+        charCount: 0,
+        chunkCount: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }
+      // Persist the original bytes FIRST (Cherry's "import means copy"): the
+      // base keeps its own stable source copy, reindex can re-read and re-parse
+      // it, and a crash before/during parse is recoverable from the file
+      // instead of being a lost upload.
+      const newRawFilePath = store.raw !== undefined
+        ? await store.raw.write(request.baseId, newDocId, safeRawExtension(resolvedFileName), decodeBase64(request.contentBase64))
+        : undefined
+      const storedDoc = { ...placeholder, ...(newRawFilePath !== undefined ? { rawFilePath: newRawFilePath } : {}) }
+      await store.putDocument(storedDoc)
+      return { fileName: resolvedFileName, title: resolvedTitle, docId: newDocId, rawFilePath: newRawFilePath, stored: storedDoc }
+    })
+    fileName = resolvedFileName
+    title = resolvedTitle
     this.indexing.set(docId, { baseId: request.baseId, title, phase: 'parsing', total: 0, progress: 0 })
     // Queue the background parse+ingest. The task re-reads the persisted raw
     // copy instead of holding the payload in memory, so a large batch never
@@ -1383,6 +1392,9 @@ export class KnowledgeService extends Service {
       const dest = join(target, entry)
       const info = await stat(source).catch(() => null)
       if (info === null || !info.isDirectory()) continue
+      // A destination entry that already exists is left untouched: a partial
+      // previous migration (or a pre-existing model) must not be overwritten.
+      if (await stat(dest).then(() => true).catch(() => false)) continue
       try {
         await rename(source, dest)
       } catch {
@@ -1558,7 +1570,11 @@ export class KnowledgeService extends Service {
     // dedicated expansion model.
     if (request.queries !== undefined && request.queries.length > 0) {
       const variants = [query, ...request.queries.map(variant => variant.trim()).filter(variant => variant.length > 0)]
-      const results = await Promise.all(variants.map(variant => this.search({ ...request, query: variant, queries: undefined })))
+      // Each variant retrieves with a wider topK so a variant whose own top-K
+      // is full of its own hits can still contribute its secondary matches to
+      // the merged result before the final topK cut.
+      const subTopK = Math.min(50, topK * 2)
+      const results = await Promise.all(variants.map(variant => this.search({ ...request, query: variant, queries: undefined, topK: subTopK })))
       const byId = new Map<string, SearchHit>()
       let total = 0
       for (const result of results) {
@@ -1885,10 +1901,6 @@ export class KnowledgeService extends Service {
     const store = this.requireStore()
     const config = this.getConfigFor(input.baseId)
     const contentHash = sha256(input.text)
-    const pieces = chunkText(input.text, config.chunkSize, config.chunkOverlap, {
-      smartChunk: config.smartChunk,
-      separator: config.chunkSeparator,
-    })
     // Dedup check + first persist run under the per-base write lock: concurrent
     // imports of identical content must not both pass the check (Cherry guards
     // the same read-then-write with its per-base mutation lock).
@@ -1930,7 +1942,9 @@ export class KnowledgeService extends Service {
       await store.putDocument(halfDoc)
       return halfDoc
     })
-    const { chunks, embeddingError } = await this.buildChunks(input.baseId, half.id, input.title, input.text, config, pieces, batch => store.putChunkBatch(batch))
+    // Chunking (regular or semantic) happens inside buildChunks; passing no
+    // pieces lets the configured semanticChunk path run.
+    const { chunks, embeddingError } = await this.buildChunks(input.baseId, half.id, input.title, input.text, config, undefined, batch => store.putChunkBatch(batch))
     const document: KnowledgeDocument = {
       ...half,
       chunkCount: chunks.length,

@@ -34,6 +34,12 @@ export interface CaptionConfig {
 const MAX_CAPTION_IMAGES = 20
 /** Decorative fragments (icons, rule lines, formula glyphs) are smaller than this. */
 const MIN_CAPTION_EDGE = 160
+/**
+ * Full-page scans and huge embedded rasters are not "figures": base64-encoding
+ * a 4000x3000 RGBA page (~48MB → ~64MB base64) per image would balloon the
+ * vision request and the process heap. Skip anything above ~4M pixels.
+ */
+const MAX_CAPTION_PIXELS = 4_000_000
 const CAPTION_PROMPT = '请用简洁的中文描述这张图片/图表的内容：说明它展示的主题、数据趋势或关键结论。若信息不足请直接说无法判断。'
 
 /**
@@ -49,7 +55,8 @@ export async function captionPdfImages(bytes: Uint8Array, config: CaptionConfig)
   try {
     const extracted = await extractPdfImages(bytes)
     images = extracted
-      .filter(image => image.width >= MIN_CAPTION_EDGE && image.height >= MIN_CAPTION_EDGE)
+      .filter(image => image.width >= MIN_CAPTION_EDGE && image.height >= MIN_CAPTION_EDGE
+        && image.width * image.height <= MAX_CAPTION_PIXELS)
       .slice(0, MAX_CAPTION_IMAGES)
       .map(image => {
         const { width, height, data } = image

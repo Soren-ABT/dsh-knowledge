@@ -359,6 +359,31 @@ describe('KnowledgeService', () => {
     expect(text).toContain('Knowledge base PDF upload works')
   })
 
+  it('semantic chunking runs on the full import path (not bypassed by pre-chunking)', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'semantic-import' })
+    await service.setConfig({ semanticChunk: true, semanticChunkThreshold: 0.9, chunkSize: 10000 })
+    const text = '第一段内容关于排队论。\n\n第二段内容关于排队论。\n\n第三段内容关于排队论。'
+    // Embedding returns the SAME vector for every segment → all merge into one
+    // chunk (well under chunkSize). This proves the semantic path executed:
+    // pre-chunking would have produced three separate chunks regardless.
+    const scope = vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      data: [{ embedding: [1, 0, 0] }, { embedding: [1, 0, 0] }, { embedding: [1, 0, 0] }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })))
+    try {
+      await service.setConfig({ embeddingProvider: 'openai', embeddingBaseUrl: 'http://127.0.0.1:1', embeddingModel: 'test-embed' })
+      await service.addTextDocument({ baseId: base.id, title: 'semantic doc', content: text })
+      await service.waitForIdle()
+      const doc = service.listDocuments(base.id)[0]
+      const chunks = service.listChunks(doc.id)
+      expect(chunks.length).toBe(1)
+      expect(chunks[0].text).toContain('第三段内容')
+    } finally {
+      vi.unstubAllGlobals()
+      void scope
+    }
+  })
+
   it('rejects unsupported file types before creating a row', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'reject-ext' })
