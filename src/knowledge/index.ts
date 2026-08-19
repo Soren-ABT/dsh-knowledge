@@ -180,6 +180,13 @@ export class KnowledgeService extends Service {
     this.store = await openStore(facility, { chunkStorePath: this.baseConfig.chunkStorePath })
     this.resolveStore()
     const store = this.store
+    // Reapply the RUNTIME overrides persisted in the domain (they survive
+    // restarts): without this, a saved localModelCacheDir / hfEndpoint was
+    // only live after the next explicit save — model downloads/checks and the
+    // mirror would silently use the deployment defaults until then.
+    const resolved = this.getConfig()
+    setHfEndpoint(resolved.hfEndpoint)
+    setLocalModelCacheDir(resolved.localModelCacheDir)
     this.ctx.effect(() => async () => { await store.close() }, 'knowledge: close store')
     // Terminate the local-model inference worker on teardown so a loaded
     // ~600MB model can never outlive the plugin (Cherry: lifecycle-managed worker).

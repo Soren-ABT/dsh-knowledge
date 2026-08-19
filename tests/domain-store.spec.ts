@@ -3,7 +3,7 @@ import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { Context } from '@deepseek-ai/cordis'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { knowledgeDomainSpec } from '../src/knowledge/domain.js'
 import { ChunkDatabase, hashEmbeddingText, migrateLegacyChunkFile } from '../src/knowledge/chunkdb.js'
 import { openStore } from '../src/knowledge/store.js'
@@ -733,6 +733,48 @@ describe('DomainStore wiring', () => {
       expect(result.total).toBe(40) // d28 + d29 remain (d0..d27 deleted)
       expect(result.hits[0].id.startsWith('c29-') || result.hits[0].id.startsWith('c28-')).toBe(true)
       db.close()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('KnowledgeService restart', () => {
+  it('reapplies persisted runtime overrides (cache dir + HF mirror) on a fresh start without an explicit save', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const domain = fakeDomain()
+      const facility = { open: async () => domain }
+      const mount = async (): Promise<KnowledgeService> => {
+        const ctx = new Context()
+        ctx.provide('webServer', { routes: [], register: () => () => {} })
+        ctx.provide('storageDomain', facility)
+        await ctx.plugin(KnowledgeService, { ...TEST_CONFIG, chunkStorePath: join(dir, 'chunks.sqlite') })
+        return ctx.get('knowledge') as KnowledgeService
+      }
+      const closeStore = async (service: KnowledgeService): Promise<void> => {
+        await (service as unknown as { store: { close(): Promise<void> } }).store.close()
+      }
+
+      // First "run": mount, save runtime overrides, tear down.
+      const service1 = await mount()
+      const modelsDir = join(dir, 'models')
+      await service1.setConfig({ localModelCacheDir: modelsDir, hfEndpoint: 'https://hf-mirror.com' })
+      await closeStore(service1)
+
+      // Second "run" on the same domain — the restart scenario. The saved
+      // overrides must be live again from the first request: model checks use
+      // the restored cache dir, downloads use the restored mirror.
+      const { localModelCacheDir, getHfEndpoint } = await import('../src/knowledge/embed.js')
+      const service2 = await mount()
+      try {
+        expect(localModelCacheDir()).toBe(resolve(modelsDir))
+        expect(getHfEndpoint()).toBe('https://hf-mirror.com')
+        expect(service2.getConfig().localModelCacheDir).toBe(resolve(modelsDir))
+      } finally {
+        await closeStore(service2)
+      }
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

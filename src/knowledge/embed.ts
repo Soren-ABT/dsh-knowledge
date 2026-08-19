@@ -48,6 +48,11 @@ export function setHfEndpoint(url: string | undefined): void {
     : undefined
 }
 
+/** The effective HF endpoint override (mirror), or undefined (tests/telemetry). */
+export function getHfEndpoint(): string | undefined {
+  return hfEndpointOverride
+}
+
 export function expandHomePath(input: string): string {
   if (input === '~') return homedir()
   if (input.startsWith('~/') || input.startsWith('~\\')) return join(homedir(), input.slice(2))
