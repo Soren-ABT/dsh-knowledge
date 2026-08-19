@@ -11,7 +11,7 @@ import type { CSSProperties } from 'react'
 import { KnowledgeApi } from './api.js'
 import type { LocalModelSummary } from './api.js'
 import { C, style } from './theme.js'
-import { IconBox, IconDownload, IconRefresh, IconTrash, IconX } from './icons.js'
+import { IconBot, IconBox, IconDownload, IconFolderInput, IconFolderOpen, IconFolderSearch, IconRefresh, IconScanText, IconTrash, IconX } from './icons.js'
 import type { Translate } from './locales.js'
 
 export interface LocalModelsSectionProps {
@@ -260,14 +260,14 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
               value={cacheDir}
               onChange={(e) => setCacheDir(e.target.value)}
             />
-            <button style={style.button} onClick={() => void browseCacheDir()}>📁 {t('cacheDirBrowse')}</button>
+            <button style={style.button} onClick={() => void browseCacheDir()}><IconFolderSearch size={13} /> {t('cacheDirBrowse')}</button>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <button style={style.button} onClick={() => void saveCacheDir()}>{t('hfMirrorSave')}</button>
             <button style={style.button} disabled={migrating} onClick={() => void migrateCacheDir()}>
-              {migrating ? '…' : '🚚'} {t('cacheDirMigrate')}
+              <IconFolderInput size={13} /> {t('cacheDirMigrate')}
             </button>
-            <button style={style.button} onClick={() => void openCacheDir()}>📂 {t('cacheDirOpen')}</button>
+            <button style={style.button} onClick={() => void openCacheDir()}><IconFolderOpen size={13} /> {t('cacheDirOpen')}</button>
           </div>
           <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('cacheDirHint')}</p>
         </div>
@@ -299,10 +299,10 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40,
               borderRadius: 12, flexShrink: 0, background: ocrReady ? accentSoft : C.surface2,
-              color: ocrReady ? C.accent : C.muted, fontSize: 20,
+              color: ocrReady ? C.accent : C.muted,
             }}
           >
-            🔍
+            <IconScanText size={18} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -358,8 +358,8 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       {/* Ollama — pull local models through the Ollama API (embeddings, VLMs) */}
       <div style={{ ...cardStyle, marginTop: 16 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: C.surface2, color: C.muted, fontSize: 20 }}>
-            🦙
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: C.surface2, color: C.muted }}>
+            <IconBot size={18} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 600 }}>{t('ollamaTitle')}</div>

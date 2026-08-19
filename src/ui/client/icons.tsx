@@ -270,3 +270,68 @@ export function docIconStyle(color: string): CSSProperties {
     background: `color-mix(in srgb, ${color} 12%, transparent)`,
   }
 }
+
+// ── lucide icons (ISC license, paths from lucide-static v1.32.0) ─────────────
+
+export function IconFolder(props: IconProps): JSX.Element {
+  return (
+    <svg {...svgProps(props.size ?? 18, props.color)}>
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    </svg>
+  )
+}
+
+export function IconFolderInput(props: IconProps): JSX.Element {
+  return (
+    <svg {...svgProps(props.size ?? 18, props.color)}>
+      <path d="M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1" />
+      <path d="M2 13h10" />
+      <path d="m9 16 3-3-3-3" />
+    </svg>
+  )
+}
+
+export function IconFolderOpen(props: IconProps): JSX.Element {
+  return (
+    <svg {...svgProps(props.size ?? 18, props.color)}>
+      <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+    </svg>
+  )
+}
+
+export function IconFolderSearch(props: IconProps): JSX.Element {
+  return (
+    <svg {...svgProps(props.size ?? 18, props.color)}>
+      <path d="M10.7 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v4.1" />
+      <path d="m21 21-1.9-1.9" />
+      <circle cx="17" cy="17" r="3" />
+    </svg>
+  )
+}
+
+export function IconScanText(props: IconProps): JSX.Element {
+  return (
+    <svg {...svgProps(props.size ?? 18, props.color)}>
+      <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+      <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+      <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+      <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+      <path d="M7 8h8" />
+      <path d="M7 12h10" />
+      <path d="M7 16h6" />
+    </svg>
+  )
+}
+
+export function IconBot(props: IconProps): JSX.Element {
+  return (
+    <svg {...svgProps(props.size ?? 18, props.color)}>
+      <path d="M12 8V4H8" />
+      <rect width="16" height="12" x="4" y="8" rx="2" />
+      <path d="M2 14h2" />
+      <path d="M20 14h2" />
+      <path d="M15 13v2" />
+      <path d="M9 13v2" />
+    </svg>
+  )
+}

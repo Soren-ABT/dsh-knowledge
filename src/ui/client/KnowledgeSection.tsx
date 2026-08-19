@@ -32,6 +32,7 @@ import {
   IconSearch,
   IconSliders,
   IconTrash,
+  IconFolder,
   docIconStyle,
   fileVisual,
 } from './icons.js'
@@ -1050,7 +1051,9 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                       ? (
                           currentDirectoryId !== null ? (
                             <div style={style.empty}>
-                              <div style={{ fontSize: 26, marginBottom: 6 }}>📁</div>
+                              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 6 }}>
+                                <IconFolder size={26} color={C.muted} />
+                              </div>
                               <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{t('emptyFolder')}</div>
                             </div>
                           ) : documents.length === 0 ? (
@@ -1100,7 +1103,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                 <span style={{ minWidth: 0 }}>
                                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                                     {doc.sourceType === 'directory'
-                                      ? <span style={{ ...docIconStyle('#f5a623'), fontSize: 15 }}>📁</span>
+                                      ? <span style={docIconStyle('#f5a623')}><IconFolder size={16} /></span>
                                       : (() => {
                                           const visual = doc.sourceType === 'url'
                                             ? { color: '#10b981', icon: fileVisual('page').icon }
