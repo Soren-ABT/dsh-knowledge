@@ -37,6 +37,15 @@ async function getPaddle(modelDir: string): Promise<PaddleOcrServiceType> {
   if (paddlePromise === null || paddleModelDir !== modelDir) {
     paddleModelDir = modelDir
     paddlePromise = (async () => {
+      // Raise onnxruntime's log level BEFORE the model loads: PaddleOCR's
+      // ONNX files carry dozens of unused constant initializers and the
+      // per-tensor clean-up warnings flood the host console otherwise.
+      try {
+        const { env } = await import('onnxruntime-node') as { env?: { logLevel?: string } }
+        if (env !== undefined) env.logLevel = 'error'
+      } catch {
+        // log-level control unavailable — warnings are cosmetic anyway
+      }
       const mod = await import('ppu-paddle-ocr') as PaddleModule
       const service = new mod.PaddleOcrService({
         model: {
