@@ -14,6 +14,7 @@ import type {
   AddFileDocumentRequest,
   AddTextDocumentRequest,
   CreateBaseRequest,
+  EmbeddingProvider,
   ImportUrlRequest,
   SearchRequest,
   UpdateBaseRequest,
@@ -144,6 +145,17 @@ async function route(
   // /local-model-status?model=...
   if (segments[0] === 'local-model-status' && method === 'GET') {
     return service.getLocalModelStatus(query.get('model') ?? undefined)
+  }
+
+  // /probe-embedding-dimensions — embed one probe text and return the vector
+  // width (Cherry's dimension probe, run before a config save).
+  if (segments[0] === 'probe-embedding-dimensions' && method === 'POST') {
+    return service.probeEmbeddingDimensions({
+      ...(typeof body.provider === 'string' ? { provider: body.provider as EmbeddingProvider } : {}),
+      ...(typeof body.baseUrl === 'string' ? { baseUrl: body.baseUrl } : {}),
+      ...(typeof body.model === 'string' ? { model: body.model } : {}),
+      ...(typeof body.apiKey === 'string' ? { apiKey: body.apiKey } : {}),
+    })
   }
 
   // /local-models (list) and /local-models/download|remove|cancel?model=...

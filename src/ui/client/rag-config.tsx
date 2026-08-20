@@ -44,6 +44,8 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   const [ollamaEmbeddingUnreachable, setOllamaEmbeddingUnreachable] = useState(false)
   const [ollamaCaptionUnreachable, setOllamaCaptionUnreachable] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  /** Cherry's dimension probe is running (save button shows a pending state). */
+  const [probing, setProbing] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -163,6 +165,31 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
 
   const save = async (): Promise<void> => {
     setSaveError(null)
+    // Cherry's dimension probe: before saving a changed embedding config, embed
+    // a probe text so a wrong-dimension or unavailable model fails the save up
+    // front instead of surfacing later at import time (the host re-checks on
+    // every embed and would refuse mid-import).
+    const embeddingChangedNow = values.embeddingProvider !== initial.embeddingProvider
+      || values.embeddingModel !== initial.embeddingModel
+    if (embeddingChangedNow && values.embeddingProvider !== 'none') {
+      setProbing(true)
+      try {
+        const dimensions = await api.probeEmbeddingDimensions({
+          provider: values.embeddingProvider,
+          baseUrl: values.embeddingBaseUrl,
+          model: values.embeddingModel,
+          apiKey: values.embeddingApiKey ?? '',
+        })
+        if (!Number.isFinite(dimensions) || dimensions <= 0) {
+          throw new Error('embedding returned an invalid dimension')
+        }
+      } catch (err) {
+        setProbing(false)
+        setSaveError(`${t('dimensionProbeFailed')}：${err instanceof Error ? err.message : String(err)}`)
+        return
+      }
+      setProbing(false)
+    }
     const overrides: BaseConfig = {}
     const current = (base.config ?? {}) as Record<string, unknown>
     for (const key of Object.keys(values) as Array<keyof KnowledgeConfig>) {
@@ -565,6 +592,13 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   onChange={(e) => patchNumber('urlRefreshHours', e.target.value)}
                 />
               </FieldRow>
+              <FieldRow label={t('resumeInterrupted')} hint={t('resumeInterruptedHint')}>
+                <input
+                  type="checkbox"
+                  checked={values.resumeInterruptedOnStartup}
+                  onChange={(e) => patch({ resumeInterruptedOnStartup: e.target.checked })}
+                />
+              </FieldRow>
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
                 <input
                   style={{ ...style.input, width: 140 }}
@@ -617,8 +651,8 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
         >
           <IconRefresh size={13} />{t('reset')}
         </button>
-        <button style={style.primary} disabled={!dirty || busy} onClick={() => void save()}>
-          {t('save')}
+        <button style={style.primary} disabled={!dirty || busy || probing} onClick={() => void save()}>
+          {probing ? t('dimensionProbing') : t('save')}
         </button>
       </div>
 

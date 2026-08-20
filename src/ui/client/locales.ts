@@ -101,6 +101,9 @@ export type KnowledgeKey =
   | 'statsChunks'
   | 'statsChars'
   | 'statsTokens'
+  | 'statsDims'
+  | 'dimensionProbeFailed'
+  | 'dimensionProbing'
   | 'embedded'
   | 'notEmbedded'
   | 'noBases'
@@ -142,6 +145,8 @@ export type KnowledgeKey =
   | 'conflictKeep'
   | 'urlRefreshHours'
   | 'urlRefreshHoursHint'
+  | 'resumeInterrupted'
+  | 'resumeInterruptedHint'
   | 'imageCaptionHint'
   | 'imageCaptionOff'
   | 'imageCaptionOpenAI'
@@ -181,6 +186,12 @@ export type KnowledgeKey =
   | 'embeddingSwitchWarning'
   | 'staleModelSuffix'
   | 'embeddingModelMissingHint'
+  | 'localModelStatusLabel'
+  | 'goToSettings'
+  | 'localModelDownloadingTitle'
+  | 'localModelNotReadyTitle'
+  | 'localModelNotReadyHint'
+  | 'localModelErrorTitle'
   | 'openFolder'
   | 'conflictDialogTitle'
   | 'conflictDialogMessage'
@@ -357,6 +368,9 @@ export const zh: Record<KnowledgeKey, string> = {
   statsChunks: '分块',
   statsChars: '字符',
   statsTokens: '≈ Token',
+  statsDims: '向量维度',
+  dimensionProbeFailed: '嵌入模型探测失败',
+  dimensionProbing: '探测中…',
   embedded: '已向量化',
   notEmbedded: '未向量化',
   noBases: '暂无知识库',
@@ -398,6 +412,8 @@ export const zh: Record<KnowledgeKey, string> = {
   conflictKeep: '保留两者',
   urlRefreshHours: 'URL 自动刷新（小时）',
   urlRefreshHoursHint: '超过该时长的 URL 文档每小时自动重新抓取并更新索引（0 = 关闭）',
+  resumeInterrupted: '重启后自动恢复中断的导入',
+  resumeInterruptedHint: '关闭后，重启时中断的导入标记为失败（需手动重建），不再自动重跑嵌入（Cherry Studio 行为）',
   imageCaptionHint: '图表描述（可选）：用视觉模型描述 PDF 中的图片/图表，描述文本可被检索',
   imageCaptionOff: '关闭',
   imageCaptionOpenAI: 'OpenAI 兼容视觉模型',
@@ -438,6 +454,12 @@ export const zh: Record<KnowledgeKey, string> = {
   embeddingSwitchWarning: '⚠ 切换嵌入模型会使本库已有向量全部失效，保存会被拒绝——请改用「重建知识库」以新模型重建（或先清空本库文档）',
   staleModelSuffix: '（未安装）',
   embeddingModelMissingHint: '嵌入模型使用本地模型，但尚未下载——导入的内容将无法向量化检索。请先到「设置 → 本地模型」下载嵌入模型（约 585MB）。',
+  localModelStatusLabel: '本地嵌入模型',
+  goToSettings: '去设置',
+  localModelDownloadingTitle: '本地嵌入模型下载中',
+  localModelNotReadyTitle: '本地嵌入模型未就绪',
+  localModelNotReadyHint: '未就绪前导入的内容只能关键词检索，无法向量化。请下载或检查本地模型。',
+  localModelErrorTitle: '本地嵌入模型加载失败',
   openFolder: '打开',
   conflictDialogTitle: '同名文件',
   conflictDialogMessage: '有 {count} 个文件与知识库中已有文件同名，如何处理？',
@@ -611,6 +633,9 @@ export const en: Record<KnowledgeKey, string> = {
   statsChunks: 'chunks',
   statsChars: 'chars',
   statsTokens: '~tokens',
+  statsDims: 'vector dims',
+  dimensionProbeFailed: 'Embedding probe failed',
+  dimensionProbing: 'Probing…',
   embedded: 'embedded',
   notEmbedded: 'not embedded',
   noBases: 'No knowledge bases',
@@ -652,6 +677,8 @@ export const en: Record<KnowledgeKey, string> = {
   conflictKeep: 'Keep both',
   urlRefreshHours: 'URL auto-refresh (hours)',
   urlRefreshHoursHint: 'URL documents older than this are re-fetched and re-indexed hourly (0 = off)',
+  resumeInterrupted: 'Resume interrupted imports on restart',
+  resumeInterruptedHint: 'When off, imports interrupted by a shutdown are marked failed instead of auto re-embedding (Cherry Studio behavior)',
   imageCaptionHint: 'Image/table captioning (optional): a vision model describes embedded PDF figures so charts become searchable',
   imageCaptionOff: 'Off',
   imageCaptionOpenAI: 'OpenAI-compatible vision model',
@@ -692,6 +719,12 @@ export const en: Record<KnowledgeKey, string> = {
   embeddingSwitchWarning: '⚠ Switching the embedding model invalidates this base\'s stored vectors, so the save will be refused — rebuild via 重建知识库 with the new model instead (or empty the base first)',
   staleModelSuffix: ' (not installed)',
   embeddingModelMissingHint: 'The embedding provider is the local model, which is not downloaded yet — imported content cannot be vectorized for retrieval. Download the embedding model (~585MB) in Settings → Local Models first.',
+  localModelStatusLabel: 'Local embedding model',
+  goToSettings: 'Settings',
+  localModelDownloadingTitle: 'Downloading the local embedding model',
+  localModelNotReadyTitle: 'Local embedding model not ready',
+  localModelNotReadyHint: 'Until it is ready, imports are keyword-searchable only. Download or check the local model.',
+  localModelErrorTitle: 'Local embedding model failed to load',
   openFolder: 'Open',
   conflictDialogTitle: 'Same-name files',
   conflictDialogMessage: '{count} files share a name with items already in this base. How to proceed?',

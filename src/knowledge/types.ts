@@ -179,6 +179,8 @@ export interface KnowledgeConfig {
   readonly imageCaptionBaseUrl: string
   /** Captioning API key (openai provider). */
   readonly imageCaptionApiKey: string
+  /** Re-run interrupted imports on startup (off = mark them failed, Cherry's posture). */
+  readonly resumeInterruptedOnStartup: boolean
 }
 
 /** One ranked search result. */

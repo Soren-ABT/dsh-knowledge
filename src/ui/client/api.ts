@@ -143,6 +143,7 @@ export interface KnowledgeConfig {
   documentProcessorProvider: 'builtin' | 'mineru'
   mineruApiKey: string
   mineruApiHost: string
+  resumeInterruptedOnStartup: boolean
 }
 
 export interface SearchHit {
@@ -308,6 +309,19 @@ export class KnowledgeApi {
 
   setConfig(overrides: Partial<KnowledgeConfig>): Promise<KnowledgeConfig> {
     return this.call('PUT', '/config', overrides)
+  }
+
+  /**
+   * Embed one probe text through the given (or current) embedding config and
+   * return the vector width (Cherry's dimension probe, run before a save).
+   */
+  probeEmbeddingDimensions(options: {
+    provider?: EmbeddingProvider
+    baseUrl?: string
+    model?: string
+    apiKey?: string
+  } = {}): Promise<number> {
+    return this.call('POST', '/probe-embedding-dimensions', options)
   }
 
   listBases(): Promise<BaseSummary[]> {

@@ -42,6 +42,7 @@ const DEFAULT_CONFIG: Config = {
   imageCaptionModel: '',
   imageCaptionBaseUrl: '',
   imageCaptionApiKey: '',
+  resumeInterruptedOnStartup: true,
 }
 
 function fakeWebServer() {
@@ -338,6 +339,42 @@ describe('KnowledgeService', () => {
       conflict: 'detect',
     })).rejects.toBeInstanceOf(ConflictError)
     expect(service.listDocuments(base.id)).toHaveLength(1)
+  })
+
+  it('does not resurrect a file deleted while its queued import was running', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'delete-race' })
+    const doc = await service.addFileDocument({
+      baseId: base.id,
+      fileName: 'race.txt',
+      contentBase64: Buffer.from('race condition content').toString('base64'),
+    })
+    // Delete the placeholder row before the queued parse+ingest settles.
+    await service.deleteDocument(doc.id)
+    expect(service.listDocuments(base.id)).toHaveLength(0)
+    await service.waitForIdle()
+    // The in-flight task must NOT have recreated the row or any chunks
+    // (Cherry's deleting-guard).
+    expect(service.listDocuments(base.id)).toHaveLength(0)
+    expect(service.listChunks(doc.id)).toHaveLength(0)
+  })
+
+  it('does not recreate chunks under a base deleted while imports were queued', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'base-race' })
+    const doc = await service.addFileDocument({
+      baseId: base.id,
+      fileName: 'race2.txt',
+      contentBase64: Buffer.from('base race content').toString('base64'),
+    })
+    await service.deleteBase(base.id)
+    await service.waitForIdle()
+    // deleteBase leaves the document row behind (no cascade), but the in-flight
+    // task must not write chunks back under the removed base (Cherry's
+    // deleting-guard) nor flip the row to a terminal state.
+    expect(service.listChunks(doc.id)).toHaveLength(0)
+    const orphan = service.listDocuments(base.id)[0]
+    expect(orphan?.embeddingError).toBeUndefined()
   })
 
   it('uploads a PDF end to end: row lands, pool parses, chunks are indexed', async () => {

@@ -61,6 +61,12 @@ export interface Config {
   imageCaptionBaseUrl: string
   /** Captioning API key (openai provider). */
   imageCaptionApiKey: string
+  /**
+   * Re-run interrupted imports on startup (hash reuse re-embeds only the
+   * batches that never landed). Off = mark them failed instead — Cherry's
+   * posture: a deliberate app quit must not re-spend the embedding API.
+   */
+  resumeInterruptedOnStartup: boolean
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -97,6 +103,7 @@ export const Config: Schema<Config> = Schema.object({
   imageCaptionModel: Schema.string().default(''),
   imageCaptionBaseUrl: Schema.string().default(''),
   imageCaptionApiKey: Schema.string().default(''),
+  resumeInterruptedOnStartup: Schema.boolean().default(true),
 })
 
 /** Resolve a full config from deployment defaults plus runtime overrides. */
@@ -145,6 +152,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     imageCaptionModel: overrides.imageCaptionModel ?? config.imageCaptionModel,
     imageCaptionBaseUrl: overrides.imageCaptionBaseUrl ?? config.imageCaptionBaseUrl,
     imageCaptionApiKey: overrides.imageCaptionApiKey ?? config.imageCaptionApiKey,
+    resumeInterruptedOnStartup: overrides.resumeInterruptedOnStartup ?? config.resumeInterruptedOnStartup,
     localModelCacheDir: overrides.localModelCacheDir ?? config.localModelCacheDir,
   }
 }

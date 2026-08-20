@@ -46,6 +46,7 @@ const TEST_CONFIG: Config = {
   imageCaptionModel: '',
   imageCaptionBaseUrl: '',
   imageCaptionApiKey: '',
+  resumeInterruptedOnStartup: true,
 }
 
 /** Minimal in-memory KvTable matching the storage-domain runtime contract. */
@@ -120,7 +121,7 @@ describe('ChunkDatabase (per-chunk SQL layout)', () => {
       expect(db.size).toBe(3)
       expect(db.listChunksByDoc('d1').map(c => c.id).sort()).toEqual(['c1', 'c2'])
       expect(db.listChunks('b1')).toHaveLength(3)
-      db.deleteChunks('d1')
+      await db.deleteChunks('d1')
       expect(db.listChunksByDoc('d1')).toHaveLength(0)
       expect(db.listChunks('b1')).toHaveLength(1)
       db.close()
@@ -139,7 +140,7 @@ describe('ChunkDatabase (per-chunk SQL layout)', () => {
       const db = new ChunkDatabase(join(dir, 'chunks.sqlite'))
       db.putChunks([chunk('c1', 'd1', 'b1', 0, 'a'), chunk('c2', 'd2', 'b1', 0, 'b')])
       db.putChunks([chunk('c3', 'd3', 'b2', 0, 'c')])
-      db.deleteChunksByBase('b1')
+      await db.deleteChunksByBase('b1')
       expect(db.listChunks('b1')).toHaveLength(0)
       expect(db.listChunks('b2')).toHaveLength(1)
       db.close()
@@ -368,7 +369,7 @@ describe('ChunkDatabase (per-chunk SQL layout)', () => {
       db.putChunks([embedded('c1', 'd1', 'alpha text', [1, 0, 0])])
       const hash = hashEmbeddingText('doc\nalpha text')
       expect(db.listEmbeddingVectorsByHashes([hash], 'openai:m1').has(hash)).toBe(true)
-      db.deleteChunksByBase('b1')
+      await db.deleteChunksByBase('b1')
       expect(db.listEmbeddingVectorsByHashes([hash], 'openai:m1').has(hash)).toBe(false)
       db.close()
     } finally {
@@ -718,20 +719,39 @@ describe('DomainStore wiring', () => {
       }
       db.putChunks(docs)
       // Small delete: below the threshold → no VACUUM, cheap no-op.
-      db.deleteChunks('d0')
+      await db.deleteChunks('d0')
       const small = db.reclaimSpace()
       expect(small.vacuumed).toBe(false)
 
       // Large delete: most documents go → the threshold is crossed.
-      for (let d = 1; d < 28; d += 1) db.deleteChunks(`d${d}`)
+      for (let d = 1; d < 28; d += 1) await db.deleteChunks(`d${d}`)
       const outcome = db.reclaimSpace()
       expect(outcome.vacuumed).toBe(true)
       expect(outcome.reclaimedBytes).toBeGreaterThan(0)
 
-      // FTS still answers after the optimize + VACUUM.
-      const result = await db.lexical('reclaimable', ['b1'], 10)
+      // FTS still answers after the optimize + VACUUM — and EVERY remaining
+      // row is reachable through the stable fts_rowid surrogate (a rowid-keyed
+      // FTS would silently drop rows once VACUUM renumbers the table).
+      const result = await db.lexical('reclaimable', ['b1'], 100)
       expect(result.total).toBe(40) // d28 + d29 remain (d0..d27 deleted)
-      expect(result.hits[0].id.startsWith('c29-') || result.hits[0].id.startsWith('c28-')).toBe(true)
+      expect(result.hits.length).toBe(40)
+      expect(result.hits.every(hit => hit.docId === 'd28' || hit.docId === 'd29')).toBe(true)
+
+      // Writes after the rebuild keep the trigger-assigned surrogate unique.
+      db.putChunks([
+        chunk('c-new', 'd30', 'b1', 0, `${big} doc 30`),
+        chunk('c-new2', 'd30', 'b1', 1, `${big} doc 30 again`),
+      ])
+      const after = await db.lexical('doc 30', ['b1'], 10)
+      expect(after.hits.length).toBeGreaterThan(0)
+      await db.deleteChunks('d30')
+      // '30' is a 2-char short term: its LIKE filter is relaxed when it
+      // eliminates every candidate (Cherry's semantics), so other docs' hits
+      // may appear — but the deleted doc's chunks must be gone from both paths.
+      const gone = await db.lexical('doc 30', ['b1'], 10)
+      expect(gone.hits.some(hit => hit.docId === 'd30')).toBe(false)
+      const exact = await db.lexical('reclaimable', ['b1'], 100)
+      expect(exact.hits.some(hit => hit.docId === 'd30')).toBe(false)
       db.close()
     } finally {
       await rm(dir, { recursive: true, force: true })

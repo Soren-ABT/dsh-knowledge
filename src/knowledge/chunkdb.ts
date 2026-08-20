@@ -44,6 +44,11 @@ function dshHome(): string {
 /** Max bound parameters per reuse query (SQLite's limit is ~999; Cherry uses 500). */
 const EMBEDDING_HASH_QUERY_BATCH = 500
 
+/** Chunk rows deleted per statement (each row fires the FTS tombstone trigger). */
+const DELETE_BATCH_SIZE = 2000
+/** Yield the host event loop after this much cumulative delete time (Cherry's budget). */
+const DELETE_YIELD_BUDGET_MS = 50
+
 /**
  * VACUUM only when the freelist is BOTH a large share of the file AND a
  * meaningful byte count (Cherry's thresholds): a tiny delete must not pay for
@@ -55,11 +60,25 @@ const VACUUM_MIN_FREED_BYTES = 8 * 1024 * 1024
 
 // ── FTS query compilation (trigram tokenizer) ────────────────────────────────
 
+/**
+ * Cap on MATCH terms per query. Bounds the term *count* a long CJK question can
+ * contribute (each character past the second adds a trigram), not the size of
+ * any one term. Whole words rank ahead of trigram windows in
+ * {@link extractMatchTerms}, so the cap sheds the tail of a long clause rather
+ * than a rare word sitting at the end of the question (Cherry's ftsQuery.ts).
+ */
+const MAX_MATCH_TERMS = 64
+
+/** Extract word/number tokens (Unicode letters, numbers, underscore) from free user text. */
+function extractFtsTokens(query: string): string[] {
+  return query.match(/[\p{L}\p{N}_]+/gu) ?? []
+}
+
 /** Tokens a trigram index can MATCH: whole words (≥3 chars) and CJK trigram windows. */
 function extractMatchTerms(query: string): string[] {
   const trigrams: string[] = []
   const words: string[] = []
-  for (const token of query.match(/[\p{L}\p{N}_]+/gu) ?? []) {
+  for (const token of extractFtsTokens(query)) {
     const chars = [...token]
     let cursor = 0
     while (cursor < chars.length) {
@@ -75,16 +94,16 @@ function extractMatchTerms(query: string): string[] {
       cursor = end
     }
   }
-  return [...new Set([...words.filter(word => [...word].length >= 3), ...trigrams])]
+  const distinct = [...new Set([...words.filter(word => [...word].length >= 3), ...trigrams])]
+  if (distinct.length > MAX_MATCH_TERMS) {
+    console.warn(`[dsh-knowledge] BM25 query exceeds the MATCH term cap; shedding the tail (${distinct.length} terms)`)
+  }
+  return distinct.slice(0, MAX_MATCH_TERMS)
 }
 
 /** Terms of 1–2 characters: no trigram, applied as LIKE filters (Cherry's approach). */
 function extractShortTerms(query: string): string[] {
-  const words: string[] = []
-  for (const token of query.match(/[\p{L}\p{N}_]+/gu) ?? []) {
-    if ([...token].length < 3) words.push(token)
-  }
-  return [...new Set(words)]
+  return [...new Set(extractFtsTokens(query).filter(token => [...token].length < 3))]
 }
 
 /**
@@ -224,6 +243,7 @@ export class ChunkDatabase implements RetrievalLane {
     mkdirSync(dirname(path), { recursive: true })
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL')
+    this.db.exec('PRAGMA synchronous = NORMAL')
     this.db.exec('PRAGMA foreign_keys = OFF')
     // Multiple connections can touch the store (a second plugin instance, a
     // crashed-and-restarted host still holding the old file, the one-time
@@ -244,26 +264,80 @@ export class ChunkDatabase implements RetrievalLane {
         context TEXT,
         embedding BLOB,
         embedding_model TEXT,
-        embedding_text_hash TEXT
+        embedding_text_hash TEXT,
+        fts_rowid INTEGER
       );
       CREATE INDEX IF NOT EXISTS chunk_doc_idx ON chunk(doc_id);
       CREATE INDEX IF NOT EXISTS chunk_base_idx ON chunk(base_id);
       CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
-        search_text, content='chunk', content_rowid='rowid', tokenize='trigram'
+        search_text, content='chunk', content_rowid='fts_rowid', tokenize='trigram'
       );
+      -- fts_rowid is a STABLE surrogate key assigned by the insert trigger (never
+      -- app code): the implicit rowid is renumbered by VACUUM, which would silently
+      -- desync this external-content FTS from its rows (Cherry's #16132-class fix).
       CREATE TRIGGER IF NOT EXISTS chunk_ai AFTER INSERT ON chunk BEGIN
-        INSERT INTO chunk_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
+        UPDATE chunk SET fts_rowid = (SELECT COALESCE(MAX(fts_rowid), 0) + 1 FROM chunk)
+          WHERE chunk_id = NEW.chunk_id;
+        INSERT INTO chunk_fts(rowid, search_text)
+        SELECT fts_rowid, search_text FROM chunk WHERE chunk_id = NEW.chunk_id;
       END;
       CREATE TRIGGER IF NOT EXISTS chunk_ad AFTER DELETE ON chunk BEGIN
-        INSERT INTO chunk_fts(chunk_fts, rowid, search_text) VALUES ('delete', old.rowid, old.search_text);
+        INSERT INTO chunk_fts(chunk_fts, rowid, search_text) VALUES ('delete', OLD.fts_rowid, OLD.search_text);
       END;
+      -- fts_rowid is stable across a text edit, so it is not reassigned — only the
+      -- FTS row is re-keyed.
       CREATE TRIGGER IF NOT EXISTS chunk_au AFTER UPDATE OF search_text ON chunk BEGIN
-        INSERT INTO chunk_fts(chunk_fts, rowid, search_text) VALUES ('delete', old.rowid, old.search_text);
-        INSERT INTO chunk_fts(rowid, search_text) VALUES (new.rowid, new.search_text);
+        INSERT INTO chunk_fts(chunk_fts, rowid, search_text) VALUES ('delete', OLD.fts_rowid, OLD.search_text);
+        INSERT INTO chunk_fts(rowid, search_text) VALUES (NEW.fts_rowid, NEW.search_text);
       END;
     `)
     this.migrateEmbeddingHashColumn()
+    this.migrateFtsRowidColumn()
     this.migrateFromBundleLayout()
+  }
+
+  /**
+   * Schema evolution for the stable FTS surrogate key: older stores keyed the
+   * external-content FTS on the implicit `rowid`, which VACUUM renumbers — the
+   * FTS then silently points at the wrong rows (Cherry's #16132 class). Adds
+   * the `fts_rowid` column, backfills it from the current rowid, and rebuilds
+   * `chunk_fts` (virtual tables cannot change their content_rowid in place).
+   * Idempotent: a fresh store already has both, so only the unique index is
+   * ensured. `fts_rowid` must be unique so the MAX+1 assignment in the insert
+   * trigger stays a correct key — the UNIQUE index makes a violation loud.
+   */
+  private migrateFtsRowidColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(chunk)').all() as Array<{ name: string }>
+    if (!columns.some(column => column.name === 'fts_rowid')) {
+      this.db.exec('ALTER TABLE chunk ADD COLUMN fts_rowid INTEGER')
+    }
+    this.db.exec('UPDATE chunk SET fts_rowid = rowid WHERE fts_rowid IS NULL')
+    const fts = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chunk_fts'").get() as { sql: string } | undefined
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS chunk_fts_rowid_uniq ON chunk(fts_rowid)')
+    // A fresh store (DDL above) already keys on fts_rowid; an older store needs
+    // its virtual table + triggers rebuilt before the backfilled key takes effect.
+    if (fts !== undefined && fts.sql.includes('fts_rowid')) return
+    this.db.exec('DROP TRIGGER IF EXISTS chunk_ai')
+    this.db.exec('DROP TRIGGER IF EXISTS chunk_ad')
+    this.db.exec('DROP TRIGGER IF EXISTS chunk_au')
+    this.db.exec('DROP TABLE IF EXISTS chunk_fts')
+    this.db.exec(`CREATE VIRTUAL TABLE chunk_fts USING fts5(
+      search_text, content='chunk', content_rowid='fts_rowid', tokenize='trigram'
+    )`)
+    this.db.exec(`CREATE TRIGGER chunk_ai AFTER INSERT ON chunk BEGIN
+      UPDATE chunk SET fts_rowid = (SELECT COALESCE(MAX(fts_rowid), 0) + 1 FROM chunk)
+        WHERE chunk_id = NEW.chunk_id;
+      INSERT INTO chunk_fts(rowid, search_text)
+      SELECT fts_rowid, search_text FROM chunk WHERE chunk_id = NEW.chunk_id;
+    END`)
+    this.db.exec(`CREATE TRIGGER chunk_ad AFTER DELETE ON chunk BEGIN
+      INSERT INTO chunk_fts(chunk_fts, rowid, search_text) VALUES ('delete', OLD.fts_rowid, OLD.search_text);
+    END`)
+    this.db.exec(`CREATE TRIGGER chunk_au AFTER UPDATE OF search_text ON chunk BEGIN
+      INSERT INTO chunk_fts(chunk_fts, rowid, search_text) VALUES ('delete', OLD.fts_rowid, OLD.search_text);
+      INSERT INTO chunk_fts(rowid, search_text) VALUES (NEW.fts_rowid, NEW.search_text);
+    END`)
+    this.db.exec(`INSERT INTO chunk_fts(chunk_fts) VALUES('rebuild')`)
   }
 
   /**
@@ -459,19 +533,42 @@ export class ChunkDatabase implements RetrievalLane {
     for (const chunk of chunks) this.upsertVectorCache(chunk)
   }
 
-  deleteChunks(docId: string, baseId?: string): void {
-    if (baseId !== undefined) {
-      // Scoped delete: only this base's rows for the doc are removed.
-      this.db.prepare('DELETE FROM chunk WHERE doc_id = ? AND base_id = ?').run(docId, baseId)
-    } else {
-      // Unscoped (legacy/test callers): matches every base's rows for the doc.
-      this.db.prepare('DELETE FROM chunk WHERE doc_id = ?').run(docId)
+  async deleteChunks(docId: string, baseId?: string): Promise<void> {
+    const where = baseId !== undefined ? 'doc_id = ? AND base_id = ?' : 'doc_id = ?'
+    const keyParams: Array<string> = baseId !== undefined ? [docId, baseId] : [docId]
+    // Batch the deletes so a huge document never blocks the host event loop in
+    // one statement (every row fires the FTS tombstone trigger); yield to the
+    // message pump after ~50ms of cumulative work (Cherry's
+    // DELETE_YIELD_BUDGET_MS in deleteMaterials). `ORDER BY rowid` keeps each
+    // batch deterministically anchored so the loop always makes progress.
+    const stmt = this.db.prepare(
+      `DELETE FROM chunk WHERE rowid IN (SELECT rowid FROM chunk WHERE ${where} ORDER BY rowid LIMIT ?)`,
+    )
+    let started = Date.now()
+    for (;;) {
+      const changed = stmt.run(...keyParams, DELETE_BATCH_SIZE).changes
+      if (changed === 0) break
+      if (Date.now() - started >= DELETE_YIELD_BUDGET_MS) {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        started = Date.now()
+      }
     }
     this.dropVectorCacheByDoc(docId)
   }
 
-  deleteChunksByBase(baseId: string): void {
-    this.db.prepare('DELETE FROM chunk WHERE base_id = ?').run(baseId)
+  async deleteChunksByBase(baseId: string): Promise<void> {
+    const stmt = this.db.prepare(
+      'DELETE FROM chunk WHERE rowid IN (SELECT rowid FROM chunk WHERE base_id = ? ORDER BY rowid LIMIT ?)',
+    )
+    let started = Date.now()
+    for (;;) {
+      const changed = stmt.run(baseId, DELETE_BATCH_SIZE).changes
+      if (changed === 0) break
+      if (Date.now() - started >= DELETE_YIELD_BUDGET_MS) {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        started = Date.now()
+      }
+    }
     this.vectorCache.delete(baseId)
   }
 
@@ -606,32 +703,53 @@ export class ChunkDatabase implements RetrievalLane {
     const shortTerms = extractShortTerms(query)
     const likeFilters = shortTerms.map(() => `(c.search_text LIKE ? ESCAPE '\\')`).join(' AND ')
     if (needsLikeFallback(query)) {
-      // Nothing trigram-indexable (e.g. a bare two-character CJK term): a pure
-      // LIKE scan — bm25() has no MATCH context here, so no FTS join at all.
-      const pattern = toLikePattern(query.trim())
+      // Cherry's bm25LikeSearch: nothing trigram-indexable (e.g. a bare
+      // two-character CJK term) — a pure LIKE scan with one AND-ed filter per
+      // token (a single whole-query pattern would demand a verbatim contiguous
+      // substring), ordered by text length (dense chunks first) with a
+      // length-based score as the relevance proxy.
+      const tokens = extractFtsTokens(query)
+      if (tokens.length === 0) return { total, hits: [] }
+      const filters = tokens
+        .map(() => `(c.search_text LIKE ? ESCAPE '\\' OR c.context LIKE ? ESCAPE '\\')`)
+        .join(' AND ')
       const sql = `
-        SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk c
-        WHERE ${scopeSql} AND (c.search_text LIKE ? ESCAPE '\\' OR c.context LIKE ? ESCAPE '\\')
-        ORDER BY c.rowid
+        SELECT ${ChunkDatabase.SELECT_COLUMNS}, search_text FROM chunk c
+        WHERE ${scopeSql} AND ${filters}
+        ORDER BY length(c.search_text) ASC
         LIMIT ?
       `
-      params.push(pattern, pattern, limit)
-      const rows = this.db.prepare(sql).all(...params) as unknown as ChunkRow[]
-      return { total, hits: rows.map(row => ({ ...rowToChunk(row), score: 1 })) }
+      for (const token of tokens) {
+        const pattern = toLikePattern(token)
+        params.push(pattern, pattern)
+      }
+      params.push(limit)
+      const rows = this.db.prepare(sql).all(...params) as unknown as Array<ChunkRow & { search_text: string }>
+      return { total, hits: rows.map(row => ({ ...rowToChunk(row), score: -row.search_text.length })) }
     }
     const matchTerms = extractMatchTerms(query)
-    const sql = `
+    const matchQuery = matchTerms.map(term => `"${term.replaceAll('"', '""')}"`).join(' OR ')
+    const baseSql = `
       SELECT ${ChunkDatabase.SELECT_COLUMNS}, bm25(chunk_fts) AS fts_score
-      FROM chunk_fts JOIN chunk c ON c.rowid = chunk_fts.rowid
+      FROM chunk_fts JOIN chunk c ON c.fts_rowid = chunk_fts.rowid
       WHERE ${scopeSql} AND chunk_fts MATCH ?
-      ${likeFilters !== '' ? `AND ${likeFilters}` : ''}
-      ORDER BY fts_score ASC
-      LIMIT ?
     `
-    params.push(matchTerms.map(term => `"${term.replaceAll('"', '""')}"`).join(' OR '))
-    for (const term of shortTerms) params.push(toLikePattern(term))
-    params.push(limit)
-    const rows = this.db.prepare(sql).all(...params) as unknown as Array<ChunkRow & { fts_score: number }>
+    const matchSql = likeFilters !== ''
+      ? `${baseSql} AND ${likeFilters} ORDER BY fts_score ASC LIMIT ?`
+      : `${baseSql} ORDER BY fts_score ASC LIMIT ?`
+    const relaxedSql = `${baseSql} ORDER BY fts_score ASC LIMIT ?`
+    params.push(matchQuery)
+    const filteredParams = [...params]
+    for (const term of shortTerms) filteredParams.push(toLikePattern(term))
+    filteredParams.push(limit)
+    let rows = this.db.prepare(matchSql).all(...filteredParams) as unknown as Array<ChunkRow & { fts_score: number }>
+    if (rows.length === 0 && shortTerms.length > 0) {
+      // Cherry's relaxation: a filler short term ('to', 「的」) can eliminate
+      // every candidate; retry without the filters rather than returning
+      // nothing — the ranked MATCH terms alone decide the result.
+      params.push(limit)
+      rows = this.db.prepare(relaxedSql).all(...params) as unknown as Array<ChunkRow & { fts_score: number }>
+    }
     const hits: LaneHit[] = rows.map(row => ({ ...rowToChunk(row), score: normalizeBm25(-row.fts_score) }))
     return { total, hits }
   }

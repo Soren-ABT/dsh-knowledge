@@ -48,6 +48,8 @@ export const baseConfigSchema = z.object({
   imageCaptionModel: z.string().optional(),
   imageCaptionBaseUrl: z.string().optional(),
   imageCaptionApiKey: z.string().optional(),
+  /** Re-run interrupted imports (re-embedding the missing batches) on startup; off = mark them failed instead (Cherry's posture). */
+  resumeInterruptedOnStartup: z.boolean().optional(),
 })
 
 const baseSchema = z.object({
@@ -154,6 +156,7 @@ export interface ConfigOverrides {
   imageCaptionModel?: string
   imageCaptionBaseUrl?: string
   imageCaptionApiKey?: string
+  resumeInterruptedOnStartup?: boolean
   localModelCacheDir?: string
 }
 

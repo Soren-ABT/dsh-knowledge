@@ -8,7 +8,7 @@
  * @module dsh-knowledge/client/KnowledgeSection
  */
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, DragEvent } from 'react'
 import { KnowledgeApi } from './api.js'
 import type {
@@ -17,6 +17,7 @@ import type {
   ChunkView,
   DocumentSummary,
   KnowledgeConfig,
+  LocalModelStatus,
   SearchHit,
   SearchMode,
 } from './api.js'
@@ -173,6 +174,11 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   // local model and it is not downloaded yet, the empty base explains what to
   // do instead of silently importing vectors-less content.
   const [localEmbeddingDownloaded, setLocalEmbeddingDownloaded] = useState<boolean | null>(null)
+  // Live status of the SELECTED base's local embedding model (Cherry's
+  // DataSourcePanel full-list state view): downloading progress, not-downloaded
+  // and error states get a progress ring / guidance + a "go to settings" button
+  // instead of a silent lexical-only list.
+  const [localModelStatus, setLocalModelStatus] = useState<LocalModelStatus | null>(null)
   const [docLimit, setDocLimit] = useState(100)
   const [navWidth, setNavWidth] = useState(272)
   const [dragOver, setDragOver] = useState(false)
@@ -844,6 +850,34 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   }, [])
 
   const selectedBase = bases.find(b => b.id === selectedBaseId) ?? null
+
+  // The selected base's effective local embedding model (per-base config wins).
+  const selectedBaseLocalModel = useMemo<string | null>(() => {
+    if (selectedBase === null || globalConfig === null) return null
+    const provider = selectedBase.config?.embeddingProvider ?? globalConfig.embeddingProvider
+    if (provider !== 'local') return null
+    const model = (selectedBase.config?.embeddingModel ?? globalConfig.embeddingModel).trim()
+    return model === '' ? 'onnx-community/Qwen3-Embedding-0.6B-ONNX' : model
+  }, [selectedBase, globalConfig])
+
+  // Poll the model's download/runtime status while the base uses it (Cherry
+  // polls the same 800ms cadence for its header status label + list overlay).
+  useEffect(() => {
+    if (selectedBaseLocalModel === null) { setLocalModelStatus(null); return }
+    let cancelled = false
+    const poll = async (): Promise<void> => {
+      try {
+        const status = await api.getLocalModelStatus(selectedBaseLocalModel)
+        if (!cancelled) setLocalModelStatus(status)
+      } catch {
+        // keep the last known status on transient failures
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => { void poll() }, 800)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [api, selectedBaseLocalModel])
+
   const selectedDoc = documents.find(doc => doc.id === selectedDocId) ?? null
   const visibleDocuments = documents.filter(doc => (doc.parentDirectoryId ?? null) === currentDirectoryId)
   const renderedDocuments = visibleDocuments.slice(0, docLimit)
@@ -1132,6 +1166,9 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                       <StatChip value={stats.tokenCount} label={t('statsTokens')} />
                       <StatChip value={formatSize(stats.charCount)} label={t('statsChars')} />
                       <StatChip value={stats.embedded ? '✓' : '—'} label={stats.embedded ? t('embedded') : t('notEmbedded')} />
+                      {stats.embeddingDimensions !== undefined && (
+                        <StatChip value={`${stats.embeddingDimensions}d`} label={t('statsDims')} />
+                      )}
                     </div>
                   )}
 
@@ -1188,8 +1225,34 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                       </div>
                     ) : (
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span style={{ fontSize: 11, color: C.muted }}>
-                          {t('updatedAtText')} {formatRelativeTime(selectedBase.updatedAt)}
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                          <span style={{ fontSize: 11, color: C.muted }}>
+                            {t('updatedAtText')} {formatRelativeTime(selectedBase.updatedAt)}
+                          </span>
+                          {selectedBaseLocalModel !== null && localModelStatus !== null && localModelStatus.status !== 'ready' && (
+                            <span
+                              style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 4,
+                                fontSize: 11, color: localModelStatus.status === 'error' ? C.danger : C.warn,
+                                whiteSpace: 'nowrap',
+                              }}
+                              title={localModelStatus.message || undefined}
+                            >
+                              <span style={{ width: 7, height: 7, borderRadius: 999, background: localModelStatus.status === 'error' ? C.danger : C.warn, flexShrink: 0 }} />
+                              {t('localModelStatusLabel')}
+                              {localModelStatus.status === 'downloading'
+                                ? ` ${Math.round(localModelStatus.progress)}%`
+                                : localModelStatus.status === 'error'
+                                  ? ` · ${t('localModelErrorTitle')}`
+                                  : ` · ${t('localModelNotReadyTitle')}`}
+                              <button
+                                style={{ color: C.accent, cursor: 'pointer', background: 'none', border: 'none', fontSize: 11, padding: '0 2px', textDecoration: 'underline' }}
+                                onClick={() => setRagOpen(true)}
+                              >
+                                {t('goToSettings')}
+                              </button>
+                            </span>
+                          )}
                         </span>
                         <PopoverMenu
                           align="end"
@@ -1219,7 +1282,42 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                   entries={addSourceMenu}
                                 />
                               </div>
-                              {globalConfig !== null
+                              {selectedBaseLocalModel !== null && localModelStatus !== null && localModelStatus.status !== 'ready' && (
+                                <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                                  {localModelStatus.status === 'downloading' ? (
+                                    <>
+                                      <svg width={52} height={52} viewBox="0 0 52 52" aria-hidden="true">
+                                        <circle cx="26" cy="26" r="22" fill="none" stroke={C.border} strokeWidth="5" />
+                                        <circle
+                                          cx="26" cy="26" r="22" fill="none" stroke={C.accent} strokeWidth="5"
+                                          strokeLinecap="round"
+                                          strokeDasharray={`${2 * Math.PI * 22}`}
+                                          strokeDashoffset={`${2 * Math.PI * 22 * (1 - Math.min(1, Math.max(0, localModelStatus.progress / 100)))}`}
+                                          transform="rotate(-90 26 26)"
+                                        />
+                                      </svg>
+                                      <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{t('localModelDownloadingTitle')}</div>
+                                      <div style={{ fontSize: 12, color: C.muted }}>
+                                        {selectedBaseLocalModel} · {Math.round(localModelStatus.progress)}%
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <div style={{ fontSize: 13, fontWeight: 600, color: localModelStatus.status === 'error' ? C.danger : C.text }}>
+                                        {localModelStatus.status === 'error' ? t('localModelErrorTitle') : t('localModelNotReadyTitle')}
+                                      </div>
+                                      <div style={{ fontSize: 12, color: C.muted, maxWidth: 420, textAlign: 'center' }}>
+                                        {localModelStatus.message || t('localModelNotReadyHint')}
+                                      </div>
+                                    </>
+                                  )}
+                                  <button style={{ ...style.button, marginTop: 4 }} onClick={() => setRagOpen(true)}>
+                                    {t('goToSettings')}
+                                  </button>
+                                </div>
+                              )}
+                              {selectedBaseLocalModel === null
+                                && globalConfig !== null
                                 && globalConfig.embeddingProvider === 'local'
                                 && localEmbeddingDownloaded === false && (
                                 <div style={{ ...style.warningHint, marginTop: 14, maxWidth: 420, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center' }}>

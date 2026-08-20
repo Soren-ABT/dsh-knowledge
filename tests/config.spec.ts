@@ -39,6 +39,7 @@ const base: Config = {
   imageCaptionModel: '',
   imageCaptionBaseUrl: '',
   imageCaptionApiKey: '',
+  resumeInterruptedOnStartup: true,
 }
 
 describe('resolveConfig', () => {

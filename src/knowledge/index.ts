@@ -58,6 +58,7 @@ import type {
   DocumentDetail,
   DocumentSourceType,
   DocumentSummary,
+  EmbeddingProvider,
   ImportDirectoryRequest,
   ImportUrlRequest,
   KnowledgeBase,
@@ -196,12 +197,25 @@ export class KnowledgeService extends Service {
     // partially persisted, so re-running the embed with hash reuse completes
     // them without re-embedding the batches that already landed. (openStore
     // already ran the removal half of the recovery; this second pass is
-    // idempotent and only harvests the resume list.)
-    const resume = store.recoverInterruptedImports(Date.now()).then(({ resume: resumeIds }) => {
-      if (resumeIds.length > 0) {
-        this.ctx.logger.info(`knowledge: resuming ${resumeIds.length} interrupted import(s)`)
-        void this.resumeInterruptedDocuments(resumeIds)
+    // idempotent and only harvests the resume list.) The `resumeInterruptedOnStartup`
+    // config gates the automatic re-spend: off marks them failed instead
+    // (Cherry's posture — a deliberate app quit must not re-spend the
+    // embedding API; the user reindexes manually).
+    const resume = store.recoverInterruptedImports(Date.now()).then(async ({ resume: resumeIds }) => {
+      if (resumeIds.length === 0) return
+      if (!this.getConfig().resumeInterruptedOnStartup) {
+        const reason = 'import was interrupted by a shutdown; reindex to resume'
+        for (const id of resumeIds) {
+          const doc = store.getDocument(id)
+          if (doc !== undefined) {
+            await store.putDocument({ ...doc, embeddingError: reason, updatedAt: Date.now() })
+          }
+        }
+        this.ctx.logger.info(`knowledge: marked ${resumeIds.length} interrupted import(s) failed (auto-resume disabled)`)
+        return
       }
+      this.ctx.logger.info(`knowledge: resuming ${resumeIds.length} interrupted import(s)`)
+      void this.resumeInterruptedDocuments(resumeIds)
     })
     void resume.catch(error => this.ctx.logger.warn(`knowledge: interrupted-import recovery failed: ${error instanceof Error ? error.message : String(error)}`))
     this.armUrlRefreshTimer()
@@ -437,6 +451,12 @@ export class KnowledgeService extends Service {
   async deleteBase(id: string): Promise<void> {
     const store = this.requireStore()
     if (store.getBase(id) === undefined) throw new Error(`knowledge base not found: ${id}`)
+    // Cancel in-flight imports/reindexes under the deleted base (Cherry cancels
+    // active jobs before purging): their finishing writes must not recreate
+    // rows or chunks under the removed base.
+    for (const [docId, active] of [...this.indexing]) {
+      if (active.baseId === id) this.indexing.delete(docId)
+    }
     // Two statements: the base record plus one chunk sweep by base id.
     await store.deleteChunksByBase(id)
     await store.raw?.deleteBase(id)
@@ -756,8 +776,12 @@ export class KnowledgeService extends Service {
       } catch (error) {
         this.indexing.delete(docId)
         const message = error instanceof Error ? error.message : String(error)
+        // The row may have been deleted (or its base removed) while the task
+        // was queued or running — never resurrect it (Cherry's deleting-guard).
+        const current = store.getDocument(docId)
+        if (current === undefined || store.getBase(request.baseId) === undefined) return
         try {
-          await store.putDocument({ ...stored, embeddingError: message, updatedAt: Date.now() })
+          await store.putDocument({ ...current, embeddingError: message, updatedAt: Date.now() })
         } catch {
           // best-effort: the row already exists; the status flip is cosmetic
         }
@@ -1001,6 +1025,10 @@ export class KnowledgeService extends Service {
     const store = this.requireStore()
     const existing = store.getDocument(id)
     if (existing === undefined) return
+    // Invalidate any in-flight indexing for this document (Cherry cancels a
+    // subtree's jobs before a delete): its finishing writes must not
+    // resurrect the row or write chunks under the deleted item.
+    this.indexing.delete(id)
     // Deleting a directory container also removes its descendants.
     if (existing.sourceType === 'directory') {
       for (const child of store.listDocuments(existing.baseId)) {
@@ -1010,6 +1038,19 @@ export class KnowledgeService extends Service {
     if (existing.rawFilePath !== undefined) await store.raw?.delete(existing.rawFilePath)
     await store.deleteChunks(id, existing.baseId)
     await store.deleteDocument(id)
+  }
+
+  /**
+   * Throw when the document (or its base) vanished while indexing was in
+   * flight — Cherry's deleting-guard: a delete that lands mid-import or
+   * mid-reindex must never be resurrected by the finishing writes, and chunks
+   * must never land under a deleted base.
+   */
+  private assertIndexTargetAlive(docId: string, baseId: string): void {
+    const store = this.requireStore()
+    if (store.getDocument(docId) === undefined || store.getBase(baseId) === undefined) {
+      throw new Error('indexing target no longer exists (deleted while indexing)')
+    }
   }
 
   async renameDocument(id: string, title: string): Promise<KnowledgeDocument> {
@@ -1091,6 +1132,11 @@ export class KnowledgeService extends Service {
     }
     // putChunks overwrites the doc's chunk bundle in one write (legacy per-chunk
     // rows, if any, stay hidden because a bundle record is authoritative).
+    // A delete that landed mid-reindex must not resurrect rows or chunks
+    // (Cherry's deleting-guard).
+    if (store.getDocument(document.id) === undefined || store.getBase(document.baseId) === undefined) {
+      return document
+    }
     await store.putChunks(chunks)
     await store.putDocument(next)
     await this.touchBase(document.baseId)
@@ -1516,6 +1562,37 @@ export class KnowledgeService extends Service {
   /** Current download/load state of an in-process embedding model. */
   getLocalModelStatus(modelId?: string): LocalModelStatus {
     return getLocalModelStatus(modelId?.trim() || DEFAULT_LOCAL_MODEL)
+  }
+
+  /**
+   * Embed one probe text through the given (or current) embedding config and
+   * return the vector width — Cherry's `useEmbeddingDimensions` probe, run
+   * before a config save so a wrong-dimension model is caught up front.
+   * Local models answer from the catalog without loading the ~600MB pipeline.
+   */
+  async probeEmbeddingDimensions(options: {
+    provider?: EmbeddingProvider
+    baseUrl?: string
+    model?: string
+    apiKey?: string
+  } = {}): Promise<number> {
+    const config = this.getConfig()
+    const provider = options.provider ?? config.embeddingProvider
+    if (provider === 'none') throw new Error('no embedding provider configured')
+    const model = options.model ?? config.embeddingModel
+    if (provider === 'local') {
+      const descriptor = LOCAL_MODELS.find(entry => entry.kind === 'embedding' && entry.id === model)
+      if (descriptor?.dimensions !== undefined) return descriptor.dimensions
+    }
+    const [vector] = await embedTexts(
+      provider,
+      options.baseUrl ?? config.embeddingBaseUrl,
+      model,
+      options.apiKey ?? config.embeddingApiKey,
+      ['test'],
+    )
+    if (vector === undefined || vector.length === 0) throw new Error('embedding returned an empty vector')
+    return vector.length
   }
 
   // ── local model manager (settings "本地模型") ──────────────────────────────
@@ -2148,6 +2225,15 @@ export class KnowledgeService extends Service {
     // imports of identical content must not both pass the check (Cherry guards
     // the same read-then-write with its per-base mutation lock).
     const half = await this.withBaseWriteLock(input.baseId, async () => {
+      // Cherry's deleting-guard: a base deleted while a queued import waited
+      // must not accept new rows; a placeholder row deleted by the user before
+      // its queued task ran must not be recreated.
+      if (store.getBase(input.baseId) === undefined) {
+        throw new Error('knowledge base no longer exists (deleted while indexing)')
+      }
+      if (input.placeholderId !== undefined && store.getDocument(input.placeholderId) === undefined) {
+        throw new Error('document no longer exists (deleted while indexing)')
+      }
       for (const doc of store.listDocuments(input.baseId)) {
         if (doc.id === input.placeholderId) continue
         if (doc.contentHash === contentHash) {
@@ -2188,6 +2274,12 @@ export class KnowledgeService extends Service {
     // Chunking (regular or semantic) happens inside buildChunks; passing no
     // pieces lets the configured semanticChunk path run.
     const { chunks, embeddingError } = await this.buildChunks(input.baseId, half.id, input.title, input.text, config, undefined, batch => store.putChunkBatch(batch))
+    // A delete that landed mid-embedding must not resurrect the row nor write
+    // chunks under a deleted base (Cherry's deleting-guard).
+    if (store.getDocument(half.id) === undefined || store.getBase(input.baseId) === undefined) {
+      this.indexing.delete(half.id)
+      return half
+    }
     const document: KnowledgeDocument = {
       ...half,
       chunkCount: chunks.length,
@@ -2250,6 +2342,16 @@ export class KnowledgeService extends Service {
     if (config.chunkTokenLimit > 0) {
       slices = refineChunksByTokenLimit(slices, config.chunkTokenLimit, estimateTokens)
     }
+    // Cherry's deleting-guard on every persisted batch: a delete that lands
+    // mid-embedding aborts the remaining batches instead of writing chunks
+    // under a vanished document/base. The caller's finishing write re-checks
+    // too (buildChunks reports the abort as an embeddingError).
+    const guardedOnBatch = onBatch !== undefined
+      ? (batch: KnowledgeChunk[]): Promise<void> => {
+          this.assertIndexTargetAlive(docId, baseId)
+          return onBatch(batch)
+        }
+      : undefined
     const chunks: KnowledgeChunk[] = slices.map((piece, index) => ({
       id: crypto.randomUUID(),
       docId,
@@ -2328,9 +2430,8 @@ export class KnowledgeService extends Service {
             chunks[index] = { ...chunks[index], embedding: vectors[j], ...(key !== undefined ? { embeddingModel: key } : {}) }
             done.push(chunks[index])
           }
-          if (onBatch !== undefined) await onBatch(done)
-          this.indexing.set(docId, { baseId, title, phase: 'embedding', total: need.length, progress: Math.round((Math.min(i + batch.length, need.length) / need.length) * 100) })
-        }
+          if (guardedOnBatch !== undefined) await guardedOnBatch(done)
+          this.indexing.set(docId, { baseId, title, phase: 'embedding', total: need.length, progress: Math.round((Math.min(i + batch.length, need.length) / need.length) * 100) })        }
       } catch (error) {
         embeddingError = error instanceof Error ? error.message : String(error)
         this.ctx.logger.warn(`knowledge: embedding during import failed, storing lexical-only chunks: ${embeddingError}`)

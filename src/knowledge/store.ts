@@ -332,7 +332,7 @@ class DomainStore implements Store {
       // embedding failure); an item with none that predates this process was
       // left by a crash mid-import.
       if ((doc.updatedAt ?? doc.createdAt) >= startedAt) continue
-      this.chunkDb.deleteChunks(id)
+      await this.chunkDb.deleteChunks(id)
       await this.documents.delete(id)
       removed += 1
     }

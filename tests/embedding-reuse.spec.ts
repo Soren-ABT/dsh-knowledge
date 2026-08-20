@@ -68,6 +68,7 @@ const DEFAULT_CONFIG: Config = {
   imageCaptionModel: '',
   imageCaptionBaseUrl: '',
   imageCaptionApiKey: '',
+  resumeInterruptedOnStartup: true,
 }
 
 function fakeWebServer() {
