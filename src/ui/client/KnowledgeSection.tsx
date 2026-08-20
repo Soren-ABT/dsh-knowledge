@@ -33,6 +33,7 @@ import {
   IconSliders,
   IconTrash,
   IconFolder,
+  IconFolderOpen,
   docIconStyle,
   fileVisual,
 } from './icons.js'
