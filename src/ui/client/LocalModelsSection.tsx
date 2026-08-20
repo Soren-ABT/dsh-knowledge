@@ -193,6 +193,14 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     return () => window.clearInterval(timer)
   }, [api, pullingModels, refreshOllamaTags])
 
+  // Load the installed-model list on mount, and again whenever the Ollama
+  // base URL changes (a different server has a different model set). Without
+  // this the list stayed empty until the user clicked "refresh installed" —
+  // or until a pull happened to finish.
+  useEffect(() => {
+    void refreshOllamaTags()
+  }, [refreshOllamaTags])
+
   // Restore progress cards after a panel close/reopen: the pull lives in the
   // service (it survives the component), only the UI state was lost.
   useEffect(() => {
