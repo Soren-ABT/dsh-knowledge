@@ -21,16 +21,16 @@
 
 ## 它带来什么
 
-- **知识库与文档**：创建/删除/重命名知识库与文档；**分组管理**（新建/重命名/删除分组，侧边栏按分组折叠导航，知识库可在菜单中「移动到分组」）；**弹窗式添加文档（文本/文件/网页/目录四页签）**、多文件拖拽上传（单次 ≤20 个，**5 路并发后台导入池**，可同时丢多批）、**目录导入**（递归扫描 txt/md/csv/html/json/pdf/docx/doc/pptx/ppt/xlsx/xls/epub 等，**导入为可下钻的文件夹树**）、URL 导入；**同名冲突「全部保留/替换」**、内容哈希去重；**文档预览**（PDF 内嵌查看器 + 文本/分块预览，超大文件自动截断）；资料行显示 **✓ 就绪状态徽标、实时导入状态（解析中 / 嵌入中 NN%）与相对更新时间**，文件夹在任一后代处理时显示「导入中」；全部操作走正式对话框与 Toast 通知（无 window.prompt/confirm）。
+- **知识库与文档**：创建/删除/重命名知识库与文档；**分组管理**（新建/重命名/删除分组，侧边栏按分组折叠导航，知识库可在菜单中「移动到分组」）；**弹窗式添加文档（文本/文件/网页/目录四页签）**、多文件拖拽上传（单文件 ≤22MB，文件选择器单次最多 20 个、拖拽无数量上限，**5 路并发后台导入池**，可同时丢多批）、**目录导入**（递归扫描 txt/md/csv/html/json/pdf/docx/doc/pptx/ppt/xlsx/xls/epub 等，**导入为可下钻的文件夹树**）、URL 导入；**同名冲突「全部保留/替换」**、内容哈希去重；**文档预览**（PDF 内嵌查看器 + 文本/分块预览，超大文件自动截断）；资料行显示 **✓ 就绪状态徽标、实时导入状态（解析中 / 嵌入中 NN%）与相对更新时间**，文件夹在任一后代处理时显示「导入中」；全部操作走正式对话框与 Toast 通知（无 window.prompt/confirm）。
 - **扫描件 OCR（本地引擎）**：扫描版 PDF、**矢量绘制的无文本层 PDF** 与图片自动走**整页渲染 + PaddleOCR PP-OCRv5**（约 21MB 模型，含 1.8 万字符中文词典，设置 → 本地模型一键下载；页面用 mupdf WASM 渲染），识别失败自动回退 Tesseract；**1-bit 位图（JBIG2/CCITT 传真式扫描件）也能正确识别**；文本层损坏或逐字符排版的 PDF 会自动切换识别路径；识别文本照常分块、向量化、可检索。
 - **每库独立配置**：每个知识库可单独指定 embedding 提供方/模型（含**本地模型**）、**重排模型**（远程 API 或 **本地 bge-reranker**）、分块大小与 topK、**语义分块**、冲突策略、URL 自动刷新等，未设置字段自动继承全局配置；改配置后一键重建索引（全库或单条资料）。
 - **可选 MinerU 远程文档处理**：PDF 可交给 [MinerU](https://github.com/opendatalab/MinerU) 服务解析（公式、表格、版式还原成 Markdown），知识库设置里填入 MinerU API Key（全局或每库覆盖）即可；未配置时自动走本地解析链路。
 - **向量化与检索**：可插拔 embedding 提供方 —— 任意 OpenAI 兼容 `/embeddings` 端点（OpenAI、DeepSeek、SiliconFlow、本地网关…）、Ollama，或 **进程内本地模型（transformers.js，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX，无需联网服务）**；**混合检索**（BM25 + 向量 + Reciprocal Rank Fusion）、**重排模型（rerank，Jina/SiliconFlow/Cohere v2 风格 API 或本地跨编码器）**、**MMR 结果去重**、检索模式（auto/hybrid/vector/lexical）与相似度阈值、**多查询检索（extraQueries，换说法/翻译扩召回）**；未配置时自动退化关键词（CJK 二元组 + 拉丁词 BM25），零配置即可用；召回测试显示命中来源、相关度、双分数、**耗时**，**复制引用（Markdown 引用块 + 来源行）**，并保留**检索历史**可一键重放。
 - **智能分块**：标题感知分块（保留 Markdown 标题路径，**代码围栏保护**），并将「文档标题 + 标题路径」作为上下文注入 embedding 与检索；**语义分块**（段落嵌入 + 相邻相似段合并，零额外嵌入开销）与 **Token 上限细化**（超限在句号/逗号/空格边界继续切分）可选开启。
 - **索引管理**：按当前配置**重建索引**（改分块大小 / 换 embedding 后一键重切 + 重向量化）、批量 embedding、统计（文档/分块/字符/Token 数、是否已向量化）。
-- **模型工具**：`knowledge_search`（含 citations 引用数组）、`knowledge_list_bases`、`knowledge_create_base`、`knowledge_delete_base`、`knowledge_add_document`、`knowledge_list_documents`、`knowledge_delete_document`、`knowledge_import_url`、`knowledge_stats`、`knowledge_get_document`、`knowledge_read_document`（按字符区间分段阅读 / 正则定位）、`knowledge_reindex_base`。
+- **模型工具**：`knowledge_search`（含 citations 引用数组）、`knowledge_list_bases`、`knowledge_create_base`、`knowledge_delete_base`、`knowledge_add_document`、`knowledge_list_documents`、`knowledge_delete_document`、`knowledge_import_url`、`knowledge_refresh_url`、`knowledge_stats`、`knowledge_get_document`、`knowledge_read_document`（按字符区间分段阅读 / 正则定位）、`knowledge_reindex_document`、`knowledge_reindex_base`（共 14 个）。
 - **管理面板**：**不在设置内** —— 侧边栏底部（设置旁）的「知识库」入口打开工作区整页浮层，布局：左侧搜索框 + **分组折叠导航** + 彩色头像知识库卡片（右键菜单：重命名/移动到分组/新建分组/删除），右侧统计芯片、**「更新于」时间**、添加文档弹窗、**表格化资料列表（勾选列 + 名称/类型/状态/更新时间 + 多选批量重建/批量删除）**、分块/原文预览、重建索引、检索测试（命中高亮 + 向量/关键词双分数 + 历史 + 复制引用）、全局与每库设置弹窗（文档处理 / 图表描述 / 嵌入模型 / 重排模型 / TopK / 高级设置）、Toast 通知、空状态与悬停动效。
-- **本地模型管理（设置内）**：设置 →「本地模型」页面（`settings.section` 插槽），**嵌入、重排与 OCR 模型卡片**：模型名称/说明、**就绪徽标**、**下载 / 重试 / 删除** 按钮、**实时下载进度条**；**模型缓存目录可配置**（原生文件夹选择器 + 打开目录 + **一键迁移**已下载模型到新位置，不再盲目占满 C 盘）；**Ollama 管理**（拉取/取消/删除模型、已装列表、嵌入与视觉模型推荐）。
+- **本地模型管理（设置内）**：设置 →「本地模型」页面（`settings.section` 插槽），**嵌入、重排与 OCR 模型卡片**：模型名称/说明、**就绪徽标**、**下载 / 重试 / 删除** 按钮、**实时下载进度条**；**模型缓存目录可配置**（原生文件夹选择器 + 打开目录 + **一键迁移**已下载模型到新位置，迁移自动跳过隐藏目录、不会把目标目录复制进自身，不再盲目占满 C 盘）；**Ollama 管理**（拉取/取消/删除、**已装模型卡片列表（含大小）**、下载进度卡片、嵌入与视觉模型推荐）。
 - **持久化**：业务状态（知识库/文档/运行时配置）经 DSH 官方 `storageDomain` seam 落盘（`json` 后端，默认随 `web` profile 提供）；**分块数据存于独立 SQLite 文件**（`<DSH_HOME>/storages/knowledge-chunks.sqlite`，可用 `chunkStorePath` 配置）——每分块一行、每次写入/删除为单条语句，不随数据量恶化；词法检索走 FTS5 三元组全文索引、向量检索使用**常驻内存缓存**（Float32Array，精确失效），启动不再全量载入内存。升级后首次启动自动完成旧数据迁移（幂等、去重）；无存储后端时自动降级为内存模式。
 
 ---
@@ -42,7 +42,7 @@
 | 插件 / 线程 | 平台 | 职责 |
 |---|---|---|
 | `knowledge`（`ctx.knowledge`） | host | 核心引擎：存储域、分块、embedding、检索、OCR 调度、`/knowledge/*` HTTP 服务 |
-| `tool-knowledge` | host | 12 个模型工具，消费 `ctx.knowledge` |
+| `tool-knowledge` | host | 14 个模型工具，消费 `ctx.knowledge` |
 | `ui-knowledge` | client | 侧边栏底部入口（`sidebar.footer.action`）+ 工作区整页浮层（`shell.overlay`），Cherry Studio 式布局 |
 | `embed-worker`（worker 线程） | host | transformers.js 本地嵌入推理（模型 ~600MB 不进 host 进程） |
 | `ocr-worker`（worker 线程） | host | 页面渲染（mupdf WASM）+ PaddleOCR / Tesseract 识别（onnxruntime、OpenCV、tesseract worker 全隔离在线程内） |
@@ -131,7 +131,18 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 | `searchMode` | `auto` | `auto` / `hybrid` / `vector` / `lexical` |
 | `similarityThreshold` | `0` | 相似度阈值（0–1），低于该分数的结果被过滤 |
 | `mmrDiversity` | `0` | MMR 结果多样性（0–1，0=关闭） |
+| `rrfVectorWeight` | `1` | RRF 混合时向量路的相对权重（0.1–5，1=均衡） |
 | `embeddingBatchSize` | `32` | 每次 embedding 请求的文本条数 |
+| `siblingChunks` | `1` | 检索命中附带的上下文块数（±N，0–3，0=关闭） |
+| `semanticChunk` | `false` | 语义分块：段落嵌入 + 相邻相似段合并（按库可覆盖） |
+| `semanticChunkThreshold` | `0.75` | 语义分块合并阈值（0–1） |
+| `chunkTokenLimit` | `0` | 分块 Token 上限（0=不限制）；超限在句号/逗号/空格边界继续切分 |
+| `conflictStrategy` | `rename` | 同名文件导入策略：`rename`（自动 `_1` 后缀）/ `replace` / `keep` |
+| `urlRefreshHours` | `0` | URL 文档定时自动刷新间隔（小时，0=关闭） |
+| `imageCaptionProvider` | `off` | PDF 图表描述：`off` / `openai`（兼容视觉 API）/ `ollama`（本地 VLM） |
+| `imageCaptionModel` | `''` | 图表描述模型 id（如 `qwen2.5vl`、`gpt-4o-mini`） |
+| `imageCaptionBaseUrl` | `''` | 图表描述 API 地址；留空 = 嵌入基址（openai）或 `http://127.0.0.1:11434`（ollama） |
+| `imageCaptionApiKey` | `''` | 图表描述 API Key（openai 提供方） |
 | `hfEndpoint` | `''` | Hugging Face 端点（嵌入模型与 OCR 模型的下载镜像）；留空 = 嵌入走 transformers 默认、OCR 走 hf-mirror.com |
 | `documentProcessorProvider` | `builtin` | PDF 文档处理：`builtin`（本地解析 + 可选 OCR）/ `mineru`（远程 MinerU 服务） |
 | `mineruApiKey` | `''` | MinerU API Key（`mineru` 模式需要；全局或每库覆盖） |
@@ -151,26 +162,20 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 
 ---
 
-## 召回效果实证（可复现）
+## 召回效果评测（自带工具，可对任意库复跑）
 
-`scripts/` 内置一套可复现的评测基准：以真实数学建模问题为评测集（覆盖库内文档主题），按 Hit@k / Recall@k / MRR 计分：
-
-| 题型 | 纯词法 | 混合 | 纯向量 |
-| --- | --- | --- | --- |
-| 直答型（问题含主题词，14 题） | **0.929** | 0.857 | — |
-| 换说法型（问题不含主题词，10 题） | 0.600 | 0.900（MRR 0.575） | 0.900（**MRR 0.628**） |
-
-直答型问题纯词法已足够；本地模型向量的真实价值体现在换说法型问题——向量检索把 Hit@5 从 0.600 提升到 0.900。可对任意知识库复跑：
+`scripts/` 内置两套评估脚本，对**你自己的知识库**运行，无需任何外部服务：
 
 ```bash
-node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId> --mode hybrid
+# 检索质量：Hit@k / Recall@k / MRR（示例集见 scripts/eval-questions.example.json）
+node scripts/eval-retrieval.mjs --file scripts/eval-questions.example.json --base <baseId> --mode hybrid
+
+# RAG 上下文质量：Hit@k + 句子级 Context Recall（RAGAS 风格近似，无需 LLM）+ MRR
+# （示例集见 scripts/eval-rag.example.json，需带 groundTruth 参考答案）
+node scripts/eval-rag.mjs --file scripts/eval-rag.example.json --base <baseId> --topK 5
 ```
 
-**RAG 评估（Context Recall / Precision）**：需要验证"检索上下文是否真的覆盖答案内容"时，用带参考答案（`groundTruth`）的评测集跑 `scripts/eval-rag.mjs`——输出 Hit@k、句子级 Context Recall（RAGAS 风格近似，无需 LLM）与 MRR：
-
-```bash
-node scripts/eval-rag.mjs --file scripts/eval-rag.example.json --base <baseId>
-```
+把 `*.example.json` 复制为 `eval-questions.json` / `eval-rag.json` 并替换成你的问题（`expect` 为期望命中的文档标题子串）即可复跑。开发期间用内部评测集（覆盖库内文档主题的数学建模问题）测得：直答型问题纯词法 Hit@5 0.929；换说法型（问题不含主题词）纯词法 0.600 → 混合/向量 0.900（MRR 0.575 → 0.628）——向量检索的价值主要体现在换说法型问题。该内部评测集已随隐私清理从仓库移除（含个人文档标题），故分数仅供参比，请用你自己的数据复测。
 
 ---
 
@@ -179,7 +184,7 @@ node scripts/eval-rag.mjs --file scripts/eval-rag.example.json --base <baseId>
 1. 点击**侧边栏底部「知识库」按钮**（设置旁），打开整页面板 —— 不在设置内。
 2. 点「新建知识库」，选中后粘贴文本、拖拽上传 txt/md/pdf/docx，或导入网页 URL；扫描版 PDF 也可直接拖入（设置 → 本地模型下载 OCR 模型后自动识别）。
 3. 在「检索测试」里验证召回（可切换混合/向量/关键词模式与阈值）；点右上角「设置」配置向量化。
-4. 对 agent 说 *"用知识库里的内容回答…"*，模型会调用 `knowledge_search` 等 12 个工具。
+4. 对 agent 说 *"用知识库里的内容回答…"*，模型会调用 `knowledge_search` 等 14 个工具。
 
 ---
 

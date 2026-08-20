@@ -1429,8 +1429,8 @@ export class KnowledgeService extends Service {
     await mkdir(target, { recursive: true })
     for (const entry of entries) {
       // Hidden entries (dot-prefixed) are never models: when the configured
-      // cache dir is a parent of the target (e.g. from=E:\models,
-      // target=E:\models\.dsh_native), the target itself shows up as an
+      // cache dir is a parent of the target (e.g. from=/data/models,
+      // target=/data/models/.local-models), the target itself shows up as an
       // entry — copying a directory into itself is a hard EINVAL. The same
       // guard protects unrelated dot-dirs (e.g. .ollama) from being dragged
       // into the migration.
@@ -1442,7 +1442,7 @@ export class KnowledgeService extends Service {
       // Defense in depth: never move/copy a directory into itself or one of
       // its descendants, whatever the entry name looks like. The relation is
       // computed case-normalized on win32: `path.relative` is case-SENSITIVE
-      // string math, so `E:\Models` vs `E:\models` (the same directory on
+      // string math, so `C:\Models` vs `c:\models` (the same directory on
       // Windows) would produce a long `..\..\` detour and defeat the guard —
       // a case-mismatched config path could then copy the target into itself
       // again (the EINVAL we fixed once already).

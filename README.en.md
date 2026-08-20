@@ -21,16 +21,16 @@ A **knowledge base system** as a standalone, open-source bundle plugin for [Deep
 
 ## Features
 
-- **Bases, groups & documents**: create/delete/rename bases, documents and **groups** (grouped sidebar navigation with collapsible sections, move-to-group, create/rename/delete group); add text, upload files (txt / md / csv / html / json / pdf / docx / **doc / pptx / ppt / xlsx / xls** / epub, drag-and-drop, up to 20 per pick — imports run in a **5-way concurrent background pool**), import a URL or a whole **directory** (imported as a drillable folder tree); same-name **conflict resolution** (keep all / replace); content-hash dedup; **document preview** (inline PDF viewer + text/chunk preview with truncation for huge files); per-document **✓ ready badge, live import status**, and relative updated time. Imports run in the background — each file row appears the moment parsing starts, folders show importing while any descendant is processing, and errors surface as toasts.
+- **Bases, groups & documents**: create/delete/rename bases, documents and **groups** (grouped sidebar navigation with collapsible sections, move-to-group, create/rename/delete group); add text, upload files (txt / md / csv / html / json / pdf / docx / **doc / pptx / ppt / xlsx / xls** / epub, drag-and-drop — ≤22MB per file, the file picker caps one selection at 20, drag has no count limit — imports run in a **5-way concurrent background pool**), import a URL or a whole **directory** (imported as a drillable folder tree); same-name **conflict resolution** (keep all / replace); content-hash dedup; **document preview** (inline PDF viewer + text/chunk preview with truncation for huge files); per-document **✓ ready badge, live import status**, and relative updated time. Imports run in the background — each file row appears the moment parsing starts, folders show importing while any descendant is processing, and errors surface as toasts.
 - **Scanned-document OCR (local engine)**: scanned PDFs, **vector-drawn PDFs without a text layer**, and images are recognized automatically via **full-page rendering + PaddleOCR PP-OCRv5** (≈21MB models with an 18k-entry Chinese dictionary, one-click download in Settings → Local Models; pages are rendered with the mupdf WASM engine), falling back to Tesseract on failure; **1-bit rasters (JBIG2/CCITT fax-style scans) are handled correctly**, and PDFs with corrupt or per-glyph text layers automatically switch to the rendering path; recognized text is chunked, embedded, and searchable like any other document.
 - **Per-base configuration**: each base can pick its own embedding provider/model (including the **local model**), **rerank model** (remote API or the **local bge-reranker**), chunk size, Top K, **semantic chunking**, conflict strategy, and URL auto-refresh — unset fields inherit the global config; reindex one document or the whole base after a config change.
 - **Optional MinerU remote processing**: PDFs can be handed to a [MinerU](https://github.com/opendatalab/MinerU) service (formulas, tables, layout reconstructed as Markdown) by entering a MinerU API Key in the base settings (global or per-base); without a key the local parse chain runs instead.
 - **Embeddings & retrieval**: pluggable providers — any OpenAI-compatible `/embeddings` endpoint, a local Ollama server, or an **in-process local model (transformers.js, default `onnx-community/Qwen3-Embedding-0.6B-ONNX`)** — with **hybrid retrieval** (BM25 + vector + Reciprocal Rank Fusion), **rerank** (Jina / SiliconFlow / Cohere v2 style APIs or a local cross-encoder), **MMR diversity**, search modes (auto/hybrid/vector/lexical), a score threshold, and **multi-query retrieval** (`extraQueries` — paraphrased/translated variants widen recall). A lexical BM25 fallback (CJK bigram + latin word) keeps it working with zero configuration; the recall test shows per-hit scores, latency, **copies full Markdown citations (quote + source line)**, and keeps a **replayable search history**. `knowledge_search` returns a `citations` array for the model to quote verbatim.
 - **Smart chunking**: heading-aware chunking (preserves the Markdown heading path, **code-fence protected**) with the document title + heading injected as retrieval context for better recall; optional **semantic chunking** (embed paragraph segments, merge adjacent similar ones — no extra embedding pass) and **token-budget refinement** (oversized chunks split at sentence/comma/space boundaries).
 - **Index management**: reindex on demand (re-chunk + re-embed after changing chunk size or the provider), batched embedding, and statistics (docs / chunks / chars / tokens / embedded).
-- **Model tools**: 12 tools — search (with citations), list/create/delete bases, add/list/delete documents, import URL, stats, get document, deep-read a document (paged text slices or regex grep), reindex.
+- **Model tools**: 14 tools — search (with citations), list/create/delete bases, add/list/delete documents, import URL, refresh URL, stats, get document, deep-read a document (paged text slices or regex grep), reindex one document or a whole base.
 - **Management panel**: NOT in Settings — a sidebar-foot "Knowledge" action (beside Settings) opens a frame-wide Cherry Studio-style page: left grouped navigator with base cards, right content column with stat chips, an "updated at" header, add-source popover, a **table-style source list (checkbox + name/type/status/updated-at columns with multi-select bulk reindex/delete)**, per-base settings panel (document processing / image captioning / embedding / rerank / Top K / advanced), recall test, and toasts.
-- **Local model manager (in Settings)**: a Settings → "Local Models" page (via the `settings.section` slot) with Cherry Studio-style **cards for the embedding, rerank, and OCR models**: name/subtitle, a ready badge, download / retry / remove actions, and a live download progress bar. Downloaded models become selectable as the embedding provider, and scanned PDFs get OCR automatically. The **model cache directory is configurable** (native folder picker, open-in-file-manager, and **one-click migration** of downloaded models to a new location — no blind C-drive growth), and the page includes **Ollama management** (pull with progress + cancel, delete, installed-model chips, embedding/vision recommendations).
+- **Local model manager (in Settings)**: a Settings → "Local Models" page (via the `settings.section` slot) with Cherry Studio-style **cards for the embedding, rerank, and OCR models**: name/subtitle, a ready badge, download / retry / remove actions, and a live download progress bar. Downloaded models become selectable as the embedding provider, and scanned PDFs get OCR automatically. The **model cache directory is configurable** (native folder picker, open-in-file-manager, and **one-click migration** of downloaded models to a new location — dot-dirs are skipped and the target is never copied into itself, no blind C-drive growth), and the page includes **Ollama management** (pull with progress + cancel, **installed-model cards with sizes**, per-pull progress cards that survive panel close/reopen, embedding/vision recommendations).
 - **Persistence**: business state (bases, documents, runtime config) is durable via DSH's `storageDomain` seam (the `json` backend shipped by the `web` profile); **chunks live in a dedicated SQLite file** (`<DSH_HOME>/storages/knowledge-chunks.sqlite`, configurable via `chunkStorePath`) so put/delete stay O(1) as data grows — one row per chunk, embeddings as float32 BLOBs. Lexical search runs an FTS5 trigram index and the vector lane uses a **resident per-base cache** (Float32Array, exact invalidation); nothing loads into memory at open beyond it, so resident memory does not scale with the corpus. One-time migrations on first start after upgrade convert the legacy JSON unit and the previous bundle layout. Falls back to in-memory when no storage backend is available.
 
 ---
@@ -42,7 +42,7 @@ One bundle mounts three plugin rows plus **two dedicated worker threads** that c
 | Plugin / thread                | Platform | Role                                                         |
 | ----------------------------- | -------- | ------------------------------------------------------------ |
 | `knowledge` (`ctx.knowledge`) | host     | Core engine: storage domain, chunking, embeddings, retrieval, OCR scheduling, `/knowledge/*` HTTP surface |
-| `tool-knowledge`              | host     | 12 model tools consuming `ctx.knowledge`                     |
+| `tool-knowledge`              | host     | 14 model tools consuming `ctx.knowledge`                     |
 | `ui-knowledge`                | client   | Sidebar-foot entry (`sidebar.footer.action`) + frame-wide Cherry Studio-style panel (`shell.overlay`), calling the host over same-origin `fetch` |
 | `embed-worker` (worker thread)| host     | transformers.js local embedding inference (the ~600MB model never enters the host process) |
 | `ocr-worker` (worker thread)  | host     | Page rendering (mupdf WASM) + PaddleOCR / Tesseract recognition (onnxruntime, OpenCV.js, tesseract workers all isolated in-thread) |
@@ -121,7 +121,18 @@ Deployment defaults live in the `knowledge` row of `cordis.patch.yml`; the panel
 | `searchMode`                                     | `auto`  | `auto` / `hybrid` / `vector` / `lexical`                     |
 | `similarityThreshold`                            | `0`     | drop results below this score (0–1)                          |
 | `mmrDiversity`                                   | `0`     | MMR diversity (0–1, 0 = off)                                 |
+| `rrfVectorWeight`                                | `1`     | relative weight of the vector lane in RRF hybrid fusion (0.1–5, 1 = balanced) |
 | `embeddingBatchSize`                             | `32`    | texts per embedding request                                  |
+| `siblingChunks`                                  | `1`     | neighbour chunks (±N) attached to each hit as context (0–3, 0 = off) |
+| `semanticChunk`                                  | `false` | semantic chunking: embed paragraph segments, merge adjacent similar ones (per-base overridable) |
+| `semanticChunkThreshold`                         | `0.75`  | merge threshold for semantic chunking (0–1)                  |
+| `chunkTokenLimit`                                | `0`     | per-chunk token budget (0 = off); oversized chunks split at sentence/comma/space boundaries |
+| `conflictStrategy`                               | `rename` | same-name file import: `rename` (auto `_1` suffix) / `replace` / `keep` |
+| `urlRefreshHours`                                | `0`     | auto-refresh interval for URL documents (hours, 0 = off)     |
+| `imageCaptionProvider`                           | `off`   | PDF figure captioning: `off` / `openai` (vision-compatible API) / `ollama` (local VLM) |
+| `imageCaptionModel`                              | `''`    | captioning model id (e.g. `qwen2.5vl`, `gpt-4o-mini`)         |
+| `imageCaptionBaseUrl`                            | `''`    | captioning API root; empty = embedding base URL (openai) or `http://127.0.0.1:11434` (ollama) |
+| `imageCaptionApiKey`                             | `''`    | captioning API key (openai provider)                         |
 | `hfEndpoint`                                     | `''`    | Hugging Face endpoint (download mirror for embedding and OCR models); empty = embeddings use the transformers default, OCR uses hf-mirror.com |
 | `documentProcessorProvider`                      | `builtin` | PDF document processing: `builtin` (local parsing + optional OCR) / `mineru` (remote MinerU service) |
 | `mineruApiKey`                                   | `''`    | MinerU API Key (needed in `mineru` mode; global or per-base)  |
@@ -141,20 +152,20 @@ With `embeddingProvider: local`, the host runs embeddings in a **dedicated worke
 
 ---
 
-## Retrieval quality (measured)
+## Retrieval quality (eval tooling)
 
-A reproducible benchmark ships in `scripts/` — real mathematical-modeling questions over the imported corpus, scored by Hit@k / Recall@k / MRR:
-
-| Question style | Lexical | Hybrid | Vector |
-| --- | --- | --- | --- |
-| Direct (topic word present, 14 q) | **0.929** | 0.857 | — |
-| Rephrased (topic word absent, 10 q) | 0.600 | 0.900 (MRR 0.575) | 0.900 (**MRR 0.628**) |
-
-Direct questions (the document's topic word appears in the query) are already answered by lexical search; the local embedding model's real value shows on rephrased questions, where vector retrieval lifts Hit@5 from 0.600 to 0.900. Run the benchmark against any base:
+`scripts/` ships two dependency-free evaluation scripts that run against **your own base**:
 
 ```bash
-node scripts/eval-retrieval.mjs --file scripts/eval-rephrase.json --base <baseId> --mode hybrid
+# Retrieval quality: Hit@k / Recall@k / MRR (sample set: scripts/eval-questions.example.json)
+node scripts/eval-retrieval.mjs --file scripts/eval-questions.example.json --base <baseId> --mode hybrid
+
+# RAG context quality: Hit@k + sentence-level Context Recall (RAGAS-style, no LLM) + MRR
+# (sample set: scripts/eval-rag.example.json — needs groundTruth reference answers)
+node scripts/eval-rag.mjs --file scripts/eval-rag.example.json --base <baseId> --topK 5
 ```
+
+Copy a `*.example.json` to `eval-questions.json` / `eval-rag.json`, replace the questions with your own (`expect` entries are document-title substrings), and rerun. During development an internal set of mathematical-modeling questions over the corpus measured: lexical-only Hit@5 0.929 on direct questions; on rephrased questions (topic word absent) lexical 0.600 → hybrid/vector 0.900 (MRR 0.575 → 0.628) — vector retrieval's value shows mainly on rephrased questions. That internal set was removed from the repo in a privacy cleanup (it contained personal document titles), so the figures are historical reference — benchmark with your own data.
 
 ---
 
