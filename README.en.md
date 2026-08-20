@@ -11,7 +11,7 @@
 [![Node.js >= 22](https://img.shields.io/badge/node.js-%3E%3D22-brightgreen?logo=nodedotjs)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-node%3Asqlite-%23003B57?logo=sqlite)](https://www.sqlite.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
 A **knowledge base system** as a standalone, open-source bundle plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH): bases (with **groups**) and documents, text chunking, embeddings (OpenAI-compatible / Ollama / **local model** / lexical fallback), retrieval, model-facing tools, and a browser management panel.
 
@@ -207,4 +207,4 @@ pnpm run build    # esbuild → lib/ (host entries + factory-form client bundle)
 
 ## License
 
-[MIT](LICENSE). Special thanks to [Cherry Studio](https://github.com/CherryHQ/cherry-studio): this project's UI and feature design draws its inspiration from Cherry Studio (AGPL-3.0), while the code is an independent implementation that contains none of its source. Also thanks to [dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness), [dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor), and [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin).
+[AGPL-3.0](LICENSE). This project is licensed under AGPL-3.0 because its PDF page rendering depends on [mupdf](https://mupdf.com/) (AGPL-3.0) — the AGPL copyleft applies to distributions containing that component, and choosing AGPL-3.0 for the whole project keeps it legally self-consistent. It also matches the license of its design inspiration, [Cherry Studio](https://github.com/CherryHQ/cherry-studio) (AGPL-3.0); the code is an independent implementation containing none of Cherry's source. Thanks to [dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness), [dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor), and [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin).

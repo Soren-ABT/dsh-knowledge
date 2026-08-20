@@ -11,7 +11,7 @@
 [![Node.js >= 22](https://img.shields.io/badge/node.js-%3E%3D22-brightgreen?logo=nodedotjs)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-node%3Asqlite-%23003B57?logo=sqlite)](https://www.sqlite.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
 一个深度的**知识库系统**，作为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的独立、可开源 bundle 插件。提供知识库（含**分组**）与文档管理、文本分块、向量化（OpenAI 兼容 / Ollama / **本地模型** / 关键词降级）、检索，以及模型可见工具与浏览器管理面板。
 
@@ -219,4 +219,4 @@ pnpm run build    # esbuild → lib/（含 client bundle）
 
 ## 许可
 
-[MIT](LICENSE)。特别感谢 [Cherry Studio](https://github.com/CherryHQ/cherry-studio)：本项目界面与功能设计以其为灵感（AGPL-3.0），代码为独立实现，未包含其源码。另参考并致谢社区项目：[dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness)、[dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor)、[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)。
+[AGPL-3.0](LICENSE)。本项目采用 AGPL-3.0 许可——PDF 整页渲染依赖 [mupdf](https://mupdf.com/)（AGPL-3.0），AGPL 许可对包含该组件的发行物具有传染性；选择 AGPL-3.0 使整个项目在法律上自洽，也与设计灵感 [Cherry Studio](https://github.com/CherryHQ/cherry-studio)（AGPL-3.0）的许可一致。代码为独立实现，未包含 Cherry Studio 源码。另参考并致谢社区项目：[dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness)、[dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor)、[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)。

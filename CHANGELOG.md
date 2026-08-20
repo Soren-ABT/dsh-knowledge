@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased — next npm release (0.3.1)
+
+### License
+
+- Project relicensed **MIT → AGPL-3.0**: PDF page rendering depends on
+  mupdf (AGPL-3.0), whose copyleft applies to distributions containing it;
+  AGPL-3.0 keeps the whole project legally self-consistent (and matches the
+  license of its design inspiration, Cherry Studio). LICENSE, package.json
+  and both READMEs updated.
+
+### Bug fixes (full-project audit round 3, 23 fixes)
+
+- True cosine (L2-normalized, NaN-safe) in the vector lane and semantic
+  chunk merging — non-unit vectors no longer collapse all top scores to 1.0;
+  `chunkStats` model counts scoped to the requested bases; empty queries no
+  longer return the whole corpus; >500 docId filters throw instead of
+  silently truncating; chunk deletes scoped by base id; code fences keep
+  their opener length (4+ backticks close correctly); NaN chunk parameters
+  guarded.
+- XLSX parsing honors cell `t=` types (numbers/dates no longer misread as
+  shared-string indices) and joins rich-text shared strings per `<si>`;
+  GBK/GB18030 text decode fallback; lone surrogates rejected.
+- OCR: per-image (32MP) and per-PDF (512MB) raster caps (forged dimension
+  headers can no longer OOM the process); per-page fault isolation; CJK
+  lines no longer glued across newlines; hung-worker watchdog respawns
+  after consecutive timeouts; tesseract fallback un-poisons itself; page
+  destroy in finally.
+- UI: per-file failure isolation for file/directory imports; 60s API
+  timeout; Escape no longer closes the panel under an open dialog; stale
+  base/document/search responses guarded; Ollama installed list loads on
+  mount and base-URL change; pull busy flag reset on success; local-model
+  cancel waits for the worker's abort ack (no corrupt half-downloads);
+  model-cache migration skips dot-entries and never copies a target into
+  itself (case-normalized on win32).
+
 ## 0.3.0 — Semantic chunking, visual captioning, Ollama & local-model management (npm release, 2026-08-19)
 
 ### Retrieval quality
