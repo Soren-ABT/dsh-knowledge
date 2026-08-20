@@ -872,7 +872,15 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
   const docRowMenu = (doc: DocumentSummary): MenuEntry[] => {
     if (doc.sourceType === 'directory') {
-      return [{ key: 'delete', label: t('delete'), danger: true, onSelect: () => setDialog({ kind: 'confirmDeleteDoc', doc }) }]
+      // Cherry's directory row menu: drill into it, reindex its subtree,
+      // delete it (Cherry also shows view-chunks on a completed directory;
+      // dsh directories carry no chunks of their own, so that entry is N/A).
+      return [
+        { key: 'open', label: t('openFolder'), icon: <IconFolderOpen size={14} />, onSelect: () => drillIntoDirectory(doc.id) },
+        { key: 'reindex', label: t('reindexButton'), icon: <IconRefresh size={14} />, onSelect: () => void reindexDoc(doc) },
+        { key: 'sep' },
+        { key: 'delete', label: t('delete'), danger: true, onSelect: () => setDialog({ kind: 'confirmDeleteDoc', doc }) },
+      ]
     }
     return [
       { key: 'preview', label: t('viewSource'), icon: <IconEye size={14} />, onSelect: () => void openDocument(doc.id, 'preview') },
