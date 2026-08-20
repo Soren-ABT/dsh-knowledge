@@ -180,6 +180,15 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dirInputRef = useRef<HTMLInputElement>(null)
 
+  // Relative timestamps (formatRelativeTime) recompute on render; with the
+  // poll stopped while idle there is nothing forcing a re-render, so "3 分钟前"
+  // would freeze. A minute tick keeps every relative time fresh.
+  const [, setNowTick] = useState(0)
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(t => t + 1), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
   const notify = useCallback((kind: Toast['kind'], text: string): void => {
     const id = Date.now() + Math.random()
     setToasts(prev => [...prev, { id, kind, text }])
