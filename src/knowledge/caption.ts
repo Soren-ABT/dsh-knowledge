@@ -69,13 +69,22 @@ export async function captionPdfImages(bytes: Uint8Array, config: CaptionConfig)
   }
   if (images.length === 0) return ''
   const descriptions: string[] = []
+  // Per-image failures collapse into ONE warning per document: with 20 images
+  // per PDF, per-image lines flood the host log for a single root cause
+  // (e.g. an Ollama model not pulled yet).
+  let failures = 0
+  let firstError = ''
   for (const { page, png } of images) {
     try {
       const text = await captionImage(png, config)
       if (text.trim().length > 0) descriptions.push(`（第 ${page} 页图表描述）${text.trim()}`)
     } catch (error) {
-      console.warn(`[dsh-knowledge] caption failed for a page-${page} image: ${error instanceof Error ? error.message : String(error)}`)
+      failures += 1
+      if (firstError === '') firstError = error instanceof Error ? error.message : String(error)
     }
+  }
+  if (failures > 0) {
+    console.warn(`[dsh-knowledge] captioning failed for ${failures}/${images.length} image(s): ${firstError}`)
   }
   if (descriptions.length === 0) return ''
   return `\n\n[文档图表描述]\n${descriptions.join('\n')}`
