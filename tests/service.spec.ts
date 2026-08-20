@@ -1003,4 +1003,34 @@ describe('KnowledgeService', () => {
       }
     },
   )
+
+  it('reindexing a directory container rescans its source path (new files in, removed files out)', async () => {
+    const service = await mountService()
+    const tmp = await mkdtemp(join(tmpdir(), 'kb-rescan-'))
+    const src = join(tmp, 'src')
+    mkdirSync(join(src, 'sub'), { recursive: true })
+    writeFileSync(join(src, 'a.txt'), 'alpha content here')
+    writeFileSync(join(src, 'sub', 'b.txt'), 'beta content here')
+    try {
+      const base = await service.createBase({ name: 'docs' })
+      const imported = await service.importDirectoryTree(base.id, src)
+      expect(imported.imported).toBe(2)
+      const store = (service as unknown as { store: { getDocument(id: string): { id: string; title: string; sourceType: string; parentDirectoryId?: string; sourcePath?: string } | undefined } }).store
+      const rootSummary = service.listDocuments(base.id).find(doc => doc.sourceType === 'directory' && doc.parentDirectoryId === undefined)
+      const root = store.getDocument(rootSummary!.id)
+      expect(root?.sourcePath).toBe(resolve(src))
+
+      // Disk changes: a.txt removed, c.txt added — the reindex must sync.
+      await rm(join(src, 'a.txt'))
+      await writeFile(join(src, 'c.txt'), 'gamma content here')
+
+      await service.reindexDocument(root!.id)
+      const docs = service.listDocuments(base.id)
+      expect(docs.some(doc => doc.fileName === 'a.txt')).toBe(false)
+      expect(docs.some(doc => doc.fileName === 'b.txt')).toBe(true)
+      expect(docs.some(doc => doc.fileName === 'c.txt')).toBe(true)
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
+    }
+  })
 })

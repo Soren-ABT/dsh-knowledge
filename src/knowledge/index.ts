@@ -838,11 +838,19 @@ export class KnowledgeService extends Service {
     path: string,
     parentDirectoryId?: string,
   ): Promise<{ imported: number; directories: number; errors: Array<{ file: string; error: string }> }> {
+    const store = this.requireStore()
     const rootName = basename(path)
     const rootId = parentDirectoryId ?? (await this.createDirectory(baseId, rootName)).id
     let imported = 0
     let directories = 1
     const errors: Array<{ file: string; error: string }> = []
+    // Cherry's pathStorage: the container remembers its source path so a
+    // later reindex can rescan the disk and pick up new/removed files.
+    const recordSourcePath = async (containerId: string, source: string): Promise<void> => {
+      const current = store.getDocument(containerId)
+      if (current !== undefined) await store.putDocument({ ...current, sourcePath: source, updatedAt: Date.now() })
+    }
+    await recordSourcePath(rootId, path)
 
     const walk = async (dir: string, parentId: string, depth: number): Promise<void> => {
       if (depth > DIRECTORY_MAX_DEPTH) return
@@ -857,6 +865,7 @@ export class KnowledgeService extends Service {
         const full = join(dir, entry.name)
         if (entry.isDirectory()) {
           const child = await this.createDirectory(baseId, entry.name, parentId)
+          await recordSourcePath(child.id, full)
           directories += 1
           await walk(full, child.id, depth + 1)
         } else if (entry.isFile() && DIRECTORY_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
@@ -1000,6 +1009,14 @@ export class KnowledgeService extends Service {
     // In-flight leaves are skipped (Cherry's REINDEX_ALLOWED_STATUSES), not
     // failed, so reindexing a busy directory never aborts mid-subtree.
     if (document.sourceType === 'directory') {
+      // Cherry's reindex-subtree semantics. A container with a remembered
+      // source path RESCANS the disk: files added since the import are
+      // ingested, files removed from disk are deleted from the base, and
+      // everything else is re-chunked/re-embedded. Legacy containers without
+      // a source path fall back to re-indexing the existing children only.
+      if (document.sourcePath !== undefined) {
+        return await this.rescanDirectory(document)
+      }
       // One bad leaf must not abort the rest of the subtree (Cherry's
       // reindex-subtree job keeps going; failing leaves are surfaced, not
       // fatal). Failures are collected and reported as a summary after the
@@ -1075,6 +1092,113 @@ export class KnowledgeService extends Service {
     const text = document.rawText ?? reconstructFromChunks(this.requireStore().listChunksByDoc(document.id))
     if (text.trim().length === 0) throw new Error(`document "${document.title}" has no source text to reindex`)
     return text
+  }
+
+  /**
+   * Cherry's prepare-root rescan: re-read the container's remembered source
+   * directory and sync the base's children with the disk —
+   * - files/directories removed from disk are deleted from the base,
+   * - new supported files are parsed and ingested (raw copy persisted),
+   * - new subdirectories become containers (with their own sourcePath),
+   * - existing items are re-indexed (re-chunk + hash-reuse re-embed).
+   * A missing/unreadable source keeps the existing subtree untouched (Cherry
+   * skips roots whose source cannot be rebuilt). Failures are isolated per
+   * entry and summarized at the end.
+   */
+  private async rescanDirectory(document: KnowledgeDocument): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
+    const source = document.sourcePath!
+    let entries
+    try {
+      entries = await readdir(source, { withFileTypes: true })
+    } catch {
+      // Source gone/unreadable: keep the existing subtree (never wipe vectors
+      // for content that cannot be rebuilt — Cherry's canRebuildSource guard).
+      this.ctx.logger.warn(`knowledge: source directory unreadable, keeping existing subtree: ${source}`)
+      return document
+    }
+    const children = store.listDocuments(document.baseId).filter(child => child.parentDirectoryId === document.id)
+    const onDisk = new Set(entries.map(entry => entry.name))
+    let failures = 0
+    let firstError = ''
+    const fail = (error: unknown): void => {
+      failures += 1
+      if (firstError === '') firstError = error instanceof Error ? error.message : String(error)
+    }
+    // 1. Items whose source disappeared from disk are removed.
+    for (const child of children) {
+      const name = child.sourceType === 'directory' ? child.title : (child.fileName ?? child.title)
+      if (!onDisk.has(name)) {
+        try {
+          await this.deleteDocumentRecursive(child.id)
+        } catch (error) {
+          fail(error)
+        }
+      }
+    }
+    // 2. Sync with what is on disk now.
+    const remaining = store.listDocuments(document.baseId).filter(child => child.parentDirectoryId === document.id)
+    for (const entry of entries) {
+      const full = join(source, entry.name)
+      if (entry.isDirectory()) {
+        const existing = remaining.find(child => child.sourceType === 'directory' && child.title === entry.name)
+        try {
+          if (existing !== undefined) {
+            const withSource = existing.sourcePath === full ? existing : { ...existing, sourcePath: full }
+            await this.rescanDirectory(withSource)
+          } else {
+            const created = await this.createDirectory(document.baseId, entry.name, document.id)
+            await this.rescanDirectory({ ...created, sourcePath: full })
+          }
+        } catch (error) {
+          fail(error)
+        }
+      } else if (entry.isFile() && DIRECTORY_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+        const existing = remaining.find(child => child.fileName === entry.name)
+        try {
+          if (existing !== undefined) {
+            if (this.indexing.has(existing.id)) continue
+            await this.reindexDocument(existing.id)
+          } else {
+            // New file: parse + ingest like an import, with a persisted raw
+            // copy so a later reindex can rebuild from source.
+            const buffer = await readFile(full)
+            const text = await parseDocumentBuffer(buffer, entry.name)
+            if (text.trim().length === 0) continue
+            let rawFilePath: string | undefined
+            if (store.raw !== undefined) {
+              const docId = crypto.randomUUID()
+              rawFilePath = await store.raw.write(document.baseId, docId, safeRawExtension(entry.name), buffer)
+              await this.ingestDocument({
+                baseId: document.baseId,
+                title: entry.name,
+                sourceType: 'file',
+                fileName: entry.name,
+                parentDirectoryId: document.id,
+                rawFilePath,
+                text,
+              })
+            } else {
+              await this.ingestDocument({
+                baseId: document.baseId,
+                title: entry.name,
+                sourceType: 'file',
+                fileName: entry.name,
+                parentDirectoryId: document.id,
+                text,
+              })
+            }
+          }
+        } catch (error) {
+          fail(error)
+        }
+      }
+    }
+    await this.touchBase(document.baseId)
+    if (failures > 0) {
+      throw new Error(`directory rescan finished with ${failures} failed item(s): ${firstError}`)
+    }
+    return document
   }
 
   async reindexBase(baseId: string): Promise<{ reindexed: number }> {

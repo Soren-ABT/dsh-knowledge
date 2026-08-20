@@ -75,6 +75,10 @@ export interface KnowledgeDocument {
   readonly url?: string
   /** Parent directory id, when this item lives inside a `directory` container. */
   readonly parentDirectoryId?: string
+  /** Absolute path of the source directory this container was imported from
+   *  (Cherry's pathStorage): reindexing the container rescans the path and
+   *  picks up new/removed files. Absent on legacy/created containers. */
+  readonly sourcePath?: string
   /** SHA-256 of the source text, for duplicate detection. */
   readonly contentHash?: string
   /**

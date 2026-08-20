@@ -163,7 +163,6 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   const [dialog, setDialog] = useState<DialogState>(null)
   const [recallHistory, setRecallHistory] = useState<RecallEntry[]>([])
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; doc: DocumentSummary } | null>(null)
-  const [indexingMap, setIndexingMap] = useState<Map<string, { progress: number; phase: 'parsing' | 'embedding' }>>(new Map())
   // Cherry's empty-state guidance: when the global embedding provider is the
   // local model and it is not downloaded yet, the empty base explains what to
   // do instead of silently importing vectors-less content.
@@ -319,53 +318,46 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
   const reloadDocuments = useCallback(async (): Promise<void> => {
     if (selectedBaseId === null) return
-    setDocuments(await api.listDocuments(selectedBaseId))
+    const next = await api.listDocuments(selectedBaseId)
+    setDocuments(next)
     await refreshStats(selectedBaseId)
     await refreshBases()
+    // Cherry's data-driven polling: rows carry live status + progress from
+    // listDocuments itself, so the poll only watches for state FLIPS (a
+    // placeholder appearing, or processing rows settling). Kick the poll when
+    // this refresh observed processing rows; it stops itself once idle.
+    if (next.some(doc => doc.status === 'processing')) setPollKick(kick => kick + 1)
   }, [api, refreshBases, refreshStats, selectedBaseId])
 
-  // Poll live import/embedding progress; refresh the document list when the
-  // active set changes (a placeholder appears) or settles (rows flip to their
-  // final completed/failed status).
+  // Cherry's conditional polling: 800ms while anything is importing/embedding
+  // (detects state flips and refreshes the list), STOPS when idle — a new
+  // import re-kicks it via reloadDocuments (every user action refreshes).
+  const [pollKick, setPollKick] = useState(0)
   useEffect(() => {
     if (selectedBaseId === null) return
     let disposed = false
-    let hadActive = false
     let timer: number | undefined
     const activeIdsRef: { current: Set<string> } = { current: new Set() }
     const poll = async (): Promise<void> => {
-      let activeIds = new Set<string>()
+      let anyActive = false
       try {
         const entries = await api.getIndexingStatus()
-        const next = new Map<string, { progress: number; phase: 'parsing' | 'embedding' }>()
-        activeIds = new Set<string>()
+        const activeIds = new Set<string>()
         for (const entry of entries) {
-          next.set(entry.docId, { progress: entry.progress, phase: entry.phase })
           if (entry.baseId === selectedBaseId) activeIds.add(entry.docId)
         }
-        const anyActive = activeIds.size > 0
+        anyActive = activeIds.size > 0
         const changed = !sameSet(activeIdsRef.current, activeIds)
         activeIdsRef.current = activeIds
-        if (!disposed) {
-          setIndexingMap(next)
-          if (anyActive) {
-            hadActive = true
-            if (changed) void reloadDocuments()
-          } else if (hadActive) {
-            hadActive = false
-            void reloadDocuments()
-          }
-        }
+        if (!disposed && changed) void reloadDocuments()
       } catch {
         // polling is best-effort
       }
-      // Cherry-style conditional polling: 800ms while anything is importing/
-      // embedding (rows flip live), 10s when idle (cheap freshness — the list
-      // also refreshes on every user action). The old constant 800ms poll ran
-      // forever with the panel open.
-      if (!disposed) {
-        const delay = activeIds.size > 0 ? 800 : 10_000
-        timer = window.setTimeout(() => { void poll() }, delay)
+      // Continue only while active; otherwise stop and wait for the next
+      // reloadDocuments kick (no more idle-timeout polling — the list is
+      // always fresh right after any user action anyway).
+      if (!disposed && anyActive) {
+        timer = window.setTimeout(() => { void poll() }, 800)
       }
     }
     void poll()
@@ -373,7 +365,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       disposed = true
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [api, selectedBaseId, reloadDocuments])
+  }, [api, selectedBaseId, reloadDocuments, pollKick])
 
   // ── base actions ────────────────────────────────────────────────────────
 
@@ -781,7 +773,6 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   for (const doc of documents) parentOf.set(doc.id, doc.parentDirectoryId ?? null)
   const processingDocIds = new Set<string>()
   for (const doc of documents) if (doc.status === 'processing') processingDocIds.add(doc.id)
-  for (const id of indexingMap.keys()) processingDocIds.add(id)
   const importingFolderIds = new Set<string>()
   for (const id of processingDocIds) {
     let parent = parentOf.get(id) ?? null
@@ -1221,9 +1212,8 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                     <span style={{ fontSize: 11, color: C.muted }}>—</span>
                                   )
                                 ) : (() => {
-                                  const live = indexingMap.get(doc.id)
-                                  const phase = live?.phase ?? doc.indexingPhase
-                                  const progress = live?.progress ?? doc.indexingProgress ?? 0
+                                  const phase = doc.indexingPhase
+                                  const progress = doc.indexingProgress ?? 0
                                   if (phase !== undefined) {
                                     return (
                                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: C.accent }}>
