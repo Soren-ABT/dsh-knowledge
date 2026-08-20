@@ -1440,8 +1440,15 @@ export class KnowledgeService extends Service {
       const info = await stat(source).catch(() => null)
       if (info === null || !info.isDirectory()) continue
       // Defense in depth: never move/copy a directory into itself or one of
-      // its descendants, whatever the entry name looks like.
-      const rel = relative(source, dest)
+      // its descendants, whatever the entry name looks like. The relation is
+      // computed case-normalized on win32: `path.relative` is case-SENSITIVE
+      // string math, so `E:\Models` vs `E:\models` (the same directory on
+      // Windows) would produce a long `..\..\` detour and defeat the guard —
+      // a case-mismatched config path could then copy the target into itself
+      // again (the EINVAL we fixed once already).
+      const src = process.platform === 'win32' ? source.toLowerCase() : source
+      const dst = process.platform === 'win32' ? dest.toLowerCase() : dest
+      const rel = relative(src, dst)
       if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) continue
       // A destination entry that already exists is left untouched: a partial
       // previous migration (or a pre-existing model) must not be overwritten.

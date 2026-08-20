@@ -937,4 +937,70 @@ describe('KnowledgeService', () => {
       setLocalModelCacheDir(undefined)
     }
   })
+
+  it('round-trips a subdir cache target (sub → parent → sub) without loss', async () => {
+    const service = await mountService()
+    const tmp = await mkdtemp(join(tmpdir(), 'kb-migrate-roundtrip-'))
+    const parent = join(tmp, 'models')
+    const sub = join(parent, '.dsh_native')
+    mkdirSync(join(sub, 'fake-model'), { recursive: true })
+    writeFileSync(join(sub, 'fake-model', 'model.onnx'), 'fake weights')
+    mkdirSync(join(sub, 'ocr'), { recursive: true })
+    writeFileSync(join(sub, 'ocr', 'ppocrv5_det.onnx'), 'x')
+    const { setLocalModelCacheDir } = await import('../src/knowledge/embed.js')
+    setLocalModelCacheDir(sub)
+    try {
+      // sub → parent (target dir empties, models land in the parent)
+      const up = await service.migrateLocalModels(parent)
+      expect(up.moved).toBe(2)
+      expect(existsSync(join(parent, 'fake-model', 'model.onnx'))).toBe(true)
+      expect(existsSync(join(parent, 'ocr', 'ppocrv5_det.onnx'))).toBe(true)
+      expect(existsSync(join(sub, 'fake-model'))).toBe(false)
+      expect(service.getConfig().localModelCacheDir).toBe(resolve(parent))
+      // parent → sub (back): the now-empty target dir is dot-skipped, the
+      // models move home, nothing is duplicated or lost.
+      const down = await service.migrateLocalModels(sub)
+      expect(down.moved).toBe(2)
+      expect(existsSync(join(sub, 'fake-model', 'model.onnx'))).toBe(true)
+      expect(existsSync(join(sub, 'ocr', 'ppocrv5_det.onnx'))).toBe(true)
+      expect(existsSync(join(parent, 'fake-model'))).toBe(false)
+      expect(existsSync(join(parent, 'ocr'))).toBe(false)
+      expect(service.getConfig().localModelCacheDir).toBe(resolve(sub))
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
+      setLocalModelCacheDir(undefined)
+    }
+  })
+
+  it.skipIf(process.platform !== 'win32')(
+    'guards a case-mismatched target inside the source (win32 only)',
+    async () => {
+      const service = await mountService()
+      const tmp = await mkdtemp(join(tmpdir(), 'kb-migrate-case-'))
+      // Config path casing differs from the target's parent — the SAME
+      // directory on Windows, but path.relative is case-sensitive string
+      // math and would otherwise report a long `..\..\` detour, defeating
+      // the self-copy guard and re-triggering the EINVAL.
+      const from = join(tmp, 'Models')
+      const to = join(tmp, 'models', 'models2')
+      mkdirSync(join(from, 'fake-model'), { recursive: true })
+      writeFileSync(join(from, 'fake-model', 'model.onnx'), 'fake weights')
+      mkdirSync(join(from, 'models2'), { recursive: true })
+      const { setLocalModelCacheDir } = await import('../src/knowledge/embed.js')
+      setLocalModelCacheDir(from)
+      try {
+        const result = await service.migrateLocalModels(to)
+        // The target dir itself (models2 — which IS `from`'s child on
+        // Windows) must be skipped; only the real model moves.
+        expect(result.moved).toBe(1)
+        expect(existsSync(join(to, 'fake-model', 'model.onnx'))).toBe(true)
+        expect(existsSync(join(to, 'models2'))).toBe(false)
+        expect(existsSync(join(from, 'models2'))).toBe(true)
+        expect(existsSync(join(from, 'fake-model'))).toBe(false)
+      } finally {
+        await rm(tmp, { recursive: true, force: true })
+        setLocalModelCacheDir(undefined)
+      }
+    },
+  )
 })
