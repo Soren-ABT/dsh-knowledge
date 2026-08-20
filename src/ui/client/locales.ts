@@ -179,6 +179,7 @@ export type KnowledgeKey =
   | 'selectModelPlaceholder'
   | 'ollamaUnreachable'
   | 'embeddingSwitchWarning'
+  | 'staleModelSuffix'
   | 'localModelHint'
   | 'localModelReady'
   | 'localModelDownloading'
@@ -428,6 +429,7 @@ export const zh: Record<KnowledgeKey, string> = {
   selectModelPlaceholder: '请选择模型',
   ollamaUnreachable: '无法连接 Ollama（检查地址或是否已启动）',
   embeddingSwitchWarning: '⚠ 切换嵌入模型会使本库已有向量全部失效，保存会被拒绝——请改用「重建知识库」以新模型重建（或先清空本库文档）',
+  staleModelSuffix: '（未安装）',
   localModelReady: '本地模型就绪',
   localModelDownloading: '模型下载中',
   localModelError: '模型加载失败',
@@ -674,6 +676,7 @@ export const en: Record<KnowledgeKey, string> = {
   selectModelPlaceholder: 'Select a model',
   ollamaUnreachable: 'Cannot reach Ollama (check the address or whether it is running)',
   embeddingSwitchWarning: '⚠ Switching the embedding model invalidates this base\'s stored vectors, so the save will be refused — rebuild via 重建知识库 with the new model instead (or empty the base first)',
+  staleModelSuffix: ' (not installed)',
   localModelReady: 'Local model ready',
   localModelDownloading: 'Downloading model',
   localModelError: 'Model load failed',

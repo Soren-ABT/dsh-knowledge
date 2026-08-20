@@ -68,13 +68,30 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   // Installed Ollama models, per relevant base URL: the embedding picker
   // uses the embedding base URL, the captioning picker its own.
   const ollamaBaseFor = (base: string): string => (base.trim() === '' ? 'http://127.0.0.1:11434' : base.trim())
+
+  // Auto-fix a stale tag-less Ollama name: `qwen2.5vl` in the config while
+  // only `qwen2.5vl:7b` is installed used to stay unmatched (404 at
+  // runtime) and to show up in the dropdown as a phantom second entry.
+  // Patch only when exactly one tagged sibling matches; otherwise leave the
+  // value alone (the stale-option rendering marks it 未安装).
+  const autoFixOllamaTag = (kind: 'embedding' | 'caption', current: string, installed: readonly string[]): void => {
+    const model = current.trim()
+    if (model === '' || installed.includes(model)) return
+    const siblings = installed.filter(name => name === `${model}:latest` || name.startsWith(`${model}:`))
+    if (siblings.length === 1) {
+      patch(kind === 'embedding' ? { embeddingModel: siblings[0] } : { imageCaptionModel: siblings[0] })
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
     const base = ollamaBaseFor(values.embeddingBaseUrl)
     void api.listOllamaModels(base).then(({ models }) => {
       if (cancelled) return
-      setOllamaEmbeddingModels(models.map(m => m.name))
+      const names = models.map(m => m.name)
+      setOllamaEmbeddingModels(names)
       setOllamaEmbeddingUnreachable(false)
+      autoFixOllamaTag('embedding', values.embeddingModel, names)
     }).catch(() => {
       if (cancelled) return
       setOllamaEmbeddingModels([])
@@ -87,8 +104,10 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
     const base = ollamaBaseFor(values.imageCaptionBaseUrl)
     void api.listOllamaModels(base).then(({ models }) => {
       if (cancelled) return
-      setOllamaCaptionModels(models.map(m => m.name))
+      const names = models.map(m => m.name)
+      setOllamaCaptionModels(names)
       setOllamaCaptionUnreachable(false)
+      autoFixOllamaTag('caption', values.imageCaptionModel, names)
     }).catch(() => {
       if (cancelled) return
       setOllamaCaptionModels([])
@@ -236,7 +255,9 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                     )}
                     {!ollamaCaptionModels.includes(values.imageCaptionModel) && (
                       <option value="">
-                        {values.imageCaptionModel.trim() !== '' ? values.imageCaptionModel : t('selectModelPlaceholder')}
+                        {values.imageCaptionModel.trim() !== ''
+                          ? `${values.imageCaptionModel}${t('staleModelSuffix')}`
+                          : t('selectModelPlaceholder')}
                       </option>
                     )}
                     {ollamaCaptionModels.map(name => <option key={name} value={name}>{name}</option>)}
@@ -321,10 +342,14 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 {/* A stale/unset value must show as its own option — without
                     this, an empty value makes the browser display the FIRST
                     list entry as if it were selected while the saved config
-                    stays empty (the 'selection' then never applies). */}
+                    stays empty (the 'selection' then never applies). A stale
+                    name is marked 未安装 so it is not mistaken for a real
+                    installed model. */}
                 {!readyLocalEmbeddings.includes(values.embeddingModel) && (
                   <option value="">
-                    {values.embeddingModel.trim() !== '' ? values.embeddingModel : t('selectModelPlaceholder')}
+                    {values.embeddingModel.trim() !== ''
+                      ? `${values.embeddingModel}${t('staleModelSuffix')}`
+                      : t('selectModelPlaceholder')}
                   </option>
                 )}
                 {readyLocalEmbeddings.map(id => <option key={id} value={id}>{id}</option>)}
@@ -367,7 +392,9 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   )}
                   {!ollamaEmbeddingModels.includes(values.embeddingModel) && (
                     <option value="">
-                      {values.embeddingModel.trim() !== '' ? values.embeddingModel : t('selectModelPlaceholder')}
+                      {values.embeddingModel.trim() !== ''
+                        ? `${values.embeddingModel}${t('staleModelSuffix')}`
+                        : t('selectModelPlaceholder')}
                     </option>
                   )}
                   {ollamaEmbeddingModels.map(name => <option key={name} value={name}>{name}</option>)}
