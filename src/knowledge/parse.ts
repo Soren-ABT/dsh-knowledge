@@ -34,7 +34,7 @@ export async function parseDocumentBuffer(
   if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || ext === 'docx') {
     return parseDocx(buffer)
   }
-  if (ext === 'html' || ext === 'htm') return extractFromHtml(decodeText(buffer)).text
+  if (ext === 'html' || ext === 'htm') return extractHtmlToMarkdown(decodeText(buffer))
   if (ext === 'pptx') return parsePptx(buffer)
   if (ext === 'xlsx') return parseXlsx(buffer)
   if (ext === 'epub') return parseEpub(buffer)
@@ -90,6 +90,57 @@ export function extractFromHtml(html: string): { title: string; text: string } {
     .map(line => line.replace(/\s+/g, ' ').trim())
     .filter(line => line.length > 0)
     .join('\n')
+  return { title, text }
+}
+
+// ── HTML → Markdown (structure-preserving) ───────────────────────────────────
+
+let turndownCtor: unknown = null
+
+async function loadTurndown(): Promise<new (options?: Record<string, unknown>) => { turndown(html: string): string }> {
+  if (turndownCtor === null) {
+    const mod = await import('turndown')
+    turndownCtor = mod.default ?? mod
+  }
+  return turndownCtor as new (options?: Record<string, unknown>) => { turndown(html: string): string }
+}
+
+/**
+ * HTML → Markdown via turndown (headings/lists/links/code blocks/tables
+ * survive, so the heading-aware chunker works — the local analogue of Cherry's
+ * Jina Reader output). Page chrome (nav/footer/aside/form/iframe/svg) is
+ * stripped first. Falls back to the regex text strip when turndown is
+ * unavailable or yields nothing.
+ */
+export async function extractHtmlToMarkdown(html: string): Promise<string> {
+  const cleaned = html
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<head[\s\S]*?<\/head>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<(nav|footer|aside|form|iframe|svg|canvas|template)[\s\S]*?<\/\1>/gi, ' ')
+  try {
+    const Turndown = await loadTurndown()
+    const converter = new Turndown({
+      headingStyle: 'atx',
+      codeBlockStyle: 'fenced',
+      bulletListMarker: '-',
+      emDelimiter: '*',
+    })
+    const markdown = converter.turndown(cleaned)
+    if (markdown.trim().length === 0) return extractFromHtml(html).text
+    return markdown.replace(/\n{3,}/g, '\n\n').trim()
+  } catch {
+    return extractFromHtml(html).text
+  }
+}
+
+/** Full HTML document extraction: title + structure-preserving Markdown body. */
+export async function extractHtmlDocument(html: string): Promise<{ title: string; text: string }> {
+  const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)
+  const title = titleMatch !== null ? decodeEntities(titleMatch[1].trim()) : ''
+  const text = await extractHtmlToMarkdown(html)
   return { title, text }
 }
 
@@ -399,7 +450,7 @@ async function parseEpub(buffer: Uint8Array): Promise<string> {
     if (!/\.(xhtml|html|htm)$/.test(name)) continue
     if (/nav|toc|cover/i.test(name)) continue
     const html = await zip.files[name].async('string')
-    const text = extractFromHtml(html).text
+    const text = await extractHtmlToMarkdown(html)
     if (text.trim().length > 0) pages.push(text)
   }
   if (pages.length === 0) throw new Error('EPUB contains no extractable pages')

@@ -94,6 +94,7 @@
     "ppu-paddle-ocr": "^6.4.0",
     "tesseract.js": "^7.0.0",
     "tesseract.js-core": "^6.1.2",
+    "turndown": "^7.2.4",
     "undici": "^7.0.0",
     "word-extractor": "^1.0.4"
   },
@@ -109,6 +110,7 @@
     "@deepseek-ai/schemastery": "link:../dsh/vendor/schemastery",
     "@types/node": "^24.0.0",
     "@types/react": "~18.3.1",
+    "@types/turndown": "^5.0.6",
     "esbuild": "^0.25.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.8",

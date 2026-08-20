@@ -51,6 +51,36 @@ describe('extractFromHtml', () => {
   })
 })
 
+describe('extractHtmlToMarkdown', () => {
+  it('keeps heading/list/code structure for the heading-aware chunker', async () => {
+    const { extractHtmlToMarkdown } = await import('../src/knowledge/parse.js')
+    const html = [
+      '<html><head><title>T</title></head><body>',
+      '<nav><a href="/x">nav link</a></nav>',
+      '<h1>First Heading</h1>',
+      '<p>Hello <strong>world</strong></p>',
+      '<ul><li>item one</li><li>item two</li></ul>',
+      '<pre><code>const x = 1;</code></pre>',
+      '<footer>copyright</footer>',
+      '</body></html>',
+    ].join('')
+    const markdown = await extractHtmlToMarkdown(html)
+    expect(markdown).toContain('# First Heading')
+    expect(markdown).toContain('**world**')
+    expect(markdown).toContain('item one')
+    expect(markdown).toContain('```')
+    expect(markdown).toContain('const x = 1;')
+    // Page chrome is dropped, not indexed.
+    expect(markdown).not.toContain('nav link')
+    expect(markdown).not.toContain('copyright')
+  })
+
+  it('falls back to the regex strip on empty turndown output', async () => {
+    const { extractHtmlToMarkdown } = await import('../src/knowledge/parse.js')
+    expect(await extractHtmlToMarkdown('<p>中文 中文 😀</p>')).toBe('中文 中文 😀')
+  })
+})
+
 describe('averageLineLength (text-layer quality gate)', () => {
   it('scores healthy paragraph text far above the fragmentation threshold', () => {
     expect(averageLineLength('这是第一行正常文本\n这是第二行正常文本')).toBeGreaterThan(5)

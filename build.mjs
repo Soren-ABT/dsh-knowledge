@@ -74,6 +74,7 @@ const hostExternal = [
   'onnxruntime-node',
   'undici',
   'mupdf',
+  'turndown',
 ]
 
 const hostEntries = [

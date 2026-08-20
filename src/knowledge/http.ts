@@ -13,6 +13,7 @@ import type { ConfigOverrides } from './domain.js'
 import type {
   AddFileDocumentRequest,
   AddTextDocumentRequest,
+  BaseConfig,
   CreateBaseRequest,
   EmbeddingProvider,
   ImportUrlRequest,
@@ -268,7 +269,10 @@ async function route(
       if (segments[2] === 'stats' && method === 'GET') return service.stats(baseId)
       if (segments[2] === 'reindex' && method === 'POST') return service.startReindexBase(baseId)
       if (segments[2] === 'restore' && method === 'POST') {
-        return service.restoreBase(baseId, typeof body.name === 'string' ? body.name : '')
+        const config = typeof body.config === 'object' && body.config !== null
+          ? body.config as BaseConfig
+          : undefined
+        return service.restoreBase(baseId, typeof body.name === 'string' ? body.name : '', config)
       }
       if (segments[2] === 'import-directory' && method === 'POST') {
         return service.importDirectory({ baseId, path: typeof body.path === 'string' ? body.path : '' })

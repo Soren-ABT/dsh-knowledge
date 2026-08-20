@@ -50,7 +50,7 @@ import {
   Toasts,
   readFileAsBase64,
 } from './dialogs.js'
-import type { Toast } from './dialogs.js'
+import type { RestoreEmbeddingConfig, Toast } from './dialogs.js'
 import { ContextMenu, PopoverMenu } from './popover.js'
 import type { MenuEntry } from './popover.js'
 import { RagConfigPanel } from './rag-config.js'
@@ -800,10 +800,33 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     })
   }, [api, run, reloadDocuments, notify, checkedDocs, t])
 
-  const restoreBase = useCallback(async (name: string): Promise<void> => {
+  const restoreBase = useCallback(async (name: string, config?: RestoreEmbeddingConfig): Promise<void> => {
     if (selectedBaseId === null) return
     await run(async () => {
-      const created = await api.restoreBase(selectedBaseId, name)
+      // Cherry's restore flow probes the new embedding model's dimension
+      // before committing — a wrong-dimension/unavailable model fails the
+      // restore up front instead of mid-rebuild.
+      if (config !== undefined) {
+        try {
+          await api.probeEmbeddingDimensions({
+            provider: config.provider,
+            baseUrl: config.baseUrl,
+            model: config.model,
+            apiKey: config.apiKey,
+          })
+        } catch (error) {
+          notify('error', `${t('dimensionProbeFailed')}：${error instanceof Error ? error.message : String(error)}`)
+          return
+        }
+      }
+      const created = await api.restoreBase(selectedBaseId, name, config !== undefined
+        ? {
+            embeddingProvider: config.provider,
+            embeddingBaseUrl: config.baseUrl,
+            embeddingModel: config.model,
+            embeddingApiKey: config.apiKey,
+          }
+        : undefined)
       notify('success', `${t('rebuildBase')}: ${created.name}`)
       setDialog(null)
       await refreshBases()

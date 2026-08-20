@@ -372,8 +372,8 @@ export class KnowledgeApi {
     return this.call('POST', `/bases/${encodeURIComponent(baseId)}/reindex`)
   }
 
-  restoreBase(baseId: string, name: string): Promise<{ id: string; name: string }> {
-    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/restore`, { name })
+  restoreBase(baseId: string, name: string, config?: BaseConfig): Promise<{ id: string; name: string }> {
+    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/restore`, { name, config })
   }
 
   getReindexJob(jobId: string): Promise<DirectoryImportStatus> {

@@ -20,7 +20,11 @@ export interface RerankCandidate {
  * @param baseUrl - API root (ignored for local rerankers).
  * @param model - rerank model id (e.g. `jina-reranker-v2-base-multilingual`
  *   or `local:Xenova/bge-reranker-base`).
- * @returns id → relevance score clamped to [0, 1].
+ * @param topN - how many candidates the reranker should keep (Cherry asks for
+ *   the final result count); defaults to all candidates.
+ * @returns id → relevance score clamped to [0, 1], containing only the kept
+ *   (top-scoring) candidates — a caller that filters on this map implements
+ *   Cherry's mergeRerankResults semantics (drop what the API did not return).
  */
 export async function rerankCandidates(
   baseUrl: string,
@@ -28,15 +32,22 @@ export async function rerankCandidates(
   apiKey: string,
   query: string,
   candidates: readonly RerankCandidate[],
+  topN?: number,
 ): Promise<Map<string, number>> {
+  const keep = topN !== undefined
+    ? Math.max(1, Math.min(Math.trunc(topN), candidates.length))
+    : candidates.length
   if (model.startsWith('local:')) {
     const modelId = model.slice('local:'.length).trim()
     if (modelId === '') throw new Error('local rerank model id is empty')
     const scores = await rerankLocal(modelId, query, candidates.map(candidate => candidate.text))
     const out = new Map<string, number>()
-    for (let i = 0; i < candidates.length && i < scores.length; i += 1) {
-      out.set(candidates[i].id, clamp01(scores[i]))
-    }
+    // Cherry's mergeRerankResults: only the top-N scored candidates survive.
+    const ranked = candidates
+      .map((candidate, i) => ({ id: candidate.id, score: scores[i] !== undefined ? clamp01(scores[i]) : 0 }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, keep)
+    for (const entry of ranked) out.set(entry.id, entry.score)
     return out
   }
   const url = `${baseUrl.replace(/\/+$/, '')}/rerank`
@@ -50,12 +61,16 @@ export async function rerankCandidates(
       model,
       query,
       documents: candidates.map(candidate => candidate.text),
-      top_n: candidates.length,
+      top_n: keep,
     }),
     timeoutMs: 60000,
   })
   if (!response.ok) {
-    throw new Error(`rerank request failed: HTTP ${response.status} ${await response.text()}`)
+    // Carry the HTTP status so callers can distinguish a persistent
+    // misconfiguration (401/403/404) from a transient blip.
+    const error = new Error(`rerank request failed: HTTP ${response.status} ${await response.text()}`) as Error & { status?: number }
+    error.status = response.status
+    throw error
   }
   const json = (await response.json()) as {
     results?: Array<{ index?: number; relevance_score?: number }>

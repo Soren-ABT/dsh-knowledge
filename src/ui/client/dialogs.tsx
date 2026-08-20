@@ -124,24 +124,104 @@ export function PromptDialog(props: {
 
 // ── restore / rebuild base ────────────────────────────────────────────────────
 
+/** Embedding configuration chosen for the rebuilt base (undefined = keep the source base's config). */
+export interface RestoreEmbeddingConfig {
+  provider: 'openai' | 'ollama' | 'local'
+  baseUrl: string
+  model: string
+  apiKey: string
+}
+
 export function RestoreBaseDialog(props: {
   defaultName: string
   t: Translate
   busy?: boolean
-  onRestore: (name: string) => void
+  onRestore: (name: string, config?: RestoreEmbeddingConfig) => void
   onClose: () => void
 }): JSX.Element {
   const [name, setName] = useState(props.defaultName)
+  // Cherry's restore dialog lets the rebuild switch embedding models (the
+  // "换模型 → 重建" route); empty model = keep the source base's config.
+  const [provider, setProvider] = useState<'none' | 'openai' | 'ollama' | 'local'>('none')
+  const [model, setModel] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const modelChanged = provider !== 'none'
   return (
-    <Modal title={props.t('rebuildBase')} onClose={props.onClose} width={440}>
+    <Modal title={props.t('rebuildBase')} onClose={props.onClose} width={460}>
       <p style={{ fontSize: 13, margin: '0 0 16px', lineHeight: 1.6 }}>{props.t('restoreHint')}</p>
       <div style={style.field}>
         <label style={style.label}>{props.t('baseName')}</label>
         <input autoFocus style={style.input} value={name} onChange={(e) => setName(e.target.value)} />
       </div>
+      <div style={style.field}>
+        <label style={style.label}>{props.t('embeddingModel')}</label>
+        <select style={style.input} value={provider} onChange={(e) => setProvider(e.target.value as typeof provider)}>
+          <option value="none">{props.t('restoreKeepModel')}</option>
+          <option value="openai">OpenAI 兼容</option>
+          <option value="ollama">Ollama</option>
+          <option value="local">本地模型</option>
+        </select>
+      </div>
+      {modelChanged && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+          <div style={style.field}>
+            <label style={style.label}>{props.t('modelId')}</label>
+            <input
+              style={style.input}
+              list="kb-restore-model-list"
+              value={model}
+              placeholder={provider === 'local' ? 'onnx-community/Qwen3-Embedding-0.6B-ONNX' : 'text-embedding-3-small'}
+              onChange={(e) => setModel(e.target.value)}
+            />
+            <datalist id="kb-restore-model-list">
+              {provider === 'local' && (
+                <>
+                  <option value="onnx-community/Qwen3-Embedding-0.6B-ONNX" />
+                  <option value="Xenova/bge-small-zh-v1.5" />
+                  <option value="Xenova/bge-small-en-v1.5" />
+                  <option value="Xenova/gte-small" />
+                </>
+              )}
+              {provider !== 'local' && (
+                <>
+                  <option value="text-embedding-3-small" />
+                  <option value="text-embedding-3-large" />
+                  <option value="bge-m3" />
+                  <option value="bge-large-zh-v1.5" />
+                </>
+              )}
+            </datalist>
+          </div>
+          <div style={style.field}>
+            <label style={style.label}>{props.t('baseUrlLabel')}</label>
+            <input
+              style={style.input}
+              value={baseUrl}
+              placeholder={provider === 'ollama' ? 'http://127.0.0.1:11434' : 'https://api.openai.com/v1'}
+              onChange={(e) => setBaseUrl(e.target.value)}
+            />
+          </div>
+          {provider === 'openai' && (
+            <div style={style.field}>
+              <label style={style.label}>{props.t('apiKeyLabel')}</label>
+              <input style={style.input} type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
         <button style={style.button} onClick={props.onClose}>{props.t('cancel')}</button>
-        <button style={style.primary} disabled={props.busy === true || name.trim().length === 0} onClick={() => props.onRestore(name.trim())}>
+        <button
+          style={style.primary}
+          disabled={props.busy === true || name.trim().length === 0 || (modelChanged && model.trim().length === 0)}
+          onClick={() => props.onRestore(
+            name.trim(),
+            modelChanged
+              ? { provider, baseUrl: baseUrl.trim(), model: model.trim(), apiKey: apiKey.trim() }
+              : undefined,
+          )}
+        >
           {props.t('rebuildBase')}
         </button>
       </div>

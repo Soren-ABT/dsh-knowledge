@@ -31,7 +31,7 @@ import type { LocalModelSummary } from './localModels.js'
 import { downloadOcrModels, disposeOcrWorker, getOcrModelStatus, removeOcrModels, type OcrModelStatus } from './ocr.js'
 import { httpFetch } from './net.js'
 import { knowledgeRoute } from './http.js'
-import { SUPPORTED_DOCUMENT_EXTENSIONS, extractFromHtml, extensionOf, parseDocumentBuffer } from './parse.js'
+import { SUPPORTED_DOCUMENT_EXTENSIONS, extractHtmlDocument, extractFromHtml, extensionOf, parseDocumentBuffer } from './parse.js'
 import { rank } from './retrieval.js'
 import { maximalMarginalRelevance, reciprocalRankFusion, RRF_K } from './retrieval.js'
 import type { RankedHit } from './retrieval.js'
@@ -129,6 +129,13 @@ export const MODEL_SUGGESTIONS = {
 
 /** Candidate-pool cap for SQL retrieval lanes, bounding FTS + brute-force vector scans. */
 const LANE_CANDIDATE_CAP = 200
+
+/** Max characters one deep-read slice returns (Cherry's CONCEPT_READ_MAX_CHARS). */
+const CONCEPT_READ_MAX_CHARS = 20_000
+/** Characters of context kept on each side of a grep match in its snippet (Cherry's pad). */
+const CONCEPT_GREP_SNIPPET_PAD = 60
+/** Max characters of any single line grep runs its pattern over (Cherry's catastrophic-backtracking guard). */
+const CONCEPT_GREP_MAX_LINE_CHARS = 2000
 
 interface BackgroundJob {
   readonly baseId: string
@@ -942,7 +949,7 @@ export class KnowledgeService extends Service {
     const store = this.requireStore()
     if (store.getBase(request.baseId) === undefined) throw new Error(`knowledge base not found: ${request.baseId}`)
     const html = await fetchHtml(request.url)
-    const extracted = extractFromHtml(html)
+    const extracted = await extractHtmlDocument(html)
     if (extracted.text.trim().length === 0) throw new Error('URL returned no extractable text')
     // Persist the fetched text as the URL's snapshot (Cherry's snapshot model:
     // the base owns a stable copy; refresh re-fetches and overwrites it).
@@ -977,7 +984,7 @@ export class KnowledgeService extends Service {
       throw new Error(`document "${document.title}" is not a URL document`)
     }
     const html = await fetchHtml(document.url)
-    const extracted = extractFromHtml(html)
+    const extracted = await extractHtmlDocument(html)
     if (extracted.text.trim().length === 0) throw new Error('URL returned no extractable text')
     const title = extracted.title.trim().length > 0 ? extracted.title.trim() : document.title
     if (extracted.text === document.rawText && title === document.title) {
@@ -1789,7 +1796,10 @@ export class KnowledgeService extends Service {
     const text = doc.rawText ?? reconstructFromChunks(store.listChunksByDoc(id))
     const total = text.length
     const start = clampInt(charStart ?? 0, 0, total, 0)
-    const end = clampInt(charEnd ?? total, start, total, total)
+    // Where the caller would have ended without the cap (an omitted charEnd
+    // reads to the document end) — Cherry's readConcept slice cap.
+    const naturalEnd = clampInt(charEnd ?? total, start, total, total)
+    const end = Math.max(start, Math.min(naturalEnd, start + CONCEPT_READ_MAX_CHARS))
     return {
       id: doc.id,
       baseId: doc.baseId,
@@ -1799,6 +1809,8 @@ export class KnowledgeService extends Service {
       charStart: start,
       charEnd: end,
       content: text.slice(start, end),
+      // "There is more to read" — true both when the 20k cap cut the slice
+      // short and when the caller stopped before the document end.
       truncated: end < total,
     }
   }
@@ -1822,23 +1834,41 @@ export class KnowledgeService extends Service {
       throw new Error(`invalid regex: ${error instanceof Error ? error.message : String(error)}`)
     }
     const cap = clampInt(maxMatches ?? 50, 1, 200, 50)
+    // Cherry's scanConceptMatches: the pattern runs over ONE truncated line at
+    // a time (2000 chars), so a catastrophic-backtracking pattern ((a+)+$) can
+    // never freeze the host by spanning the whole document; `totalMatches`
+    // counts the whole text even past the returned-match cap.
     const matches: Array<{ line: number; charStart: number; charEnd: number; snippet: string }> = []
-    let match: RegExpExecArray | null
-    while (matches.length < cap && (match = regex.exec(text)) !== null) {
-      const matchStart = match.index
-      const matchEnd = matchStart + match[0].length
-      const line = text.slice(0, matchStart).split('\n').length
-      const snippetStart = Math.max(0, matchStart - 60)
-      const snippetEnd = Math.min(text.length, matchEnd + 60)
-      matches.push({
-        line,
-        charStart: matchStart,
-        charEnd: matchEnd,
-        snippet: `${snippetStart > 0 ? '…' : ''}${text.slice(snippetStart, snippetEnd)}${snippetEnd < text.length ? '…' : ''}`,
-      })
-      if (match[0].length === 0) regex.lastIndex += 1
+    let totalMatches = 0
+    let lineNumber = 0
+    let lineStart = 0
+    while (lineStart <= text.length) {
+      lineNumber += 1
+      const newlineIndex = text.indexOf('\n', lineStart)
+      const lineEnd = newlineIndex === -1 ? text.length : newlineIndex
+      const line = text.slice(lineStart, Math.min(lineEnd, lineStart + CONCEPT_GREP_MAX_LINE_CHARS))
+      regex.lastIndex = 0
+      for (let match = regex.exec(line); match !== null; match = regex.exec(line)) {
+        totalMatches += 1
+        const matchLength = match[0].length
+        const matchStart = lineStart + match.index
+        const matchEnd = matchStart + matchLength
+        if (matches.length < cap) {
+          const snippetStart = Math.max(0, matchStart - CONCEPT_GREP_SNIPPET_PAD)
+          const snippetEnd = Math.min(text.length, matchEnd + CONCEPT_GREP_SNIPPET_PAD)
+          matches.push({
+            line: lineNumber,
+            charStart: matchStart,
+            charEnd: matchEnd,
+            snippet: `${snippetStart > 0 ? '…' : ''}${text.slice(snippetStart, snippetEnd)}${snippetEnd < text.length ? '…' : ''}`,
+          })
+        }
+        // Zero-width match: advance past the same position so exec() moves on.
+        if (matchLength === 0) regex.lastIndex = match.index + 1
+      }
+      lineStart = lineEnd + 1
     }
-    return { id: doc.id, baseId: doc.baseId, title: doc.title, totalMatches: matches.length, matches }
+    return { id: doc.id, baseId: doc.baseId, title: doc.title, totalMatches, matches }
   }
 
   // ── statistics ────────────────────────────────────────────────────────────
@@ -2078,28 +2108,41 @@ export class KnowledgeService extends Service {
     if (config.rerankModel.trim() !== '' && ranked.length > 1) {
       try {
         const pool = ranked.map(hit => ({ id: hit.id, text: chunkSearchText(byId.get(hit.id)!)}))
+        // Cherry's mergeRerankResults: only the candidates the rerank model
+        // returned survive — its relevance scores (0–1) must not mix with raw
+        // BM25/cosine scores (different scales) in one ranked list. The API is
+        // asked for the final topK only (Cherry: `documentCount`).
         const scores = await rerankCandidates(
           config.rerankBaseUrl,
           config.rerankModel,
           config.rerankApiKey,
           query,
           pool,
+          topK,
         )
-        ranked = ranked.map(hit => ({
-          ...hit,
-          score: scores.get(hit.id) ?? hit.score,
-        }))
-        ranked.sort((a, b) => b.score - a.score)
-        reranked = true
+        const rescored = ranked
+          .filter(hit => scores.has(hit.id))
+          .map(hit => ({ ...hit, score: scores.get(hit.id)! }))
+        // An empty response is a failure, not evidence of zero relevance —
+        // keep retrieval order in that case (Cherry's rerank error path).
+        if (rescored.length > 0) {
+          ranked = rescored.sort((a, b) => b.score - a.score)
+          reranked = true
+        }
       } catch (error) {
-        this.ctx.logger.warn(`knowledge: rerank failed, keeping retrieval order: ${error instanceof Error ? error.message : String(error)}`)
+        const status = (error as { status?: number }).status
+        const level = status === 401 || status === 403 || status === 404 ? 'error' : 'warn'
+        this.ctx.logger[level](`knowledge: rerank failed, keeping retrieval order: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
 
+    // Cherry's applyRelevanceThreshold: only 'relevance' scores are
+    // threshold-filtered — pure-vector cosine (mode 'vector') and reranked
+    // relevance. Raw BM25/hybrid ranking scores (incomparable scales) never
+    // are, even with a threshold configured.
+    const relevanceScores = reranked || requestedMode === 'vector'
     const hits: SearchHit[] = ranked
-      // Cherry semantics: the threshold filters only reranked `relevance` scores;
-      // raw BM25/hybrid ranking scores are never threshold-filtered.
-      .filter(hit => (reranked ? hit.score >= threshold : true))
+      .filter(hit => (relevanceScores ? hit.score >= threshold : true))
       .slice(0, topK)
       .map(hit => {
         const chunk = byId.get(hit.id)

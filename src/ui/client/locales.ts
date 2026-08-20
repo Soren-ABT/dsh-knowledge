@@ -258,6 +258,10 @@ export type KnowledgeKey =
   | 'statusParsing'
   | 'statusImporting'
   | 'restoreHint'
+  | 'restoreKeepModel'
+  | 'modelId'
+  | 'baseUrlLabel'
+  | 'apiKeyLabel'
   | 'loadMore'
   | 'kbInvocation'
   | 'kbOn'
@@ -524,7 +528,11 @@ export const zh: Record<KnowledgeKey, string> = {
   statusProcessing: '嵌入中',
   statusParsing: '解析中',
   statusImporting: '导入中',
-  restoreHint: '将使用当前嵌入模型新建一个知识库，并重新索引所有文档。',
+  restoreHint: '将使用当前嵌入模型新建一个知识库，并重新索引所有文档。可选更换嵌入模型（换模型重建）。',
+  restoreKeepModel: '沿用原库配置',
+  modelId: '模型 ID',
+  baseUrlLabel: 'API 地址',
+  apiKeyLabel: 'API Key',
   loadMore: '加载更多',
   kbInvocation: '知识库调用',
   kbOn: '开',
@@ -789,7 +797,11 @@ export const en: Record<KnowledgeKey, string> = {
   statusProcessing: 'Embedding',
   statusParsing: 'Parsing',
   statusImporting: 'Importing',
-  restoreHint: 'A new base will be created with the current embedding model, and all documents re-indexed.',
+  restoreHint: 'A new base will be created and all documents re-indexed. Optionally switch the embedding model (rebuild-with-new-model).',
+  restoreKeepModel: 'Keep the source base config',
+  modelId: 'Model ID',
+  baseUrlLabel: 'API base URL',
+  apiKeyLabel: 'API key',
   loadMore: 'Load more',
   kbInvocation: 'Knowledge base',
   kbOn: 'on',
