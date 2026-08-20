@@ -1036,6 +1036,9 @@ export class KnowledgeService extends Service {
       if (failed > 0) {
         throw new Error(`directory reindex finished with ${failed} failed item(s): ${firstError}`)
       }
+      // Refresh the container row's timestamp too (Cherry's updatedAt moves
+      // with every status flip of the item).
+      await store.putDocument({ ...document, updatedAt: Date.now() })
       return document
     }
     if (this.indexing.has(id)) {
@@ -1113,7 +1116,15 @@ export class KnowledgeService extends Service {
     // their own per-item statuses underneath.
     this.indexing.set(document.id, { baseId: document.baseId, title: document.title, phase: 'parsing', total: 0, progress: 0 })
     try {
-      return await this.rescanDirectoryInner(document, source)
+      const result = await this.rescanDirectoryInner(document, source)
+      // Cherry updates the container's updatedAt on every status flip; a
+      // finished rescan must refresh the folder row's timestamp too (files
+      // inside already do — the container itself did not).
+      const current = store.getDocument(document.id)
+      if (current !== undefined) {
+        await store.putDocument({ ...current, updatedAt: Date.now() })
+      }
+      return result
     } finally {
       this.indexing.delete(document.id)
     }
