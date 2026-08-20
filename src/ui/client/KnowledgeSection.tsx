@@ -163,6 +163,12 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   const [dialog, setDialog] = useState<DialogState>(null)
   const [recallHistory, setRecallHistory] = useState<RecallEntry[]>([])
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; doc: DocumentSummary } | null>(null)
+  // Optimistic processing marks: rows flip to 解析中 the moment a reindex is
+  // requested, WITHOUT waiting for the poll — a fast reindex (small folder,
+  // hash-reused embeddings) can finish before the first poll observes it,
+  // while Cherry's asynchronous job keeps its preparing state visible. The
+  // marks clear when the request settles.
+  const [optimisticProcessing, setOptimisticProcessing] = useState<Set<string>>(new Set())
   // Cherry's empty-state guidance: when the global embedding provider is the
   // local model and it is not downloaded yet, the empty base explains what to
   // do instead of silently importing vectors-less content.
@@ -650,6 +656,10 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   }, [api, run, reloadDocuments, notify, selectedDocId, t])
 
   const reindexDoc = useCallback(async (doc: DocumentSummary): Promise<void> => {
+    // Optimistic: mark the folder AND its children as processing immediately
+    // (a fast reindex would otherwise finish before any poll observes it).
+    const optimisticIds = [doc.id, ...documents.filter(d => d.parentDirectoryId === doc.id).map(d => d.id)]
+    setOptimisticProcessing(prev => new Set([...prev, ...optimisticIds]))
     // Kick the poll BEFORE the request: the host reindexes synchronously and
     // rows flip parsing → embedding NN% server-side while the request is in
     // flight — the poll must be running to surface that live state (Cherry's
@@ -660,7 +670,12 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       notify('success', `${t('reindexDone')}: ${doc.title}`)
       await reloadDocuments()
     })
-  }, [api, run, reloadDocuments, notify, t])
+    setOptimisticProcessing(prev => {
+      const next = new Set(prev)
+      for (const id of optimisticIds) next.delete(id)
+      return next
+    })
+  }, [api, run, reloadDocuments, notify, t, documents])
 
   const refreshUrlDoc = useCallback(async (doc: DocumentSummary): Promise<void> => {
     await run(async () => {
@@ -701,6 +716,8 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       notify('warning', t('bulkReindexNone'))
       return
     }
+    const optimisticIds = reindexable.map(doc => doc.id)
+    setOptimisticProcessing(prev => new Set([...prev, ...optimisticIds]))
     setPollKick(kick => kick + 1)
     await run(async () => {
       const result = await api.reindexDocuments(reindexable.map(doc => doc.id))
@@ -708,6 +725,11 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       notify('success', `${t('reindexDone')} ${result.reindexed}${totalSkipped > 0 ? ` · ${t('bulkReindexSkipped')} ${totalSkipped}` : ''}`)
       setCheckedDocIds(new Set())
       await reloadDocuments()
+    })
+    setOptimisticProcessing(prev => {
+      const next = new Set(prev)
+      for (const id of optimisticIds) next.delete(id)
+      return next
     })
   }, [api, run, reloadDocuments, notify, checkedDocs, t])
 
@@ -1214,7 +1236,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                       <span className="kb-spinner" style={{ ...style.spinner, width: 10, height: 10, borderWidth: 2 }} />
                                       {t('statusImporting')}
                                     </span>
-                                  ) : doc.indexingPhase !== undefined ? (
+                                  ) : doc.indexingPhase !== undefined || optimisticProcessing.has(doc.id) ? (
                                     // The container itself is being rescanned (reindex of a
                                     // source-backed folder) — Cherry's directory preparing.
                                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: C.accent }}>
@@ -1236,6 +1258,16 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: C.accent }}>
                                         <span className="kb-spinner" style={{ ...style.spinner, width: 10, height: 10, borderWidth: 2 }} />
                                         {phase === 'parsing' ? t('statusParsing') : `${t('statusProcessing')} ${progress}%`}
+                                      </span>
+                                    )
+                                  }
+                                  if (optimisticProcessing.has(doc.id)) {
+                                    // Reindex requested, request in flight — show live feedback
+                                    // even before the poll observes the server-side state.
+                                    return (
+                                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: C.accent }}>
+                                        <span className="kb-spinner" style={{ ...style.spinner, width: 10, height: 10, borderWidth: 2 }} />
+                                        {t('statusParsing')}
                                       </span>
                                     )
                                   }
