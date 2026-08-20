@@ -21,6 +21,7 @@ import {
   expandHomePath,
   getLocalModelStatus,
   hasActiveLocalModelDownload,
+  isLocalModelDownloaded,
   localModelCacheDir,
   setHfEndpoint,
   setLocalModelCacheDir,
@@ -1696,8 +1697,17 @@ export class KnowledgeService extends Service {
   }
 
   /** Current download/load state of an in-process embedding model. */
-  getLocalModelStatus(modelId?: string): LocalModelStatus {
-    return getLocalModelStatus(modelId?.trim() || DEFAULT_LOCAL_MODEL)
+  async getLocalModelStatus(modelId?: string): Promise<LocalModelStatus> {
+    const id = modelId?.trim() || DEFAULT_LOCAL_MODEL
+    const live = getLocalModelStatus(id)
+    if (live.status !== 'idle') return live
+    // The in-memory map only tracks downloads/loads since this process
+    // started; a model whose weights are already on disk is ready even
+    // before its first lazy load (the embed worker loads it on demand).
+    if (await isLocalModelDownloaded(id)) {
+      return { model: id, status: 'ready', progress: 100, message: '' }
+    }
+    return live
   }
 
   /**
