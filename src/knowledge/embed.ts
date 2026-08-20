@@ -144,7 +144,7 @@ interface WorkerResponse {
   ok?: boolean
   vectors?: number[][]
   error?: string
-  type?: 'progress' | 'released'
+  type?: 'progress' | 'released' | 'cancelled'
   modelId?: string
   status?: LocalModelStatus['status']
   progress?: number
@@ -158,6 +158,8 @@ const LOCAL_WORKER_IDLE_TIMEOUT_MS = 60_000
 const LOCAL_WORKER_REQUEST_TIMEOUT_MS = 30 * 60_000
 /** How long removeLocalModel waits for the worker's release ack before deleting. */
 const LOCAL_RELEASE_ACK_TIMEOUT_MS = 3000
+/** How long cancelLocalModel waits for the worker's cancel ack before deleting. */
+const LOCAL_CANCEL_ACK_TIMEOUT_MS = 3000
 
 let localWorker: Worker | null = null
 let localWorkerIdleTimer: ReturnType<typeof setTimeout> | null = null
@@ -165,6 +167,8 @@ let localRequestSeq = 0
 const localPending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
 /** Resolvers awaiting a worker `released` ack per model (file-lock-safe deletion). */
 const localReleasedWaiters = new Map<string, Array<() => void>>()
+/** Resolvers awaiting a worker `cancelled` ack per model (download truly aborted). */
+const localCancelledWaiters = new Map<string, Array<() => void>>()
 
 function localWorkerPath(): string {
   return fileURLToPath(new URL('./embed-worker.mjs', import.meta.url))
@@ -205,6 +209,14 @@ function ensureLocalWorker(): Worker {
       const waiters = localReleasedWaiters.get(message.modelId)
       if (waiters !== undefined) {
         localReleasedWaiters.delete(message.modelId)
+        for (const resolve of waiters) resolve()
+      }
+      return
+    }
+    if (message.type === 'cancelled' && message.modelId !== undefined) {
+      const waiters = localCancelledWaiters.get(message.modelId)
+      if (waiters !== undefined) {
+        localCancelledWaiters.delete(message.modelId)
         for (const resolve of waiters) resolve()
       }
       return
@@ -308,7 +320,33 @@ export async function loadLocalModel(modelId: string, task: 'feature-extraction'
 export async function cancelLocalModel(modelId: string): Promise<void> {
   postToWorker({ type: 'cancel', modelId })
   localModelStatus.set(modelId, { model: modelId, status: 'idle', progress: 0, message: '' })
+  // Wait for the worker to acknowledge the download actually aborted (its
+  // file handles released) before removing the files: an eager rm races the
+  // last write — on Windows the unlink fails on the locked file and leaves a
+  // half-written directory that `isDownloaded` then mistakes for a complete
+  // model, so retry fails forever.
+  await waitForCancelAck(modelId)
   await rm(join(localModelCacheDir(), modelId), { recursive: true, force: true }).catch(() => {})
+}
+
+/** Wait (bounded) for the worker's `cancelled` ack; always resolves. */
+function waitForCancelAck(modelId: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const done = (): void => resolve()
+    const waiters = localCancelledWaiters.get(modelId) ?? []
+    waiters.push(done)
+    localCancelledWaiters.set(modelId, waiters)
+    const timer = setTimeout(() => {
+      const current = localCancelledWaiters.get(modelId) ?? []
+      const index = current.indexOf(done)
+      if (index >= 0) {
+        current.splice(index, 1)
+        if (current.length === 0) localCancelledWaiters.delete(modelId)
+      }
+      resolve()
+    }, LOCAL_CANCEL_ACK_TIMEOUT_MS)
+    timer.unref?.()
+  })
 }
 
 /** Drop a loaded extractor (frees its ~600MB in the worker) and delete its cached weights from disk. */

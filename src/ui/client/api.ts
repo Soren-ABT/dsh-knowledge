@@ -219,6 +219,9 @@ export class KnowledgeApi {
       method,
       headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      // A hung host must not pin the panel's busy state forever: fail the
+      // call with a clear error instead of an indefinite spinner.
+      signal: AbortSignal.timeout(60_000),
     })
     let envelope: Envelope<T>
     try {

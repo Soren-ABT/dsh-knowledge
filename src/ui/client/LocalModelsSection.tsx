@@ -233,6 +233,11 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       setPullingModels(prev => prev.some(p => p.model === model)
         ? prev
         : [...prev, { model, status: 'pulling', progress: 0, message: '' }])
+      // The pull itself runs server-side; the busy flag must not stay set
+      // until the progress poll happens to observe `ready` (which is the
+      // only other path that resets it) — that would leave the refresh/pull
+      // buttons disabled if the ready observation never fires.
+      setOllamaBusy(false)
     } catch (err) {
       setError(`${err instanceof Error ? err.message : String(err)} ${t('ollamaNeedInstall')}`)
       setOllamaBusy(false)

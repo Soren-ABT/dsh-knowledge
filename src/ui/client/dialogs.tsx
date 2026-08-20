@@ -91,6 +91,15 @@ export function PromptDialog(props: {
   onClose: () => void
 }): JSX.Element {
   const [value, setValue] = useState(props.initial)
+  const [submitting, setSubmitting] = useState(false)
+  const submit = (): void => {
+    if (submitting || value.trim().length === 0) return
+    // Debounce repeat Enter/click: the parent closes the dialog on success,
+    // but a double-firing onOk would otherwise run the action twice (e.g.
+    // creating two bases).
+    setSubmitting(true)
+    props.onOk(value.trim())
+  }
   return (
     <Modal title={props.title} onClose={props.onClose} width={400}>
       <div style={style.field}>
@@ -101,13 +110,13 @@ export function PromptDialog(props: {
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && value.trim().length > 0) props.onOk(value.trim())
+            if (e.key === 'Enter') submit()
           }}
         />
       </div>
       <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
         <button style={style.button} onClick={props.onClose}>✕</button>
-        <button style={style.primary} onClick={() => { if (value.trim().length > 0) props.onOk(value.trim()) }}>OK</button>
+        <button style={style.primary} disabled={submitting || value.trim().length === 0} onClick={submit}>OK</button>
       </div>
     </Modal>
   )

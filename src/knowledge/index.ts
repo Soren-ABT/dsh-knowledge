@@ -610,7 +610,7 @@ export class KnowledgeService extends Service {
         const existing = store.listDocuments(request.baseId).find(doc => doc.fileName === request.fileName)
         if (existing !== undefined) {
           if (conflictStrategyNow === 'replace') {
-            await store.deleteChunks(existing.id)
+            await store.deleteChunks(existing.id, request.baseId)
             if (existing.rawFilePath !== undefined) await store.raw?.delete(existing.rawFilePath)
             await store.deleteDocument(existing.id)
           } else if (conflictStrategyNow === 'detect') {
@@ -976,7 +976,7 @@ export class KnowledgeService extends Service {
       }
     }
     if (existing.rawFilePath !== undefined) await store.raw?.delete(existing.rawFilePath)
-    await store.deleteChunks(id)
+    await store.deleteChunks(id, existing.baseId)
     await store.deleteDocument(id)
   }
 

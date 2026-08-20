@@ -35,8 +35,10 @@ export function chunkText(
 ): ChunkPiece[] {
   const normalized = normalizeText(text)
   if (normalized.length === 0) return []
-  const safeSize = Math.max(64, Math.trunc(size))
-  const safeOverlap = Math.min(Math.max(0, Math.trunc(overlap)), safeSize - 1)
+  // NaN/Infinity must not propagate: Math.trunc(NaN) is NaN and would poison
+  // every window boundary, producing empty-string chunks.
+  const safeSize = Number.isFinite(size) ? Math.max(64, Math.trunc(size)) : 64
+  const safeOverlap = Number.isFinite(overlap) ? Math.min(Math.max(0, Math.trunc(overlap)), safeSize - 1) : 0
   const smartChunk = options?.smartChunk ?? true
   const blocks = smartChunk
     ? splitBlocks(normalized)
@@ -108,7 +110,7 @@ export function mergeSemanticSegments(
   size: number,
   threshold = 0.75,
 ): Array<ChunkPiece & { embedding?: number[] }> {
-  const safeSize = Math.max(64, Math.trunc(size))
+  const safeSize = Number.isFinite(size) ? Math.max(64, Math.trunc(size)) : 64
   const out: Array<ChunkPiece & { embedding?: number[] }> = []
   if (segments.length === 0) return out
   let text = segments[0].text
@@ -155,17 +157,30 @@ function normalizeAdd(a: readonly number[], aWeight: number, b: readonly number[
     sum += v * v
   }
   const length = Math.sqrt(sum)
-  if (length === 0) return out
+  // A NaN/zero norm (empty or corrupt vectors) must not divide into NaN.
+  if (!Number.isFinite(length) || length === 0) return out
   for (let i = 0; i < out.length; i += 1) out[i] /= length
   return out
 }
 
-/** Cosine similarity between two equal-length vectors. */
+/** Cosine similarity between two equal-length vectors (true cosine, so it is
+ *  correct for both unit-normalized and raw vectors; NaN-safe). */
 function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
   if (a.length === 0 || a.length !== b.length) return 0
   let dot = 0
-  for (let i = 0; i < a.length; i += 1) dot += a[i] * b[i]
-  return Math.max(0, Math.min(1, dot))
+  let normA = 0
+  let normB = 0
+  for (let i = 0; i < a.length; i += 1) {
+    const av = a[i]
+    const bv = b[i]
+    dot += av * bv
+    normA += av * av
+    normB += bv * bv
+  }
+  const norm = Math.sqrt(normA) * Math.sqrt(normB)
+  if (norm === 0) return 0
+  const cosine = dot / norm
+  return Number.isFinite(cosine) ? Math.max(0, Math.min(1, cosine)) : 0
 }
 
 /**
@@ -251,13 +266,18 @@ function splitBlocks(text: string): Block[] {
     if (fence !== '') {
       // Inside a fence: keep everything (including blank lines) in the block.
       current += (current.length > 0 ? '\n' : '') + line
-      if (/^\s*(```|~~~)\s*$/.test(line)) fence = ''
+      // Close when the line is a run of the SAME fence character at least as
+      // long as the opener (GitHub rule: ```` closes ```, and a 4-backtick
+      // opener needs 4+ backticks). The opener's full string is kept so the
+      // length is not lost.
+      const closer = new RegExp(`^\\s*${fence[0] === '`' ? '`' : '~'}{${fence.length},}\\s*$`)
+      if (closer.test(line)) fence = ''
       continue
     }
-    const fenceStart = /^\s*(```+|~~~+)/.exec(line)
+    const fenceStart = /^\s*(`{3,}|~{3,})/.exec(line)
     if (fenceStart !== null) {
       flush()
-      fence = fenceStart[1].slice(0, 3)
+      fence = fenceStart[1]
       current = line
       continue
     }

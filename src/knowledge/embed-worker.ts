@@ -167,6 +167,11 @@ async function createRunner(
         progress: 0,
         message: cancelled ? '' : `${raw} · ${NETWORK_HINT}`,
       })
+      // Acknowledge a cancellation only once the download has actually
+      // aborted (file handles released), so the main process can remove the
+      // half-written weights without a Windows lock and without leaving a
+      // corrupt directory that `isDownloaded` would mistake for a real model.
+      if (cancelled) post({ type: 'cancelled', modelId })
       throw error
     }
   }

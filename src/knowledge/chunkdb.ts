@@ -89,14 +89,18 @@ function extractShortTerms(query: string): string[] {
 
 /**
  * SQL fragment + params narrowing a chunk query to a document subset, or
- * `null` when unrestricted. Bounded to SQLite's parameter limit (500/batch).
+ * `null` when unrestricted. Bounded to SQLite's parameter limit (500/batch);
+ * a larger set is refused loudly instead of silently dropping documents
+ * (silent truncation would return wrong results for the caller).
  */
 function docFilterSql(docIds: readonly string[] | undefined, column: string): { sql: string; params: string[] } | null {
   if (docIds === undefined || docIds.length === 0) return null
-  const batch = docIds.slice(0, EMBEDDING_HASH_QUERY_BATCH)
+  if (docIds.length > EMBEDDING_HASH_QUERY_BATCH) {
+    throw new Error(`too many document ids in filter (${docIds.length} > ${EMBEDDING_HASH_QUERY_BATCH})`)
+  }
   return {
-    sql: ` AND ${column} IN (${batch.map(() => '?').join(',')})`,
-    params: [...batch],
+    sql: ` AND ${column} IN (${docIds.map(() => '?').join(',')})`,
+    params: [...docIds],
   }
 }
 
@@ -134,12 +138,24 @@ function decodeEmbeddingFloat32(blob: Buffer | null | undefined): Float32Array |
   return new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4)
 }
 
-/** Cosine similarity between two equal-length float32 vectors. */
+/** Cosine similarity between two equal-length float32 vectors (true cosine,
+ *  correct for raw and unit-normalized vectors alike; NaN-safe). */
 function cosineFloat32(a: Float32Array, b: Float32Array): number {
   if (a.length === 0 || a.length !== b.length) return 0
   let dot = 0
-  for (let i = 0; i < a.length; i += 1) dot += a[i] * b[i]
-  return Math.max(0, Math.min(1, dot))
+  let normA = 0
+  let normB = 0
+  for (let i = 0; i < a.length; i += 1) {
+    const av = a[i]
+    const bv = b[i]
+    dot += av * bv
+    normA += av * av
+    normB += bv * bv
+  }
+  const norm = Math.sqrt(normA) * Math.sqrt(normB)
+  if (norm === 0) return 0
+  const cosine = dot / norm
+  return Number.isFinite(cosine) ? Math.max(0, Math.min(1, cosine)) : 0
 }
 
 /** Rebuild a ChunkRow from a chunk for the vector cache. */
@@ -359,13 +375,17 @@ export class ChunkDatabase implements RetrievalLane {
   putChunks(chunks: KnowledgeChunk[]): void {
     if (chunks.length === 0) return
     const docId = chunks[0].docId
-    const deleteOld = this.db.prepare('DELETE FROM chunk WHERE doc_id = ?')
+    const baseId = chunks[0].baseId
+    // Scoped to the doc's own base: doc ids are UUIDs (globally unique in
+    // practice), but an un-scoped delete would silently wipe another base's
+    // rows if that invariant ever broke.
+    const deleteOld = this.db.prepare('DELETE FROM chunk WHERE doc_id = ? AND base_id = ?')
     const insert = this.db.prepare(
       'INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model, embedding_text_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      deleteOld.run(docId)
+      deleteOld.run(docId, baseId)
       for (const chunk of chunks) {
         const searchText = searchTextOf(chunk)
         insert.run(
@@ -439,8 +459,14 @@ export class ChunkDatabase implements RetrievalLane {
     for (const chunk of chunks) this.upsertVectorCache(chunk)
   }
 
-  deleteChunks(docId: string): void {
-    this.db.prepare('DELETE FROM chunk WHERE doc_id = ?').run(docId)
+  deleteChunks(docId: string, baseId?: string): void {
+    if (baseId !== undefined) {
+      // Scoped delete: only this base's rows for the doc are removed.
+      this.db.prepare('DELETE FROM chunk WHERE doc_id = ? AND base_id = ?').run(docId, baseId)
+    } else {
+      // Unscoped (legacy/test callers): matches every base's rows for the doc.
+      this.db.prepare('DELETE FROM chunk WHERE doc_id = ?').run(docId)
+    }
     this.dropVectorCacheByDoc(docId)
   }
 
@@ -552,8 +578,8 @@ export class ChunkDatabase implements RetrievalLane {
       dimensions = row !== undefined ? decodeEmbedding(row.embedding)?.length : undefined
     }
     const modelRows = this.db.prepare(
-      'SELECT base_id, embedding_model, COUNT(*) AS c FROM chunk WHERE embedding IS NOT NULL AND embedding_model IS NOT NULL GROUP BY base_id, embedding_model',
-    ).all() as Array<{ base_id: string; embedding_model: string; c: number }>
+      `SELECT base_id, embedding_model, COUNT(*) AS c FROM chunk WHERE embedding IS NOT NULL AND embedding_model IS NOT NULL AND base_id IN (${placeholders}) GROUP BY base_id, embedding_model`,
+    ).all(...scope) as Array<{ base_id: string; embedding_model: string; c: number }>
     return {
       count,
       embedded,
@@ -567,6 +593,9 @@ export class ChunkDatabase implements RetrievalLane {
   async lexical(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[]): Promise<LaneResult> {
     const scope = [...baseIds]
     if (scope.length === 0) return { total: 0, hits: [] }
+    // An empty query must never scan the whole corpus (LIKE '%%' matches
+    // everything) — the service layer guards too, but the lane stands alone.
+    if (query.trim().length === 0) return { total: 0, hits: [] }
     const docFilter = docFilterSql(docIds, 'c.doc_id')
     const placeholders = scope.map(() => '?').join(',')
     const scopeSql = `c.base_id IN (${placeholders})${docFilter?.sql ?? ''}`

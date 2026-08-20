@@ -46,7 +46,29 @@ export async function parseDocumentBuffer(
 }
 
 function decodeText(buffer: Uint8Array): string {
-  return new TextDecoder('utf-8').decode(buffer)
+  // UTF-8 with a GBK/GB18030 fallback: Chinese exports of txt/csv/log are
+  // often GBK-encoded, and decoding them as UTF-8 silently yields U+FFFD
+  // garbage. BOM wins; otherwise a decode with many replacement chars (or a
+  // strict-mode failure) falls back to GB18030.
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return new TextDecoder('utf-8').decode(buffer.subarray(3))
+  }
+  const utf8 = new TextDecoder('utf-8', { fatal: false }).decode(buffer)
+  // A cheap heuristic: count replacement characters. Real text (CJK or
+  // latin) virtually never contains U+FFFD; GBK bytes decode to it in bulk.
+  let replacements = 0
+  for (let i = 0; i < utf8.length; i += 1) {
+    if (utf8.charCodeAt(i) === 0xfffd) {
+      replacements += 1
+      if (replacements > 8) break
+    }
+  }
+  if (replacements <= 8) return utf8
+  try {
+    return new TextDecoder('gb18030').decode(buffer)
+  } catch {
+    return utf8
+  }
 }
 
 /** Strip an HTML document down to its title and body text. */
@@ -87,7 +109,10 @@ function decodeEntities(text: string): string {
 }
 
 function codePointFrom(value: number): string {
-  if (!Number.isInteger(value) || value < 0 || value > 0x10ffff) return '\ufffd'
+  // Lone surrogates (0xD800–0xDFFF) must not pass through: String.fromCodePoint
+  // accepts them, but the resulting string is not valid text and would be
+  // replaced again on any later UTF-8 encode.
+  if (!Number.isInteger(value) || value < 0 || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) return '\ufffd'
   return String.fromCodePoint(value)
 }
 
@@ -305,7 +330,14 @@ async function parseXlsx(buffer: Uint8Array): Promise<string> {
   const sharedStrings: string[] = []
   if (shared !== undefined) {
     const xml = await shared.async('string')
-    for (const match of xml.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)) sharedStrings.push(decodeEntities(match[1] ?? ''))
+    // One entry per <si> — a rich-text shared string with multiple runs
+    // (<r><t>…</t></r>×N) must join into ONE string, not N entries, or every
+    // later index would be off by the run count.
+    for (const si of xml.matchAll(/<si>([\s\S]*?)<\/si>/g)) {
+      const inner = si[1] ?? ''
+      const text = [...inner.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(m => decodeEntities(m[1] ?? '')).join('')
+      sharedStrings.push(text)
+    }
   }
   const lines: string[] = []
   for (const name of Object.keys(zip.files).sort()) {
@@ -315,6 +347,8 @@ async function parseXlsx(buffer: Uint8Array): Promise<string> {
     for (const row of rows) {
       const cells: string[] = []
       for (const cell of row.matchAll(/<c\b[^>]*>([\s\S]*?)<\/c>/g)) {
+        const tag = cell[0] ?? ''
+        const type = /<c\b[^>]*\bt="([^"]*)"/.exec(tag)?.[1]
         const content = cell[1] ?? ''
         const inline = /<is>([\s\S]*?)<\/is>/.exec(content)
         if (inline !== null) {
@@ -323,9 +357,18 @@ async function parseXlsx(buffer: Uint8Array): Promise<string> {
           continue
         }
         const ref = /<v>([\s\S]*?)<\/v>/.exec(content)
-        const sharedIdx = ref !== null ? Number(ref[1]) : NaN
-        if (Number.isInteger(sharedIdx) && sharedIdx >= 0 && sharedIdx < sharedStrings.length) {
-          cells.push(sharedStrings[sharedIdx])
+        const raw = ref?.[1] ?? ''
+        if (type === 's') {
+          // Shared-string reference: the <v> is an INDEX, and only for t="s".
+          const sharedIdx = Number(raw)
+          if (Number.isInteger(sharedIdx) && sharedIdx >= 0 && sharedIdx < sharedStrings.length) {
+            cells.push(sharedStrings[sharedIdx])
+          }
+        } else if (type === 'b') {
+          cells.push(raw === '1' ? '1' : '0')
+        } else if (raw.trim().length > 0) {
+          // Numbers, dates, formula results etc.: <v> is the literal value.
+          cells.push(decodeEntities(raw))
         }
       }
       if (cells.some(cell => cell.trim().length > 0)) lines.push(cells.join('\t'))

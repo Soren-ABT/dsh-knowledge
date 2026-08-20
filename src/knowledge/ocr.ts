@@ -9,7 +9,7 @@
  * @module dsh-knowledge/knowledge/ocr
  */
 
-import { gunzipSync, deflateSync } from 'node:zlib'
+import { deflateSync } from 'node:zlib'
 import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
@@ -22,6 +22,11 @@ import { localModelCacheDir } from './embed.js'
 /** Cap on OCR work per PDF (Cherry refuses >300 pages; images are capped similarly). */
 const MAX_OCR_PAGES = 100
 const MAX_OCR_IMAGES = 200
+/** One embedded image's pixel cap (~32MP; a single RGBA buffer beyond that is
+ *  128MB+ and smells like a forged/corrupt dimension header). */
+const MAX_IMAGE_PIXELS = 32_000_000
+/** Total RGBA bytes collected per PDF (~512MB of decoded rasters). */
+const MAX_TOTAL_RASTER_BYTES = 512 * 1024 * 1024
 
 export interface OcrModelStatus {
   status: 'idle' | 'downloading' | 'ready' | 'error'
@@ -97,7 +102,13 @@ export function parseCharacterDict(yml: string): string[] {
     const stripped = lines[i].replace(/^\s+/, '')
     if (!stripped.startsWith('- ')) break
     let value = stripped.slice(2)
-    if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1)
+    // YAML strings may be wrapped in single OR double quotes (`- '中'`,
+    // `- "'"` for a literal quote character, or `- "\""`). Strip whichever
+    // wrapper actually wraps the value.
+    if (value.length >= 2) {
+      if (value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1)
+      else if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1)
+    }
     chars.push(value)
   }
   return chars
@@ -295,18 +306,23 @@ export async function renderPdfPages(bytes: Uint8Array, maxPages: number): Promi
     const out: Array<{ page: number; png: Buffer }> = []
     const pageCount = Math.min(document.countPages(), maxPages)
     for (let index = 0; index < pageCount; index += 1) {
+      let page: { toPixmap(matrix: unknown, colorspace: unknown, alpha: boolean): { asPNG(): Uint8Array }; destroy(): void } | null = null
       try {
-        const page = document.loadPage(index)
+        page = document.loadPage(index)
         // ~216dpi on A4 (612x842pt * 3). mupdf renders into WASM memory, so
         // large pages cost memory but never hit a canvas dimension limit.
         const pixmap = page.toPixmap(mupdf.Matrix.scale(3, 3), mupdf.ColorSpace.DeviceRGB, false)
         const png = Buffer.from(pixmap.asPNG())
-        page.destroy()
         if (png.length > 0) out.push({ page: index + 1, png })
       } catch (error) {
         // A page that refuses to render (malformed content) is skipped — the
         // rest of the document still gets OCR'd.
         console.warn(`[dsh-knowledge] page ${index + 1} render failed, skipping: ${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        // Always release the page back to the WASM heap, even when rendering
+        // threw (a malformed page would otherwise accumulate until the
+        // document is destroyed, inflating WASM memory).
+        page?.destroy()
       }
     }
     return out
@@ -346,19 +362,45 @@ function ensureOcrWorker(): Worker {
   return worker
 }
 
+/** Consecutive request timeouts before the worker is assumed hung and respawned. */
+const OCR_HUNG_TIMEOUT_THRESHOLD = 2
+let ocrTimeoutStreak = 0
+
 function recognizePng(png: Buffer): Promise<string> {
   return new Promise((resolve, reject) => {
     const id = ++ocrRequestSeq
     const timer = setTimeout(() => {
       ocrPending.delete(id)
+      // A worker that is alive but wedged (onnxruntime's native inference is
+      // synchronous — a hung model blocks the worker's event loop and every
+      // subsequent request queues behind it) never fires error/exit, so the
+      // respawn path would never run. After a streak of timeouts, force a
+      // respawn: the next call rebuilds the worker (and its model session).
+      ocrTimeoutStreak += 1
+      if (ocrTimeoutStreak >= OCR_HUNG_TIMEOUT_THRESHOLD) {
+        ocrTimeoutStreak = 0
+        const worker = ocrWorker
+        ocrWorker = null
+        failAllOcrPending(new Error('OCR worker respawned after request timeouts'))
+        void worker?.terminate()
+      }
       reject(new Error('OCR request timed out'))
     }, OCR_WORKER_REQUEST_TIMEOUT_MS)
     timer.unref?.()
     ocrPending.set(id, {
-      resolve: (text) => { clearTimeout(timer); resolve(text) },
+      resolve: (text) => { clearTimeout(timer); ocrTimeoutStreak = 0; resolve(text) },
       reject: (error) => { clearTimeout(timer); reject(error) },
     })
-    ensureOcrWorker().postMessage({ id, type: 'ocr', png, modelDir: ocrCacheDir() })
+    try {
+      ensureOcrWorker().postMessage({ id, type: 'ocr', png, modelDir: ocrCacheDir() })
+    } catch (error) {
+      // The worker died between ensure and postMessage: fail this request
+      // synchronously instead of leaking the pending entry until timeout.
+      clearTimeout(timer)
+      ocrPending.delete(id)
+      ocrWorker = null
+      reject(error instanceof Error ? error : new Error(String(error)))
+    }
   })
 }
 
@@ -406,6 +448,7 @@ export async function extractPdfImages(bytes: Uint8Array): Promise<Array<PdfImag
     const doc = await loadingTask.promise as { numPages: number; getPage(n: number): Promise<unknown> }
     const out: Array<PdfImage & { page: number }> = []
     const pageCount = Math.min(doc.numPages, MAX_OCR_PAGES)
+    let totalRasterBytes = 0
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
       const page = await doc.getPage(pageNumber) as {
         getOperatorList(): Promise<{ fnArray: number[]; argsArray: unknown[][] }>
@@ -423,6 +466,14 @@ export async function extractPdfImages(bytes: Uint8Array): Promise<Array<PdfImag
         // unsupported codec) simply skips that image.
         const image = await waitForImage(page, name, 5000)
         if (image === null || image.width <= 0 || image.height <= 0 || !image.data) continue
+        // Memory guard: a single forged/oversized dimension header must not
+        // allocate a huge RGBA buffer (RangeError) or OOM the process, and
+        // the cumulative raster bytes stay bounded across the whole PDF.
+        const pixels = image.width * image.height
+        if (pixels > MAX_IMAGE_PIXELS) continue
+        const bytes = pixels * 4
+        if (totalRasterBytes + bytes > MAX_TOTAL_RASTER_BYTES) continue
+        totalRasterBytes += bytes
         out.push({ width: image.width, height: image.height, data: normalizeRgba(image), page: pageNumber })
       }
     }
@@ -453,6 +504,12 @@ async function waitForImage(
 export function normalizeRgba(image: { width: number; height: number; data: Uint8ClampedArray | Uint8Array }): Uint8ClampedArray {
   const { width, height, data } = image
   const expected = width * height
+  // Defense in depth: a forged dimension header must not allocate an
+  // unbounded buffer here (extractPdfImages already filters, but this
+  // function is exported and stands alone).
+  if (expected <= 0 || expected > MAX_IMAGE_PIXELS || expected * 4 > 0xffffffff) {
+    throw new Error(`image dimensions out of range: ${width}×${height}`)
+  }
   if (data.length >= expected * 4) {
     // pdfjs decodes to RGBA; ensure the alpha channel is opaque (it usually is).
     const rgba = new Uint8ClampedArray(expected * 4)
@@ -560,17 +617,25 @@ export async function ocrPdfText(bytes: Uint8Array): Promise<string> {
   try {
     const pageTexts = new Map<number, string[]>()
     const rendered = await renderPdfPages(bytes, MAX_OCR_PAGES)
-    if (rendered !== null) {
-      // Full-page renders: one PNG per page, straight into the recognizer
-      // (mupdf output needs no grayscale/normalize chain).
-      for (const { page, png } of rendered) {
+    // Per-page/per-image fault isolation: one bad page (timeout, worker
+    // crash, corrupt raster) must not discard every page recognized before
+    // it — partial results beat an empty document.
+    const recognize = async (page: number, png: Buffer): Promise<void> => {
+      try {
         const text = postprocessOcrText(await recognizePng(png))
         if (text.length > 0) {
           const bucket = pageTexts.get(page) ?? []
           bucket.push(text)
           pageTexts.set(page, bucket)
         }
+      } catch (error) {
+        console.warn(`[dsh-knowledge] OCR failed for page ${page}: ${error instanceof Error ? error.message : String(error)}`)
       }
+    }
+    if (rendered !== null) {
+      // Full-page renders: one PNG per page, straight into the recognizer
+      // (mupdf output needs no grayscale/normalize chain).
+      for (const { page, png } of rendered) await recognize(page, png)
     } else {
       // No renderer — fall back to the embedded-raster extraction path.
       const images = await extractPdfImages(bytes)
@@ -580,12 +645,7 @@ export async function ocrPdfText(bytes: Uint8Array): Promise<string> {
         // are upscaled 2x first (Cherry renders PDF pages at ~216dpi instead).
         const { width, height, data } = prepareForOcr(image.width, image.height, image.data)
         const png = rgbaToPng(width, height, data)
-        const text = postprocessOcrText(await recognizePng(png))
-        if (text.length > 0) {
-          const bucket = pageTexts.get(image.page) ?? []
-          bucket.push(text)
-          pageTexts.set(image.page, bucket)
-        }
+        await recognize(image.page, png)
       }
     }
     return [...pageTexts.entries()]
@@ -682,9 +742,12 @@ const SHARPEN_KERNEL = [
 /**
  * Tesseract separates CJK glyphs with spaces ("中 文 测 试"); collapse spaces
  * between CJK characters so the indexed text matches natural search queries.
+ * Only HORIZONTAL whitespace is folded: newlines separate OCR lines and must
+ * survive (a CJK line ending next to a CJK line starting would otherwise be
+ * glued into one line, destroying paragraph structure).
  */
 export function postprocessOcrText(text: string): string {
-  return text.replace(/([\u4e00-\u9fff\u3400-\u4dbf])\s+(?=[\u4e00-\u9fff\u3400-\u4dbf])/g, '$1')
+  return text.replace(/([\u4e00-\u9fff\u3400-\u4dbf])[ \t\u3000\u00a0]+(?=[\u4e00-\u9fff\u3400-\u4dbf])/g, '$1')
 }
 
 /** List engine files currently on disk (settings panel detail). */

@@ -64,7 +64,13 @@ async function recognizeWithPaddle(service: PaddleOcrServiceType, png: Buffer): 
 async function recognizeWithTesseract(png: Buffer, langPath: string): Promise<string> {
   const tesseract = (tesseractPromise ??= import('tesseract.js') as Promise<TesseractModule>)
   const mod = await tesseract
-  tesseractWorkerPromise ??= mod.createWorker('chi_sim+eng', 1, { langPath })
+  // A failed createWorker poisons the cached promise (every later fallback
+  // would fail instantly) — mirror getPaddle's reset so the next attempt
+  // retries from scratch.
+  tesseractWorkerPromise ??= mod.createWorker('chi_sim+eng', 1, { langPath }).catch((error: unknown) => {
+    tesseractWorkerPromise = null
+    throw error
+  })
   const worker = await tesseractWorkerPromise
   // tesseract.js 7 rejects Buffer-typed input — hand it a plain Uint8Array.
   const bytes = new Uint8Array(png.buffer, png.byteOffset, png.byteLength)

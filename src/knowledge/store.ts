@@ -112,7 +112,8 @@ export interface Store {
    * here, so a mid-embedding crash keeps every completed batch).
    */
   putChunkBatch(chunks: KnowledgeChunk[]): Promise<void>
-  deleteChunks(docId: string): Promise<void>
+  /** Delete a document's chunks; pass `baseId` to scope the delete to one base. */
+  deleteChunks(docId: string, baseId?: string): Promise<void>
   /** Drop every chunk of a base in one operation (used by deleteBase). */
   deleteChunksByBase(baseId: string): Promise<void>
   /**
@@ -279,8 +280,8 @@ class DomainStore implements Store {
     this.chunkDb.putChunkBatch(chunks)
   }
 
-  async deleteChunks(docId: string): Promise<void> {
-    this.chunkDb.deleteChunks(docId)
+  async deleteChunks(docId: string, baseId?: string): Promise<void> {
+    this.chunkDb.deleteChunks(docId, baseId)
   }
 
   async deleteChunksByBase(baseId: string): Promise<void> {
@@ -495,9 +496,9 @@ class MemoryStore implements Store {
     for (const chunk of chunks) this.chunks.set(chunk.id, chunk)
   }
 
-  async deleteChunks(docId: string): Promise<void> {
+  async deleteChunks(docId: string, baseId?: string): Promise<void> {
     for (const [id, chunk] of this.chunks) {
-      if (chunk.docId === docId) this.chunks.delete(id)
+      if (chunk.docId === docId && (baseId === undefined || chunk.baseId === baseId)) this.chunks.delete(id)
     }
   }
 

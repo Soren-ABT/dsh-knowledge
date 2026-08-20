@@ -110,14 +110,6 @@ export function KnowledgePanel(props: {
   t: Translate
 }): JSX.Element | null {
   const open = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot)
-  useEffect(() => {
-    if (!open) return
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') props.store.close()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, props.store])
   if (!open) return null
   return <PanelBody api={props.api} t={props.t} onClose={() => props.store.close()} />
 }
@@ -237,7 +229,13 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     setStats(await api.stats(baseId ?? undefined))
   }, [api])
 
+  // Monotonic guard for base/document navigation: a slow response from a
+  // previous selection must never overwrite the current one (rapid A→B
+  // switching used to end up showing A's documents under B's selection).
+  const navSeq = useRef(0)
+
   const selectBase = useCallback(async (id: string): Promise<void> => {
+    const seq = ++navSeq.current
     setSelectedBaseId(id)
     setSelectedDocId(null)
     setCurrentDirectoryId(null)
@@ -246,16 +244,20 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     setRawText(null)
     setRawTextTruncated(false)
     setHits([])
+    setSearchMeta(null)
     setRagOpen(false)
     setRecallOpen(false)
     setDocLimit(100)
     await run(async () => {
-      const [docs] = await Promise.all([api.listDocuments(id), refreshStats(id)])
+      const [docs, stats] = await Promise.all([api.listDocuments(id), api.stats(id)])
+      if (seq !== navSeq.current) return
       setDocuments(docs)
+      setStats(stats)
     })
-  }, [api, run, refreshStats])
+  }, [api, run])
 
   const openDocument = useCallback(async (id: string, mode: 'preview' | 'chunks'): Promise<void> => {
+    const seq = ++navSeq.current
     setSelectedDocId(id)
     setDetailMode(mode)
     setChunks([])
@@ -270,6 +272,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         api.getDocument(id, { rawTextLimit: pdfPreview ? 0 : PREVIEW_RAW_TEXT_LIMIT }),
         api.listChunks(id, PREVIEW_CHUNK_LIMIT),
       ])
+      if (seq !== navSeq.current) return
       setChunks(chunkList)
       setRawText(doc.rawText ?? null)
       setRawTextTruncated(doc.rawTextTruncated === true)
@@ -278,8 +281,11 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
   const loadMoreChunks = useCallback(async (): Promise<void> => {
     if (selectedDocId === null) return
+    const seq = navSeq.current
     await run(async () => {
-      setChunks(await api.listChunks(selectedDocId, chunks.length + PREVIEW_CHUNK_LIMIT))
+      const more = await api.listChunks(selectedDocId, chunks.length + PREVIEW_CHUNK_LIMIT)
+      if (seq !== navSeq.current) return
+      setChunks(more)
     })
   }, [api, run, selectedDocId, chunks.length])
 
@@ -473,12 +479,27 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     for (const file of oversized) notify('warning', t('fileTooLarge').replace('{name}', file.name))
     if (accepted.length === 0) return
     notify('info', `${accepted.length} ${t('uploaded')}…`)
+    // Per-file failure isolation: one bad file (e.g. a server-side reject)
+    // must not abort the rest of the batch silently — failures are collected
+    // and surfaced in a single error toast, successes counted separately.
+    let failed = 0
+    let firstError = ''
     for (const file of accepted) {
-      const contentBase64 = await readFileAsBase64(file)
-      await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64)
+      try {
+        const contentBase64 = await readFileAsBase64(file)
+        await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64)
+      } catch (err) {
+        failed += 1
+        if (firstError === '') firstError = err instanceof Error ? err.message : String(err)
+      }
     }
     await reloadDocuments()
-    notify('success', `${accepted.length} ${t('uploaded')}`)
+    if (failed === 0) {
+      notify('success', `${accepted.length} ${t('uploaded')}`)
+    } else {
+      notify('warning', `${accepted.length - failed}/${accepted.length} ${t('uploaded')}`)
+      notify('error', `${failed} ${t('importFailed')}: ${firstError}`)
+    }
   }, [api, notify, reloadDocuments, selectedBaseId, t])
 
   // ── drag & drop upload (Cherry Studio drops files onto the knowledge list) ──
@@ -531,6 +552,12 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     const segments = (file: File): string[] => rel(file).split('/')
     const rootName = segments(supported[0])[0] ?? 'folder'
     notify('info', `${t('tabDir')}: ${supported.length} ${t('uploaded')}…`)
+    // Counters live OUTSIDE the try so the success toast below can read them
+    // even when the per-file loop never ran (whole-batch failure).
+    let oversizedCount = 0
+    let submitted = 0
+    let failed = 0
+    let firstError = ''
     try {
       // 1. collect unique directory paths (excluding the root) sorted by depth
       const dirPaths = new Set<string>()
@@ -551,7 +578,6 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       }
       // 3. submit every file under its directory — rows land immediately and
       //    the background pool processes them (Cherry: whole directory, no cap)
-      let oversizedCount = 0
       for (const file of supported) {
         if (file.size > MAX_UPLOAD_BYTES) {
           oversizedCount += 1
@@ -561,17 +587,28 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         const parts = segments(file)
         const dirPath = parts.slice(0, -1).join('/')
         const parentId = dirPath === rootName || dirPath === '' ? root.id : dirId.get(dirPath)
-        const contentBase64 = await readFileAsBase64(file)
-        await api.addFileDocument(selectedBaseId, file.name, file.type || 'application/octet-stream', contentBase64, undefined, parentId)
+        try {
+          const contentBase64 = await readFileAsBase64(file)
+          await api.addFileDocument(selectedBaseId, file.name, file.type || 'application/octet-stream', contentBase64, undefined, parentId)
+          submitted += 1
+        } catch (err) {
+          // One bad file must not abort the whole directory import.
+          failed += 1
+          if (firstError === '') firstError = err instanceof Error ? err.message : String(err)
+        }
       }
       if (oversizedCount > 0) {
         notify('warning', t('fileTooLarge').replace('{name}', `${oversizedCount} files`))
+      }
+      if (failed > 0) {
+        notify('warning', `${submitted}/${supported.length - oversizedCount} ${t('uploaded')}`)
+        notify('error', `${failed} ${t('importFailed')}: ${firstError}`)
       }
     } catch (err) {
       notify('error', err instanceof Error ? err.message : String(err))
     }
     await reloadDocuments()
-    notify('success', `${supported.length} ${t('uploaded')}`)
+    notify('success', `${submitted} ${t('uploaded')}`)
     if (skippedCount > 0) notify('info', t('skippedFiles').replace('{count}', String(skippedCount)))
   }, [api, notify, reloadDocuments, selectedBaseId, t])
 
@@ -682,12 +719,18 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
   // ── recall test ───────────────────────────────────────────────────────────
 
+  // Search results are guarded against out-of-order responses: typing a new
+  // query (or switching base) while the previous search is still in flight
+  // must not let the stale response overwrite the newer one.
+  const searchSeq = useRef(0)
   const doSearch = useCallback(async (query: string): Promise<void> => {
     const trimmed = query.trim()
     if (trimmed === '') return
+    const seq = ++searchSeq.current
     setSearchQuery(trimmed)
     await run(async () => {
       const result = await api.search({ query: trimmed, baseId: selectedBaseId ?? undefined })
+      if (seq !== searchSeq.current) return
       setHits(result.hits)
       setSearchMeta({ reranked: result.reranked, elapsedMs: result.elapsedMs })
       setRecallHistory(prev => [{ id: Date.now(), query: trimmed, time: Date.now() }, ...prev].slice(0, 20))
@@ -1686,7 +1729,7 @@ function DocumentDetailPanel(props: {
     let objectUrl: string | null = null
     setPdfUrl(null)
     setPdfPreviewError(null)
-    void fetch(`/knowledge/documents/${doc.id}/raw`)
+    void fetch(`/knowledge/documents/${doc.id}/raw`, { signal: AbortSignal.timeout(30_000) })
       .then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const blob = await response.blob()
