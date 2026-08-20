@@ -58,7 +58,7 @@ The package declares `dsh.bundle.patch`, so `dsh plugin add` registers it automa
 ```bash
 dsh plugin --profile <name> add dsh-knowledge          # from npm
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
-dsh plugin --profile <name> add ./dsh-knowledge-0.3.1.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.3.2.tgz
 ```
 
 > **pnpm 10+ build allowlist (required)**: the plugin's dependencies `onnxruntime-node`, `sharp`, `protobufjs`, and `tesseract.js` ship postinstall scripts that pnpm refuses to run by default and exits non-zero — `dsh plugin add` then **stops before registering the bundle, so the plugin never activates**. Add this to the profile's `pnpm-workspace.yaml` **before** installing, then run the add:
@@ -201,7 +201,7 @@ pnpm run build    # esbuild → lib/ (host entries + factory-form client bundle)
 - **Model pickers are suggestion comboboxes, not live provider lists**: DSH's `ctx.llm` only surfaces chat models (`listModels` carries no embedding-modality tag, and this plugin's embedding endpoint/model are configured independently). The settings panel therefore uses native datalist comboboxes (embedding / local / rerank suggestions) with free-text fallback for custom ids.
 - **Embedding runs inline within an import**: parsing and chunking show live per-file status, but vectorization runs in batches inline in the import flow (inference in a dedicated worker thread, imports per base queued through a 5-way concurrent pool); the local model's first download blocks until cached (the settings panel shows live progress).
 - **MinerU needs an API Key**: `documentProcessorProvider: mineru` relies on the official MinerU service (or a self-hosted host) and requires registration for a Key; without one, PDFs use the local parse + OCR chain.
-- **No built-in note editor**: note editing stays in DSH.
+- **Lightweight text (note) entry**: the add menu's "Text" pastes a title + content straight into a base (no rich-text editor; heavy note editing stays in DSH).
 
 ---
 

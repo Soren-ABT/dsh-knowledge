@@ -1,5 +1,84 @@
 # Changelog
 
+## 0.3.2 — Cherry Studio deep-alignment (npm release, pending)
+
+### Retrieval & storage
+
+- **Token-budget chunking** (Cherry's splitter semantics): `chunkSize` /
+  `chunkOverlap` are now token budgets converted per document via the
+  measured chars-per-token ratio (CJK ~1.5, latin ~4); long blocks cut at
+  Cherry's break-point model (heading 100 → code edge 80 → rule 60 →
+  paragraph 20 → sentence 8 → list 5 → newline 1, distance-decayed inside
+  the 22% window). Defaults raised to 1024/200 (Cherry's).
+- **FTS VACUUM fix**: `chunk_fts` keys on a stable `fts_rowid` surrogate
+  (trigger-assigned) instead of the implicit rowid, which VACUUM renumbers —
+  large deletes no longer silently desync lexical retrieval (Cherry's
+  #16132-class fix); existing stores migrate in place.
+- **Rerank semantics** (Cherry's mergeRerankResults): only candidates the
+  rerank model returned survive the step (top_n = final topK), so relevance
+  scores never mix with raw BM25/cosine scores; 401/403/404 log at error.
+- **similarityThreshold applies to pure-vector mode** too (Cherry's
+  scoreKind semantics).
+- **BM25 polish**: short-term LIKE filters relax when they eliminate every
+  candidate; the pure-LIKE fallback ANDs one filter per token and orders by
+  text length; MAX_MATCH_TERMS=64 caps long CJK queries; zero-norm vectors
+  never outrank real hits.
+- **Embedding batch retries**: 3 attempts with exponential backoff (1s→30s)
+  before an import degrades to lexical-only (Cherry's job retry contract).
+
+### Lifecycle & reliability
+
+- **Delete × in-flight race fixed**: deleting a document/base invalidates
+  its indexing tasks and every finishing write re-checks the row/base still
+  exist — a queued or running import can no longer resurrect a deleted row
+  or write chunks under a deleted base (Cherry's deleting-guard).
+- **Cancel chain**: an AbortController per ingest task aborts in-flight
+  embedding HTTP requests and MinerU batches when the document/base is
+  deleted; MinerU timeout raised to 30 minutes.
+- **Batch conflict detection** (Cherry's addItems detect): the new
+  `addFiles` API reports every collision (existing + batch-internal) in one
+  authoritative round without adding; clean detects add the whole batch
+  atomically.
+- **resumeInterruptedOnStartup config**: off marks interrupted imports
+  failed instead of auto re-embedding (Cherry: a deliberate quit must not
+  re-spend the embedding API).
+- **Directory imports persist raw copies** of every supported file under
+  tree-relative paths, so a base stays rebuildable if the source disk
+  changes (Cherry's prepare-root copy).
+- **Error codes**: failed documents carry `errorCode`
+  (interrupted / dimension_mismatch / parse_failed / embedding_provider)
+  with UI-localized copy and rebuild guidance (Cherry's code→i18n posture).
+- **Progress linger**: a finished job's final percentage stays visible for
+  ~60s; enable-in-place (BM25→model) refuses while documents are indexing
+  or a document has no rebuildable source.
+
+### Parsing & deep-read
+
+- **HTML→Markdown via turndown** (headings/lists/links/code/tables survive
+  for the heading-aware chunker; nav/footer/aside/form chrome stripped),
+  used by URL import/refresh, .html/.htm files and EPUB pages.
+- **Deep-read guards** (Cherry's KnowledgeConceptService): readDocumentText
+  caps one slice at 20k chars; grepDocument scans one 2000-char line at a
+  time (catastrophic-backtracking patterns can no longer freeze the host)
+  and reports a full-document totalMatches.
+
+### UI
+
+- **Local embedding model status**: live 800ms header label + empty-state
+  progress ring/guidance with a go-to-settings button.
+- **Dimension probe**: saving a changed embedding model (or rebuilding via
+  the restore dialog) probes the vector width first; the restore dialog now
+  offers an optional model switch with a pre-commit probe.
+- **Text (note) add entry**: title + content dialog using the existing host
+  `addTextDocument`.
+- **Conflict dialog**: lists the colliding file names; resolution buttons
+  show loading and the dialog cannot close mid-resolution.
+- **File picker**: over 20 files rejects the whole batch (was silent
+  truncation); drag-drop filters unsupported extensions and caps the batch.
+- **Failed rows** show localized reason labels with a focusable, aria-
+  labelled badge; pending rows show 等待中; end-of-list marker after 100
+  rows.
+
 ## 0.3.1 — Full-project audit fixes + AGPL-3.0 relicensing (npm release, 2026-08-20)
 
 ### License
