@@ -736,7 +736,7 @@ export class KnowledgeService extends Service {
         this.indexing.delete(docId)
         const message = error instanceof Error ? error.message : String(error)
         try {
-          await store.putDocument({ ...stored, embeddingError: message })
+          await store.putDocument({ ...stored, embeddingError: message, updatedAt: Date.now() })
         } catch {
           // best-effort: the row already exists; the status flip is cosmetic
         }
