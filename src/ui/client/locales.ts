@@ -182,6 +182,11 @@ export type KnowledgeKey =
   | 'staleModelSuffix'
   | 'embeddingModelMissingHint'
   | 'openFolder'
+  | 'conflictDialogTitle'
+  | 'conflictDialogMessage'
+  | 'conflictKeepAll'
+  | 'conflictReplaceAll'
+  | 'conflictSkipped'
   | 'localModelHint'
   | 'localModelReady'
   | 'localModelDownloading'
@@ -434,6 +439,11 @@ export const zh: Record<KnowledgeKey, string> = {
   staleModelSuffix: '（未安装）',
   embeddingModelMissingHint: '嵌入模型使用本地模型，但尚未下载——导入的内容将无法向量化检索。请先到「设置 → 本地模型」下载嵌入模型（约 585MB）。',
   openFolder: '打开',
+  conflictDialogTitle: '同名文件',
+  conflictDialogMessage: '有 {count} 个文件与知识库中已有文件同名，如何处理？',
+  conflictKeepAll: '全部重命名（保留两者）',
+  conflictReplaceAll: '替换现有',
+  conflictSkipped: '个同名文件已跳过（保留现有）',
   localModelReady: '本地模型就绪',
   localModelDownloading: '模型下载中',
   localModelError: '模型加载失败',
@@ -683,6 +693,11 @@ export const en: Record<KnowledgeKey, string> = {
   staleModelSuffix: ' (not installed)',
   embeddingModelMissingHint: 'The embedding provider is the local model, which is not downloaded yet — imported content cannot be vectorized for retrieval. Download the embedding model (~585MB) in Settings → Local Models first.',
   openFolder: 'Open',
+  conflictDialogTitle: 'Same-name files',
+  conflictDialogMessage: '{count} files share a name with items already in this base. How to proceed?',
+  conflictKeepAll: 'Rename all (keep both)',
+  conflictReplaceAll: 'Replace existing',
+  conflictSkipped: 'same-name file(s) skipped (existing kept)',
   localModelReady: 'Local model ready',
   localModelDownloading: 'Downloading model',
   localModelError: 'Model load failed',

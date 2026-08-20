@@ -583,7 +583,7 @@ export class KnowledgeService extends Service {
     })
   }
 
-  async addFileDocument(request: AddFileDocumentRequest): Promise<KnowledgeDocument> {
+  async addFileDocument(request: AddFileDocumentRequest): Promise<KnowledgeDocument & { skipped?: boolean }> {
     const store = this.requireStore()
     if (store.getBase(request.baseId) === undefined) throw new Error(`knowledge base not found: ${request.baseId}`)
     // Reject unsupported formats before the row is created (Cherry's
@@ -603,11 +603,19 @@ export class KnowledgeService extends Service {
     // fileName (the rename strategy would silently degrade to keep).
     let fileName = request.fileName
     let title = request.title?.trim() || request.fileName
-    const { fileName: resolvedFileName, title: resolvedTitle, docId, rawFilePath, stored } = await this.withBaseWriteLock(request.baseId, async () => {
+    const lockResult = await this.withBaseWriteLock(request.baseId, async () => {
       // Re-run the conflict check against the freshest document list (a
       // concurrent add may have landed since the first pass above).
       const conflictStrategyNow = request.conflict ?? this.getConfigFor(request.baseId).conflictStrategy
-      if (conflictStrategyNow !== 'keep') {
+      if (conflictStrategyNow === 'keep') {
+        // Cherry's "keep both" auto-renames; dsh's keep keeps the EXISTING
+        // item and skips the incoming duplicate, reporting it via `skipped`
+        // so the UI can tell the user instead of silently dropping the file.
+        const existing = store.listDocuments(request.baseId).find(doc => doc.fileName === request.fileName)
+        if (existing !== undefined) {
+          return { skippedDoc: existing }
+        }
+      } else {
         const existing = store.listDocuments(request.baseId).find(doc => doc.fileName === request.fileName)
         if (existing !== undefined) {
           if (conflictStrategyNow === 'replace') {
@@ -662,6 +670,19 @@ export class KnowledgeService extends Service {
       await store.putDocument(storedDoc)
       return { fileName: resolvedFileName, title: resolvedTitle, docId: newDocId, rawFilePath: newRawFilePath, stored: storedDoc }
     })
+    // keep-strategy skip: the duplicate already exists — report it instead of
+    // creating a row (the caller surfaces it as "skipped", not as a failure).
+    if ('skippedDoc' in (lockResult as { skippedDoc?: KnowledgeDocument })) {
+      const skipped = (lockResult as { skippedDoc: KnowledgeDocument }).skippedDoc
+      return { ...skipped, skipped: true }
+    }
+    const { fileName: resolvedFileName, title: resolvedTitle, docId, rawFilePath, stored } = lockResult as {
+      fileName: string
+      title: string
+      docId: string
+      rawFilePath?: string
+      stored: KnowledgeDocument
+    }
     fileName = resolvedFileName
     title = resolvedTitle
     this.indexing.set(docId, { baseId: request.baseId, title, phase: 'parsing', total: 0, progress: 0 })

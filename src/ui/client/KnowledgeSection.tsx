@@ -498,7 +498,12 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   // status) and the per-base worker pool processes them in the background; the
   // 800ms status poll keeps the list live. Failures stay visible in the list
   // as red failed rows (hover shows the reason), like Cherry's failed items.
-  const runFileImport = useCallback(async (files: File[]): Promise<void> => {
+  // A batch with same-name files opens the conflict dialog (Cherry's
+  // KnowledgeAddConflictDialog) before anything is submitted; the chosen
+  // resolution then applies to the whole batch.
+  const [pendingConflict, setPendingConflict] = useState<{ files: File[] } | null>(null)
+
+  const runFileImport = useCallback(async (files: File[], conflict?: 'rename' | 'replace'): Promise<void> => {
     if (selectedBaseId === null || files.length === 0) return
     // The upload API caps the JSON body at 32MB (base64 → ~24MB of file).
     // Reject oversized files up front with a clear message instead of a
@@ -507,11 +512,22 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     const accepted = files.filter(file => file.size <= MAX_UPLOAD_BYTES)
     for (const file of oversized) notify('warning', t('fileTooLarge').replace('{name}', file.name))
     if (accepted.length === 0) return
+    // Same-name pre-check against the loaded list (the server re-checks under
+    // its write lock, so an unloaded duplicate still gets handled there).
+    if (conflict === undefined) {
+      const existingNames = new Set(documents.filter(d => d.sourceType === 'file').map(d => d.fileName))
+      if (accepted.some(file => existingNames.has(file.webkitRelativePath || file.name))) {
+        setPendingConflict({ files: accepted })
+        return
+      }
+    }
+    const effective = conflict ?? 'rename'
     notify('info', `${accepted.length} ${t('uploaded')}…`)
     // Per-file failure isolation: one bad file (e.g. a server-side reject)
     // must not abort the rest of the batch silently — failures are collected
     // and surfaced in a single error toast, successes counted separately.
     let failed = 0
+    let skipped = 0
     let firstError = ''
     for (const file of accepted) {
       try {
@@ -520,20 +536,30 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         // (Cherry disables adding inside directories; carrying the parent id
         // keeps the drill-down consistent instead of silently dropping the
         // file at the base root).
-        await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64, undefined, currentDirectoryId ?? undefined)
+        const result = await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64, effective, currentDirectoryId ?? undefined)
+        if (result.skipped === true) skipped += 1
       } catch (err) {
         failed += 1
         if (firstError === '') firstError = err instanceof Error ? err.message : String(err)
       }
     }
     await reloadDocuments()
-    if (failed === 0) {
+    const imported = accepted.length - failed - skipped
+    if (failed === 0 && skipped === 0) {
       notify('success', `${accepted.length} ${t('uploaded')}`)
     } else {
-      notify('warning', `${accepted.length - failed}/${accepted.length} ${t('uploaded')}`)
-      notify('error', `${failed} ${t('importFailed')}: ${firstError}`)
+      if (imported > 0) notify('success', `${imported}/${accepted.length} ${t('uploaded')}`)
+      if (skipped > 0) notify('warning', `${skipped} ${t('conflictSkipped')}`)
+      if (failed > 0) notify('error', `${failed} ${t('importFailed')}: ${firstError}`)
     }
-  }, [api, notify, reloadDocuments, selectedBaseId, currentDirectoryId, t])
+  }, [api, notify, reloadDocuments, selectedBaseId, currentDirectoryId, t, documents])
+
+  const resolveConflict = useCallback((resolution: 'rename' | 'replace' | 'cancel'): void => {
+    if (pendingConflict === null) return
+    const { files } = pendingConflict
+    setPendingConflict(null)
+    if (resolution !== 'cancel') void runFileImport(files, resolution)
+  }, [pendingConflict, runFileImport])
 
   // ── drag & drop upload (Cherry Studio drops files onto the knowledge list) ──
 
@@ -1476,6 +1502,29 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
           onOk={(value) => { setDialog(null); addUrl(value) }}
           onClose={() => setDialog(null)}
         />
+      )}
+      {pendingConflict !== null && (
+        <div style={style.modalBackdrop} onClick={() => resolveConflict('cancel')}>
+          <div style={style.modal} onClick={(e) => e.stopPropagation()}>
+            <div style={style.modalHeader}>
+              <strong style={{ fontSize: 14 }}>{t('conflictDialogTitle')}</strong>
+            </div>
+            <p style={{ fontSize: 13, margin: '0 0 12px', lineHeight: 1.6 }}>
+              {t('conflictDialogMessage').replace('{count}', String(pendingConflict.files.length))}
+            </p>
+            <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
+              <button style={style.primary} onClick={() => resolveConflict('rename')}>
+                {t('conflictKeepAll')}
+              </button>
+              <button style={style.primaryDanger} onClick={() => resolveConflict('replace')}>
+                {t('conflictReplaceAll')}
+              </button>
+              <button style={style.button} onClick={() => resolveConflict('cancel')}>
+                {t('cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {dialog?.kind === 'renameDoc' && (
         <PromptDialog

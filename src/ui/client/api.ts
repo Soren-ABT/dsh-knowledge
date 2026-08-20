@@ -388,7 +388,7 @@ export class KnowledgeApi {
     contentBase64: string,
     conflict?: 'keep' | 'replace' | 'rename' | 'detect',
     parentDirectoryId?: string,
-  ): Promise<{ id: string; title: string; chunkCount: number }> {
+  ): Promise<{ id: string; title: string; chunkCount: number; skipped?: boolean }> {
     return this.call('POST', `/bases/${encodeURIComponent(baseId)}/documents`, {
       baseId, fileName, mimeType, contentBase64, conflict,
       ...(parentDirectoryId !== undefined ? { parentDirectoryId } : {}),
