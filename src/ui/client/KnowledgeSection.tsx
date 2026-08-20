@@ -333,10 +333,11 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     let timer: number | undefined
     const activeIdsRef: { current: Set<string> } = { current: new Set() }
     const poll = async (): Promise<void> => {
+      let activeIds = new Set<string>()
       try {
         const entries = await api.getIndexingStatus()
         const next = new Map<string, { progress: number; phase: 'parsing' | 'embedding' }>()
-        const activeIds = new Set<string>()
+        activeIds = new Set<string>()
         for (const entry of entries) {
           next.set(entry.docId, { progress: entry.progress, phase: entry.phase })
           if (entry.baseId === selectedBaseId) activeIds.add(entry.docId)
