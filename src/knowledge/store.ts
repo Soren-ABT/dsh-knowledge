@@ -39,6 +39,12 @@ export interface ChunkStats {
 export interface RawFileStore {
   /** Persist one document's source bytes; returns the base-relative path. */
   write(baseId: string, docId: string, ext: string, bytes: Uint8Array): Promise<string>
+  /**
+   * Persist bytes at a caller-chosen base-relative path (e.g. a directory
+   * import's `sub/name.pdf`), preserving the on-disk tree. Returns the
+   * base-relative path.
+   */
+  writeRel(baseId: string, relativePath: string, bytes: Uint8Array): Promise<string>
   /** Read a document's source bytes back (null when absent). */
   read(relativePath: string): Promise<Uint8Array | null>
   /** Remove one document's source file by its stored relative path (missing = no-op). */
@@ -68,6 +74,13 @@ export class RawFileStorage implements RawFileStore {
     await mkdir(dirname(full), { recursive: true })
     await writeFile(full, bytes)
     return relativePath
+  }
+
+  async writeRel(baseId: string, relativePath: string, bytes: Uint8Array): Promise<string> {
+    const full = this.pathOf(`${baseId}/${relativePath.replace(/\\/g, '/')}`)
+    await mkdir(dirname(full), { recursive: true })
+    await writeFile(full, bytes)
+    return `${baseId}/${relativePath.replace(/\\/g, '/')}`
   }
 
   async read(relativePath: string): Promise<Uint8Array | null> {

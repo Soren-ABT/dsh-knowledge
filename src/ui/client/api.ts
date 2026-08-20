@@ -66,6 +66,7 @@ export interface DocumentSummary {
   childCount?: number
   embedded: boolean
   embeddingError?: string
+  errorCode?: 'interrupted' | 'dimension_mismatch' | 'parse_failed' | 'embedding_provider'
   status?: 'pending' | 'processing' | 'completed' | 'failed'
   indexingProgress?: number
   indexingPhase?: 'parsing' | 'embedding'
@@ -334,6 +335,24 @@ export class KnowledgeApi {
 
   updateBase(id: string, patch: { name?: string; description?: string; group?: string; config?: BaseConfig }): Promise<{ id: string; name: string }> {
     return this.call('PATCH', `/bases/${encodeURIComponent(id)}`, patch)
+  }
+
+  /**
+   * Batch file add with server-authoritative conflict detection: 'detect'
+   * returns {status:'conflicts'} listing every collision (or 'clean'), and
+   * 'rename'/'replace' add the whole batch under that strategy.
+   */
+  addFiles(
+    baseId: string,
+    files: Array<{ fileName: string; mimeType?: string; contentBase64?: string }>,
+    conflict: 'detect' | 'rename' | 'replace',
+    parentDirectoryId?: string,
+  ): Promise<
+    { status: 'conflicts'; conflicts: string[] }
+    | { status: 'clean' }
+    | { status: 'added'; accepted: Array<{ id: string; title: string; fileName: string; skipped?: boolean }> }
+  > {
+    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/files-batch`, { files, conflict, parentDirectoryId })
   }
 
   deleteBase(id: string): Promise<{ deleted: boolean }> {

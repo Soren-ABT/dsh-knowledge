@@ -104,6 +104,15 @@ export interface KnowledgeDocument {
   readonly incomplete?: boolean
   /** Reason embedding failed at import/reindex time, when it degraded to lexical-only. */
   readonly embeddingError?: string
+  /**
+   * Stable failure class for {@link embeddingError} (Cherry's error-code
+   * posture): the UI localizes known codes and passes unknown values through.
+   * `interrupted` — import aborted by a shutdown; `dimension_mismatch` — the
+   * model returned a vector width different from the stored one (action:
+   * rebuild the base with the new model); `parse_failed` — the source could
+   * not be parsed; `embedding_provider` — the embedding API/model failed.
+   */
+  readonly errorCode?: 'interrupted' | 'dimension_mismatch' | 'parse_failed' | 'embedding_provider'
   readonly createdAt: number
   readonly updatedAt?: number
 }
@@ -183,9 +192,31 @@ export interface KnowledgeConfig {
   readonly resumeInterruptedOnStartup: boolean
 }
 
+/** One file of a batch import (content optional for the detect round). */
+export interface AddFilesItem {
+  readonly fileName: string
+  readonly mimeType?: string
+  readonly contentBase64?: string
+}
+
+/** Batch file add with Cherry's server-authoritative conflict detection. */
+export interface AddFilesRequest {
+  readonly baseId: string
+  readonly files: readonly AddFilesItem[]
+  readonly conflict?: 'detect' | 'rename' | 'replace'
+  readonly parentDirectoryId?: string
+}
+
+export type AddFilesResult =
+  | { status: 'conflicts'; conflicts: string[] }
+  | { status: 'clean' }
+  | {
+      status: 'added'
+      accepted: Array<{ id: string; title: string; fileName: string; skipped?: boolean }>
+    }
+
 /** One ranked search result. */
-export interface SearchHit {
-  readonly chunkId: string
+export interface SearchHit {  readonly chunkId: string
   readonly docId: string
   readonly baseId: string
   readonly documentTitle: string
@@ -219,6 +250,8 @@ export interface DocumentSummary {
   readonly embedded: boolean
   /** Reason embedding failed, when the document is lexical-only due to an error. */
   readonly embeddingError?: string
+  /** Stable failure class for {@link embeddingError} (UI localizes known codes). */
+  readonly errorCode?: 'interrupted' | 'dimension_mismatch' | 'parse_failed' | 'embedding_provider'
   /** Live indexing state: `pending` (not yet embedded), `processing` (embedding now),
    *  `completed` (vectors ready), or `failed` (embedding errored). */
   readonly status?: 'pending' | 'processing' | 'completed' | 'failed'

@@ -47,6 +47,7 @@ import {
   PromptDialog,
   RestoreBaseDialog,
   SUPPORTED_IMPORT_EXTENSIONS,
+  TextDocumentDialog,
   Toasts,
   readFileAsBase64,
 } from './dialogs.js'
@@ -128,6 +129,7 @@ type DialogState =
   | { kind: 'renameGroup'; group: string }
   | { kind: 'confirmDeleteGroup'; group: string }
   | { kind: 'addUrl' }
+  | { kind: 'addText' }
   | null
 
 interface RecallEntry {
@@ -500,6 +502,19 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     })
   }, [api, run, onImported, notify, selectedBaseId, currentDirectoryId])
 
+  const addText = useCallback((title: string, content: string): void => {
+    if (selectedBaseId === null) return
+    void run(async () => {
+      try {
+        await api.addTextDocument(selectedBaseId, title, content, currentDirectoryId ?? undefined)
+        setDialog(null)
+        notify('success', `${t('tabText')}: ${title}`)
+      } catch (err) {
+        notify('error', err instanceof Error ? err.message : String(err))
+      }
+    })
+  }, [api, run, notify, selectedBaseId, currentDirectoryId, t])
+
   // Cherry Studio parity: every picked file becomes a row immediately (parsing
   // status) and the per-base worker pool processes them in the background; the
   // 800ms status poll keeps the list live. Failures stay visible in the list
@@ -507,7 +522,9 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   // A batch with same-name files opens the conflict dialog (Cherry's
   // KnowledgeAddConflictDialog) before anything is submitted; the chosen
   // resolution then applies to the whole batch.
-  const [pendingConflict, setPendingConflict] = useState<{ files: File[] } | null>(null)
+  const [pendingConflict, setPendingConflict] = useState<{ files: File[]; conflicts?: string[] } | null>(null)
+  /** Conflict resolution in flight — buttons show loading and the dialog cannot be closed mid-resolution. */
+  const [pendingResolution, setPendingResolution] = useState<'rename' | 'replace' | null>(null)
 
   const runFileImport = useCallback(async (files: File[], conflict?: 'rename' | 'replace'): Promise<void> => {
     if (selectedBaseId === null || files.length === 0) return
@@ -518,19 +535,49 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     const accepted = files.filter(file => file.size <= MAX_UPLOAD_BYTES)
     for (const file of oversized) notify('warning', t('fileTooLarge').replace('{name}', file.name))
     if (accepted.length === 0) return
-    // Same-name pre-check against the loaded list (the server re-checks under
-    // its write lock, so an unloaded duplicate still gets handled there).
+    const nameOf = (file: File): string => file.webkitRelativePath || file.name
+    // Cherry's server-authoritative detect: one round reports every collision
+    // (existing documents AND batch-internal duplicates) without adding
+    // anything, so the conflict dialog is authoritative and never stale.
     if (conflict === undefined) {
-      const existingNames = new Set(documents.filter(d => d.sourceType === 'file').map(d => d.fileName))
-      if (accepted.some(file => existingNames.has(file.webkitRelativePath || file.name))) {
-        setPendingConflict({ files: accepted })
+      const detect = await api.addFiles(
+        selectedBaseId,
+        accepted.map(file => ({ fileName: nameOf(file) })),
+        'detect',
+        currentDirectoryId ?? undefined,
+      )
+      if (detect.status === 'conflicts') {
+        setPendingConflict({ files: accepted, conflicts: detect.conflicts })
         return
       }
+      if (detect.status === 'clean') {
+        // No collisions — submit the whole batch under the default rename
+        // strategy in one round.
+        const result = await api.addFiles(
+          selectedBaseId,
+          await Promise.all(accepted.map(async file => ({
+            fileName: nameOf(file),
+            mimeType: file.type || 'application/octet-stream',
+            contentBase64: await readFileAsBase64(file),
+          }))),
+          'rename',
+          currentDirectoryId ?? undefined,
+        )
+        await reloadDocuments()
+        if (result.status === 'added') {
+          const skipped = result.accepted.filter(doc => doc.skipped === true).length
+          const imported = result.accepted.length - skipped
+          if (skipped > 0) notify('info', `${t('uploaded')} ${imported} · ${t('conflictSkipped')} ${skipped}`)
+          else notify('success', `${accepted.length} ${t('uploaded')}`)
+        }
+        return
+      }
+      return
     }
-    const effective = conflict ?? 'rename'
+    const effective = conflict
     notify('info', `${accepted.length} ${t('uploaded')}…`)
-    // Per-file failure isolation: one bad file (e.g. a server-side reject)
-    // must not abort the rest of the batch silently — failures are collected
+    // Resolved strategy: submit the batch under it. Per-file failure isolation:
+    // one bad file must not abort the rest silently — failures are collected
     // and surfaced in a single error toast, successes counted separately.
     let failed = 0
     let skipped = 0
@@ -542,7 +589,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         // (Cherry disables adding inside directories; carrying the parent id
         // keeps the drill-down consistent instead of silently dropping the
         // file at the base root).
-        const result = await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64, effective, currentDirectoryId ?? undefined)
+        const result = await api.addFileDocument(selectedBaseId, nameOf(file), file.type || 'application/octet-stream', contentBase64, effective, currentDirectoryId ?? undefined)
         if (result.skipped === true) skipped += 1
       } catch (err) {
         failed += 1
@@ -558,14 +605,17 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       if (skipped > 0) notify('warning', `${skipped} ${t('conflictSkipped')}`)
       if (failed > 0) notify('error', `${failed} ${t('importFailed')}: ${firstError}`)
     }
-  }, [api, notify, reloadDocuments, selectedBaseId, currentDirectoryId, t, documents])
+  }, [api, notify, reloadDocuments, selectedBaseId, currentDirectoryId, t])
 
   const resolveConflict = useCallback((resolution: 'rename' | 'replace' | 'cancel'): void => {
-    if (pendingConflict === null) return
+    if (pendingConflict === null || pendingResolution !== null) return
     const { files } = pendingConflict
     setPendingConflict(null)
-    if (resolution !== 'cancel') void runFileImport(files, resolution)
-  }, [pendingConflict, runFileImport])
+    if (resolution !== 'cancel') {
+      setPendingResolution(resolution)
+      void runFileImport(files, resolution).finally(() => setPendingResolution(null))
+    }
+  }, [pendingConflict, pendingResolution, runFileImport])
 
   // ── drag & drop upload (Cherry Studio drops files onto the knowledge list) ──
 
@@ -593,8 +643,28 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     dragDepth.current = 0
     setDragOver(false)
     const files = Array.from(event.dataTransfer?.files ?? [])
-    if (files.length > 0) void runFileImport(files)
-  }, [runFileImport])
+    if (files.length === 0) return
+    // The drop path bypasses the file picker's accept filter — filter to
+    // supported extensions (Cherry's unsupported-files skip) and cap the
+    // batch like a picked selection instead of shipping binaries to the API.
+    if (files.length > MAX_FILES) {
+      notify('warning', t('tooManyFiles').replace('{count}', String(MAX_FILES)))
+      return
+    }
+    const supported = files.filter(file => {
+      const dot = file.name.lastIndexOf('.')
+      const ext = dot >= 0 ? file.name.slice(dot + 1).toLowerCase() : ''
+      return SUPPORTED_IMPORT_EXTENSIONS.has(ext)
+    })
+    if (supported.length === 0) {
+      notify('warning', t('noSupportedFiles'))
+      return
+    }
+    if (supported.length < files.length) {
+      notify('warning', t('unsupportedFilesSkipped').replace('{count}', String(files.length - supported.length)))
+    }
+    void runFileImport(supported)
+  }, [runFileImport, notify, t])
 
   const runDirectoryImport = useCallback(async (files: File[]): Promise<void> => {
     if (selectedBaseId === null || files.length === 0) return
@@ -997,6 +1067,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     { key: 'file', label: t('tabFile'), onSelect: () => fileInputRef.current?.click() },
     { key: 'dir', label: t('tabDir'), onSelect: () => dirInputRef.current?.click() },
     { key: 'url', label: t('tabUrl'), onSelect: () => promptForUrl() },
+    { key: 'text', label: t('tabText'), onSelect: () => setDialog({ kind: 'addText' }) },
   ]
 
   const docRowMenu = (doc: DocumentSummary): MenuEntry[] => {
@@ -1451,11 +1522,23 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                       </span>
                                     )
                                   }
+                                  if (doc.status === 'pending') {
+                                    // Cherry's idle/pending badge: the row exists but indexing has not started.
+                                    return (
+                                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, color: C.muted }}>
+                                        {t('statusPending')}
+                                      </span>
+                                    )
+                                  }
                                   if (doc.status === 'failed') {
+                                    const reason = failureReasonLabel(doc, t)
                                     return (
                                       <span
                                         style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, color: C.danger }}
-                                        title={doc.embeddingError}
+                                        tabIndex={0}
+                                        role="img"
+                                        aria-label={`${t('embeddingFailed')}：${reason}`}
+                                        title={reason}
                                       >
                                         ✕ {t('embeddingFailed')}
                                       </span>
@@ -1485,6 +1568,11 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                 <button className="kb-row" style={style.button} onClick={() => setDocLimit(v => v + 100)}>
                                   {t('loadMore')}（{renderedDocuments.length}/{visibleDocuments.length}）
                                 </button>
+                              </div>
+                            )}
+                            {!hasMoreDocuments && visibleDocuments.length > 100 && (
+                              <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0', fontSize: 12, color: C.muted }}>
+                                {t('listEndReached')}
                               </div>
                             )}
                           </div>
@@ -1624,8 +1712,16 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
           onClose={() => setDialog(null)}
         />
       )}
+      {dialog?.kind === 'addText' && (
+        <TextDocumentDialog
+          t={t}
+          busy={busy}
+          onCreate={(title, content) => addText(title, content)}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {pendingConflict !== null && (
-        <div style={style.modalBackdrop} onClick={() => resolveConflict('cancel')}>
+        <div style={style.modalBackdrop} onClick={() => pendingResolution === null && resolveConflict('cancel')}>
           <div style={style.modal} onClick={(e) => e.stopPropagation()}>
             <div style={style.modalHeader}>
               <strong style={{ fontSize: 14 }}>{t('conflictDialogTitle')}</strong>
@@ -1633,14 +1729,32 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
             <p style={{ fontSize: 13, margin: '0 0 12px', lineHeight: 1.6 }}>
               {t('conflictDialogMessage').replace('{count}', String(pendingConflict.files.length))}
             </p>
+            {pendingConflict.conflicts !== undefined && pendingConflict.conflicts.length > 0 && (
+              <ul style={{ maxHeight: 200, overflowY: 'auto', margin: '0 0 12px', padding: 0, listStyle: 'none' }}>
+                {pendingConflict.conflicts.map((name, index) => (
+                  <li
+                    key={`${name}-${index}`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      fontSize: 12, color: C.text, background: C.surface2,
+                      borderRadius: 6, padding: '4px 8px', marginBottom: 4,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    <span style={{ width: 14, height: 14, borderRadius: 3, background: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary, #f5a623) 25%, transparent)', flexShrink: 0 }} />
+                    {name}
+                  </li>
+                ))}
+              </ul>
+            )}
             <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
-              <button style={style.primary} onClick={() => resolveConflict('rename')}>
-                {t('conflictKeepAll')}
+              <button style={style.primary} disabled={pendingResolution !== null} onClick={() => resolveConflict('rename')}>
+                {pendingResolution === 'rename' ? t('resolvingConflict') : t('conflictKeepAll')}
               </button>
-              <button style={style.primaryDanger} onClick={() => resolveConflict('replace')}>
-                {t('conflictReplaceAll')}
+              <button style={style.primaryDanger} disabled={pendingResolution !== null} onClick={() => resolveConflict('replace')}>
+                {pendingResolution === 'replace' ? t('resolvingConflict') : t('conflictReplaceAll')}
               </button>
-              <button style={style.button} onClick={() => resolveConflict('cancel')}>
+              <button style={style.button} disabled={pendingResolution !== null} onClick={() => resolveConflict('cancel')}>
                 {t('cancel')}
               </button>
             </div>
@@ -1664,14 +1778,16 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         accept={FILE_ACCEPT}
         style={{ display: 'none' }}
         onChange={(e) => {
-          // Cherry parity: an interactive FILE pick is capped at 20 items with a
-          // friendly hint (directory imports are uncapped — see the input below).
+          // Cherry parity: an interactive FILE pick is capped at 20 items — an
+          // oversized selection is REJECTED whole with a friendly hint (not
+          // silently truncated; directory imports are uncapped).
           const picked = Array.from(e.target.files ?? [])
           e.target.value = ''
           if (picked.length > MAX_FILES) {
             notify('warning', t('tooManyFiles').replace('{count}', String(MAX_FILES)))
+            return
           }
-          void runFileImport(picked.slice(0, MAX_FILES))
+          void runFileImport(picked)
         }}
       />
       <input
@@ -1704,6 +1820,22 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
 function accentSoftText(): string {
   return 'color-mix(in srgb, var(--dsw-alias-brand-primary, #3b6ef6) 10%, transparent)'
+}
+
+/** Localized failure reason for a failed row (Cherry's code → i18n, fallback free text). */
+function failureReasonLabel(doc: DocumentSummary, t: Translate): string {
+  switch (doc.errorCode) {
+    case 'interrupted':
+      return t('errorInterrupted')
+    case 'dimension_mismatch':
+      return `${t('errorDimensionMismatch')}：${doc.embeddingError ?? ''}`
+    case 'parse_failed':
+      return `${t('errorParseFailed')}：${doc.embeddingError ?? ''}`
+    case 'embedding_provider':
+      return `${t('errorEmbeddingProvider')}：${doc.embeddingError ?? ''}`
+    default:
+      return doc.embeddingError ?? t('embeddingFailed')
+  }
 }
 
 function sameSet(a: Set<string>, b: Set<string>): boolean {

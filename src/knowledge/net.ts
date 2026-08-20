@@ -40,11 +40,13 @@ export interface HttpFetchOptions {
   retries?: number
   /** Redirect policy (default: follow, like fetch). SSRF guards pass 'manual'. */
   redirect?: 'follow' | 'manual'
+  /** External abort (e.g. a delete cancelling an in-flight paid request). */
+  signal?: AbortSignal
 }
 
 /** fetch through the global (proxy-aware) dispatcher with timeout + one retry. */
 export async function httpFetch(url: string, options: HttpFetchOptions = {}): Promise<Response> {
-  const { method, headers, body, timeoutMs = 30000, retries = 1, redirect } = options
+  const { method, headers, body, timeoutMs = 30000, retries = 1, redirect, signal } = options
   let lastError: unknown
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
@@ -52,7 +54,9 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
         method,
         headers,
         body: body as BodyInit,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: signal !== undefined
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
         ...(redirect !== undefined ? { redirect } : {}),
       })
     } catch (error) {

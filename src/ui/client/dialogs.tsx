@@ -124,6 +124,50 @@ export function PromptDialog(props: {
 
 // ── restore / rebuild base ────────────────────────────────────────────────────
 
+/** Cherry's note-create: a title + content text document added straight to the base. */
+export function TextDocumentDialog(props: {
+  t: Translate
+  busy?: boolean
+  onCreate: (title: string, content: string) => void
+  onClose: () => void
+}): JSX.Element {
+  const [title, setTitle] = useState('')
+  const [content, setContent] = useState('')
+  return (
+    <Modal title={props.t('tabText')} onClose={props.onClose} width={460}>
+      <div style={style.field}>
+        <label style={style.label}>{props.t('baseName')}</label>
+        <input
+          autoFocus
+          style={style.input}
+          value={title}
+          placeholder={props.t('textTitlePlaceholder')}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+      </div>
+      <div style={style.field}>
+        <label style={style.label}>{props.t('textContentLabel')}</label>
+        <textarea
+          style={{ ...style.textarea, minHeight: 180 }}
+          value={content}
+          placeholder={props.t('textContentPlaceholder')}
+          onChange={(e) => setContent(e.target.value)}
+        />
+      </div>
+      <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
+        <button style={style.button} onClick={props.onClose}>{props.t('cancel')}</button>
+        <button
+          style={style.primary}
+          disabled={props.busy === true || title.trim().length === 0 || content.trim().length === 0}
+          onClick={() => props.onCreate(title.trim(), content)}
+        >
+          {props.t('tabText')}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
 /** Embedding configuration chosen for the rebuilt base (undefined = keep the source base's config). */
 export interface RestoreEmbeddingConfig {
   provider: 'openai' | 'ollama' | 'local'

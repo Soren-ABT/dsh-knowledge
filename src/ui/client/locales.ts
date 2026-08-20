@@ -20,6 +20,7 @@ export type KnowledgeKey =
   | 'addText'
   | 'textTitlePlaceholder'
   | 'textContentPlaceholder'
+  | 'textContentLabel'
   | 'addTextButton'
   | 'addDocument'
   | 'tabText'
@@ -36,6 +37,14 @@ export type KnowledgeKey =
   | 'uploaded'
   | 'importFailed'
   | 'tooManyFiles'
+  | 'listEndReached'
+  | 'unsupportedFilesSkipped'
+  | 'resolvingConflict'
+  | 'statusPending'
+  | 'errorInterrupted'
+  | 'errorDimensionMismatch'
+  | 'errorParseFailed'
+  | 'errorEmbeddingProvider'
   | 'fileTooLarge'
   | 'noSupportedFiles'
   | 'skippedFiles'
@@ -291,6 +300,7 @@ export const zh: Record<KnowledgeKey, string> = {
   addText: '添加文本',
   textTitlePlaceholder: '为这篇笔记取个名字',
   textContentPlaceholder: '在此输入笔记内容…',
+  textContentLabel: '内容',
   addTextButton: '添加',
   addDocument: '添加数据源',
   tabText: '笔记',
@@ -306,7 +316,10 @@ export const zh: Record<KnowledgeKey, string> = {
   confirmDeleteDoc: '删除该文档及其全部分块？',
   uploaded: '已导入',
   importFailed: '导入失败',
-  tooManyFiles: '单次最多选择 {count} 个文件，其余已跳过',
+  tooManyFiles: '单次最多选择 {count} 个文件，请分批导入',
+  listEndReached: '已到底',
+  unsupportedFilesSkipped: '已跳过 {count} 个不支持的文件',
+  resolvingConflict: '处理中…',
   fileTooLarge: '「{name}」超过 22MB，无法上传（上传接口上限约 24MB），已跳过',
   noSupportedFiles: '所选内容中没有支持的文件（隐藏文件与不支持的格式已跳过）',
   skippedFiles: '已跳过 {count} 个不支持的文件',
@@ -527,6 +540,11 @@ export const zh: Record<KnowledgeKey, string> = {
   emptyFolder: '该文件夹为空',
   statusProcessing: '嵌入中',
   statusParsing: '解析中',
+  statusPending: '等待中',
+  errorInterrupted: '导入因程序关闭而中断——请重建以继续',
+  errorDimensionMismatch: '嵌入向量维度不匹配（已切换模型？）——请使用「重建知识库」以新模型重建',
+  errorParseFailed: '文档解析失败',
+  errorEmbeddingProvider: '嵌入服务/模型调用失败',
   statusImporting: '导入中',
   restoreHint: '将使用当前嵌入模型新建一个知识库，并重新索引所有文档。可选更换嵌入模型（换模型重建）。',
   restoreKeepModel: '沿用原库配置',
@@ -560,6 +578,7 @@ export const en: Record<KnowledgeKey, string> = {
   addText: 'Add text',
   textTitlePlaceholder: 'Name this note',
   textContentPlaceholder: 'Type note content...',
+  textContentLabel: 'Content',
   addTextButton: 'Add',
   addDocument: 'Add Data Source',
   tabText: 'Note',
@@ -575,7 +594,10 @@ export const en: Record<KnowledgeKey, string> = {
   confirmDeleteDoc: 'Delete this document and all its chunks?',
   uploaded: 'imported',
   importFailed: 'import failed',
-  tooManyFiles: 'At most {count} files per selection; the rest were skipped',
+  tooManyFiles: 'At most {count} files per selection; split the import',
+  listEndReached: 'End of list',
+  unsupportedFilesSkipped: '{count} unsupported file(s) skipped',
+  resolvingConflict: 'Resolving…',
   fileTooLarge: '"{name}" exceeds 22MB — cannot upload (the upload API caps at ~24MB); skipped',
   noSupportedFiles: 'No supported files in the selection (hidden files and unsupported formats are skipped)',
   skippedFiles: 'Skipped {count} unsupported files',
@@ -796,6 +818,11 @@ export const en: Record<KnowledgeKey, string> = {
   emptyFolder: 'This folder is empty',
   statusProcessing: 'Embedding',
   statusParsing: 'Parsing',
+  statusPending: 'Pending',
+  errorInterrupted: 'Import was interrupted by a shutdown — reindex to resume',
+  errorDimensionMismatch: 'Embedding dimension mismatch (model switched?) — rebuild the base with the new model',
+  errorParseFailed: 'Document parse failed',
+  errorEmbeddingProvider: 'Embedding provider/model call failed',
   statusImporting: 'Importing',
   restoreHint: 'A new base will be created and all documents re-indexed. Optionally switch the embedding model (rebuild-with-new-model).',
   restoreKeepModel: 'Keep the source base config',

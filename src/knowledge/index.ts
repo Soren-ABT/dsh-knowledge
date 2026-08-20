@@ -50,6 +50,8 @@ import {
 } from './ollama.js'
 import type {
   AddFileDocumentRequest,
+  AddFilesRequest,
+  AddFilesResult,
   AddTextDocumentRequest,
   BaseConfig,
   BaseStats,
@@ -136,6 +138,12 @@ const CONCEPT_READ_MAX_CHARS = 20_000
 const CONCEPT_GREP_SNIPPET_PAD = 60
 /** Max characters of any single line grep runs its pattern over (Cherry's catastrophic-backtracking guard). */
 const CONCEPT_GREP_MAX_LINE_CHARS = 2000
+/** How long a finished job's final progress stays visible (Cherry's linger TTL). */
+const PROGRESS_LINGER_TTL_MS = 60_000
+/** Embedding batch retry policy (Cherry's job retry contract). */
+const EMBED_MAX_ATTEMPTS = 3
+const EMBED_RETRY_BASE_DELAY_MS = 1000
+const EMBED_RETRY_MAX_DELAY_MS = 30_000
 
 interface BackgroundJob {
   readonly baseId: string
@@ -165,7 +173,14 @@ export class KnowledgeService extends Service {
   private readonly storeReady: Promise<void>
   private resolveStore: () => void = () => {}
   private readonly jobs = new Map<string, BackgroundJob>()
-  private readonly indexing = new Map<string, { baseId: string; title: string; phase: 'parsing' | 'embedding'; total: number; progress: number }>()
+  private readonly indexing = new Map<string, { baseId: string; title: string; phase: 'parsing' | 'embedding'; total: number; progress: number; controller?: AbortController }>()
+  /**
+   * Progress values that linger after a job exits (Cherry's 60s TTL), so the
+   * list keeps showing the final percentage until the poll observes the
+   * terminal status instead of blanking mid-frame. Purely a display aid —
+   * every guard still consults {@link indexing}, never this map.
+   */
+  private readonly progressLinger = new Map<string, { baseId: string; title: string; phase: 'parsing' | 'embedding'; progress: number; expireAt: number }>()
   // Cherry Studio parity: per-base worker pool (Cherry's knowledge jobs run at
   // defaultConcurrency 5 on a per-base queue). Rows are created up front and
   // flip status as the queued parse+ingest tasks run in the background.
@@ -215,7 +230,7 @@ export class KnowledgeService extends Service {
         for (const id of resumeIds) {
           const doc = store.getDocument(id)
           if (doc !== undefined) {
-            await store.putDocument({ ...doc, embeddingError: reason, updatedAt: Date.now() })
+            await store.putDocument({ ...doc, embeddingError: reason, errorCode: 'interrupted', updatedAt: Date.now() })
           }
         }
         this.ctx.logger.info(`knowledge: marked ${resumeIds.length} interrupted import(s) failed (auto-resume disabled)`)
@@ -460,9 +475,12 @@ export class KnowledgeService extends Service {
     if (store.getBase(id) === undefined) throw new Error(`knowledge base not found: ${id}`)
     // Cancel in-flight imports/reindexes under the deleted base (Cherry cancels
     // active jobs before purging): their finishing writes must not recreate
-    // rows or chunks under the removed base.
+    // rows or chunks under the removed base, and their paid requests abort.
     for (const [docId, active] of [...this.indexing]) {
-      if (active.baseId === id) this.indexing.delete(docId)
+      if (active.baseId === id) {
+        active.controller?.abort()
+        this.indexing.delete(docId)
+      }
     }
     // Two statements: the base record plus one chunk sweep by base id.
     await store.deleteChunksByBase(id)
@@ -517,7 +535,19 @@ export class KnowledgeService extends Service {
           throw new Error('切换嵌入模型会使已有向量全部失效——请使用「重建知识库」以新模型重建（Cherry Studio 语义）')
         }
         // BM25-only → enable-in-place: commit the model, then backfill vectors
-        // in the background (Cherry's enableEmbeddingModel).
+        // in the background (Cherry's enableEmbeddingModel). Cherry gates the
+        // commit on the base being backfill-able: an in-flight import/reindex
+        // would race the backfill, and a source-less document would leave a
+        // model committed with nothing to back it — refuse both up front.
+        if (this.indexing.size > 0) {
+          throw new Error('有文档正在处理中——请等待导入/重建完成后再启用嵌入模型（Cherry Studio 语义）')
+        }
+        const documents = store.listDocuments(id)
+        const sourceLess = documents.some(doc => doc.sourceType !== 'directory'
+          && doc.rawText === undefined && doc.rawFilePath === undefined)
+        if (sourceLess) {
+          throw new Error('存在无源文本的文档，无法回填向量——请删除后重新添加（Cherry Studio 语义）')
+        }
         await store.putBase(next)
         const baseId = id
         void this.reindexBase(baseId).catch((error: unknown) => {
@@ -712,7 +742,10 @@ export class KnowledgeService extends Service {
     }
     fileName = resolvedFileName
     title = resolvedTitle
-    this.indexing.set(docId, { baseId: request.baseId, title, phase: 'parsing', total: 0, progress: 0 })
+    // The task's abort controller: a delete of the row or base aborts the
+    // in-flight MinerU batch and embedding requests (Cherry's job cancel).
+    const taskController = new AbortController()
+    this.indexing.set(docId, { baseId: request.baseId, title, phase: 'parsing', total: 0, progress: 0, controller: taskController })
     // Queue the background parse+ingest. The task re-reads the persisted raw
     // copy instead of holding the payload in memory, so a large batch never
     // accumulates file contents in the queue; only a deployment without a raw
@@ -742,7 +775,7 @@ export class KnowledgeService extends Service {
             text = await extractPdfWithMineru(bytes, fileName, {
               apiKey: config.mineruApiKey,
               apiHost: config.mineruApiHost,
-            })
+            }, taskController.signal)
           } catch (error) {
             this.ctx.logger.warn(`knowledge: mineru extract failed, falling back to local: ${error instanceof Error ? error.message : String(error)}`)
           }
@@ -779,22 +812,78 @@ export class KnowledgeService extends Service {
           placeholderId: docId,
           rawFilePath,
           text,
-        })
+        }, taskController.signal)
       } catch (error) {
         this.indexing.delete(docId)
+        taskController.abort()
         const message = error instanceof Error ? error.message : String(error)
         // The row may have been deleted (or its base removed) while the task
         // was queued or running — never resurrect it (Cherry's deleting-guard).
         const current = store.getDocument(docId)
         if (current === undefined || store.getBase(request.baseId) === undefined) return
         try {
-          await store.putDocument({ ...current, embeddingError: message, updatedAt: Date.now() })
+          await store.putDocument({ ...current, embeddingError: message, errorCode: 'parse_failed', updatedAt: Date.now() })
         } catch {
           // best-effort: the row already exists; the status flip is cosmetic
         }
       }
     })
     return stored
+  }
+
+  /**
+   * Batch file add with Cherry's server-authoritative conflict detection:
+   * `conflict: 'detect'` reports every same-name collision (against existing
+   * documents AND within the batch) without adding anything; `rename`/`replace`
+   * add the whole batch under that strategy. The detect round may omit file
+   * contents (names alone suffice); a clean detect returns `clean` so the
+   * caller re-submits with contents under the rename strategy.
+   */
+  async addFiles(request: AddFilesRequest): Promise<AddFilesResult> {
+    const store = this.requireStore()
+    if (store.getBase(request.baseId) === undefined) throw new Error(`knowledge base not found: ${request.baseId}`)
+    for (const file of request.files) {
+      if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(file.fileName))) {
+        throw new Error(`Unsupported knowledge file type: ${file.fileName}`)
+      }
+    }
+    const existingNames = new Set(
+      store.listDocuments(request.baseId)
+        .filter(doc => doc.sourceType === 'file')
+        .map(doc => doc.fileName),
+    )
+    const seen = new Set<string>()
+    const conflicts: string[] = []
+    for (const file of request.files) {
+      const name = file.fileName
+      if (existingNames.has(name) || seen.has(name)) conflicts.push(name)
+      seen.add(name)
+    }
+    const uniqueConflicts = [...new Set(conflicts)]
+    if (request.conflict === 'detect') {
+      if (uniqueConflicts.length > 0) return { status: 'conflicts', conflicts: uniqueConflicts }
+      // No contents in the detect round → nothing to add yet.
+      if (request.files.some(file => file.contentBase64 === undefined)) return { status: 'clean' }
+    }
+    const strategy = request.conflict === 'detect' ? 'rename' : request.conflict
+    const accepted: Array<{ id: string; title: string; fileName: string; skipped?: boolean }> = []
+    for (const file of request.files) {
+      const doc = await this.addFileDocument({
+        baseId: request.baseId,
+        fileName: file.fileName,
+        ...(file.mimeType !== undefined ? { mimeType: file.mimeType } : {}),
+        ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
+        contentBase64: file.contentBase64 ?? '',
+        ...(strategy !== undefined ? { conflict: strategy } : {}),
+      })
+      accepted.push({
+        id: doc.id,
+        title: doc.title,
+        fileName: doc.fileName ?? doc.title,
+        ...(doc.skipped === true ? { skipped: true } : {}),
+      })
+    }
+    return { status: 'added', accepted }
   }
 
   /** Start importing a local directory as a cancellable background job. */
@@ -842,11 +931,19 @@ export class KnowledgeService extends Service {
           job.skipped += 1
           continue
         }
+        // Cherry's prepare-root: persist a raw copy (base-relative path) so
+        // the base stays rebuildable if the source disk changes.
+        let rawFilePath: string | undefined
+        const store = this.requireStore()
+        if (store.raw !== undefined) {
+          rawFilePath = await store.raw.writeRel(job.baseId, basename(file), buffer)
+        }
         await this.ingestDocument({
           baseId: job.baseId,
           title: basename(file),
           sourceType: 'file',
           fileName: basename(file),
+          rawFilePath,
           text,
         })
         job.imported += 1
@@ -925,12 +1022,21 @@ export class KnowledgeService extends Service {
             const buffer = await readFile(full)
             const text = await parseDocumentBuffer(buffer, basename(full))
             if (text.trim().length === 0) continue
+            // Cherry's prepare-root: the base owns a stable copy of every
+            // imported file under raw/ (tree-relative path), so a later
+            // reindex rebuilds from the base even if the source disk changes.
+            let rawFilePath: string | undefined
+            if (store.raw !== undefined) {
+              const relPath = relative(path, full).replace(/\\/g, '/')
+              rawFilePath = await store.raw.writeRel(baseId, relPath, buffer)
+            }
             await this.ingestDocument({
               baseId,
               title: basename(full),
               sourceType: 'file',
               fileName: basename(full),
               parentDirectoryId: parentId,
+              rawFilePath,
               text,
             })
             imported += 1
@@ -1034,7 +1140,10 @@ export class KnowledgeService extends Service {
     if (existing === undefined) return
     // Invalidate any in-flight indexing for this document (Cherry cancels a
     // subtree's jobs before a delete): its finishing writes must not
-    // resurrect the row or write chunks under the deleted item.
+    // resurrect the row or write chunks under the deleted item, and its
+    // paid embedding/MinerU requests must be aborted.
+    const active = this.indexing.get(id)
+    active?.controller?.abort()
     this.indexing.delete(id)
     // Deleting a directory container also removes its descendants.
     if (existing.sourceType === 'directory') {
@@ -1125,8 +1234,8 @@ export class KnowledgeService extends Service {
     // next start (buildChunks persists each embedded batch; hash reuse makes
     // the resume re-embed only what never landed).
     await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
-    const { chunks, embeddingError } = await this.buildChunks(document.baseId, document.id, document.title, text, config, undefined, batch => store.putChunkBatch(batch))
-    const { embeddingError: _staleError, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = document
+    const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, document.id, document.title, text, config, undefined, batch => store.putChunkBatch(batch))
+    const { embeddingError: _staleError, errorCode: _staleCode, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = document
     const next: KnowledgeDocument = {
       ...rest,
       rawText: text,
@@ -1134,7 +1243,9 @@ export class KnowledgeService extends Service {
       charCount: text.length,
       tokenCount: estimateTokens(text),
       chunkCount: chunks.length,
-      ...(embeddingError !== undefined ? { embeddingError } : {}),
+      ...(embeddingError !== undefined
+        ? { embeddingError, ...(embeddingErrorCode !== undefined ? { errorCode: embeddingErrorCode } : {}) }
+        : {}),
       updatedAt: Date.now(),
     }
     // putChunks overwrites the doc's chunk bundle in one write (legacy per-chunk
@@ -1259,14 +1370,23 @@ export class KnowledgeService extends Service {
             await this.reindexDocument(existing.id)
           } else {
             // New file: parse + ingest like an import, with a persisted raw
-            // copy so a later reindex can rebuild from source.
+            // copy (tree-relative path) so a later reindex can rebuild from
+            // the base even if the source disk changes.
             const buffer = await readFile(full)
             const text = await parseDocumentBuffer(buffer, entry.name)
             if (text.trim().length === 0) continue
             let rawFilePath: string | undefined
             if (store.raw !== undefined) {
-              const docId = crypto.randomUUID()
-              rawFilePath = await store.raw.write(document.baseId, docId, safeRawExtension(entry.name), buffer)
+              // Resolve the outermost root's source path so the stored
+              // relative path matches the initial import's layout.
+              let root = document
+              while (root.parentDirectoryId !== undefined) {
+                const parent = store.getDocument(root.parentDirectoryId)
+                if (parent === undefined || parent.sourceType !== 'directory') break
+                root = parent
+              }
+              const relPath = relative(root.sourcePath ?? source, full).replace(/\\/g, '/')
+              rawFilePath = await store.raw.writeRel(document.baseId, relPath, buffer)
               await this.ingestDocument({
                 baseId: document.baseId,
                 title: entry.name,
@@ -1512,6 +1632,7 @@ export class KnowledgeService extends Service {
         ...(doc.sourceType === 'directory' ? { childCount: childCount.get(doc.id) ?? 0 } : {}),
         embedded,
         ...(doc.embeddingError !== undefined ? { embeddingError: doc.embeddingError } : {}),
+        ...(doc.errorCode !== undefined ? { errorCode: doc.errorCode } : {}),
         ...(doc.sourceType !== 'directory' ? { status } : {}),
         ...(active !== undefined ? { indexingProgress: active.progress, indexingPhase: active.phase } : {}),
         createdAt: doc.createdAt,
@@ -1557,13 +1678,21 @@ export class KnowledgeService extends Service {
 
   /** Live import/embedding progress for every document currently being indexed. */
   indexingStatus(): Array<{ docId: string; baseId: string; title: string; phase: 'parsing' | 'embedding'; progress: number }> {
-    return [...this.indexing.entries()].map(([docId, entry]) => ({
-      docId,
-      baseId: entry.baseId,
-      title: entry.title,
-      phase: entry.phase,
-      progress: entry.progress,
-    }))
+    const now = Date.now()
+    const out: Array<{ docId: string; baseId: string; title: string; phase: 'parsing' | 'embedding'; progress: number }> = []
+    for (const [docId, entry] of this.indexing) {
+      out.push({ docId, baseId: entry.baseId, title: entry.title, phase: entry.phase, progress: entry.progress })
+    }
+    // Linger entries (finished jobs) keep the last percentage for a short
+    // window; expired ones are collected lazily.
+    for (const [docId, entry] of [...this.progressLinger]) {
+      if (entry.expireAt <= now) {
+        this.progressLinger.delete(docId)
+        continue
+      }
+      out.push({ docId, baseId: entry.baseId, title: entry.title, phase: entry.phase, progress: entry.progress })
+    }
+    return out
   }
 
   /** Current download/load state of an in-process embedding model. */
@@ -2260,7 +2389,7 @@ export class KnowledgeService extends Service {
     rawFilePath?: string
     /** Pre-created placeholder id (already stored, shown while embedding). */
     placeholderId?: string
-  }): Promise<KnowledgeDocument> {
+  }, signal?: AbortSignal): Promise<KnowledgeDocument> {
     const store = this.requireStore()
     const config = this.getConfigFor(input.baseId)
     const contentHash = sha256(input.text)
@@ -2316,7 +2445,7 @@ export class KnowledgeService extends Service {
     })
     // Chunking (regular or semantic) happens inside buildChunks; passing no
     // pieces lets the configured semanticChunk path run.
-    const { chunks, embeddingError } = await this.buildChunks(input.baseId, half.id, input.title, input.text, config, undefined, batch => store.putChunkBatch(batch))
+    const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(input.baseId, half.id, input.title, input.text, config, undefined, batch => store.putChunkBatch(batch), signal)
     // A delete that landed mid-embedding must not resurrect the row nor write
     // chunks under a deleted base (Cherry's deleting-guard).
     if (store.getDocument(half.id) === undefined || store.getBase(input.baseId) === undefined) {
@@ -2326,7 +2455,9 @@ export class KnowledgeService extends Service {
     const document: KnowledgeDocument = {
       ...half,
       chunkCount: chunks.length,
-      ...(embeddingError !== undefined ? { embeddingError } : {}),
+      ...(embeddingError !== undefined
+        ? { embeddingError, ...(embeddingErrorCode !== undefined ? { errorCode: embeddingErrorCode } : {}) }
+        : {}),
       updatedAt: Date.now(),
     }
     await store.putDocument(document)
@@ -2344,7 +2475,8 @@ export class KnowledgeService extends Service {
     config: KnowledgeConfig,
     pieces?: readonly ChunkPiece[],
     onBatch?: (chunks: KnowledgeChunk[]) => Promise<void>,
-  ): Promise<{ chunks: KnowledgeChunk[]; embeddingError?: string }> {
+    signal?: AbortSignal,
+  ): Promise<{ chunks: KnowledgeChunk[]; embeddingError?: string; embeddingErrorCode?: 'dimension_mismatch' | 'embedding_provider' }> {
     let slices: ReadonlyArray<ChunkPiece & { embedding?: number[] }>
     if (pieces !== undefined) {
       slices = pieces
@@ -2406,6 +2538,7 @@ export class KnowledgeService extends Service {
       context: piece.heading !== undefined ? `${title} > ${piece.heading}` : title,
     }))
     let embeddingError: string | undefined
+    let embeddingErrorCode: 'dimension_mismatch' | 'embedding_provider' | undefined
     if (config.embeddingProvider !== 'none' && chunks.length > 0) {
       const key = embeddingKey(config)
       this.indexing.set(docId, { baseId, title, phase: 'embedding', total: chunks.length, progress: 0 })
@@ -2455,7 +2588,10 @@ export class KnowledgeService extends Service {
         for (let i = 0; i < need.length; i += batchSize) {
           const batch = need.slice(i, i + batchSize)
           const batchTexts = needTexts.slice(i, i + batchSize)
-          const vectors = await this.embedTextsOnce(config, batchTexts)
+          // Cherry's job retry policy (3 attempts, exponential backoff): a
+          // transient provider/network failure retries the batch before the
+          // import degrades to lexical-only.
+          const vectors = await this.embedWithRetry(config, batchTexts, signal)
           // Same-width guarantee across the whole batch (a provider mixing
           // widths would poison every vector comparison in the store).
           const widths = new Set(vectors.map(vector => vector.length))
@@ -2465,6 +2601,7 @@ export class KnowledgeService extends Service {
           const width = vectors[0]?.length ?? 0
           if (width === 0) throw new Error('embedding returned empty vectors')
           if (storedDimension !== undefined && storedDimension !== width) {
+            embeddingErrorCode = 'dimension_mismatch'
             throw new Error(`embedding vector dimension ${width} does not match the ${storedDimension} already stored for model "${key}" — switch back or reindex the base`)
           }
           const done: KnowledgeChunk[] = []
@@ -2477,16 +2614,29 @@ export class KnowledgeService extends Service {
           this.indexing.set(docId, { baseId, title, phase: 'embedding', total: need.length, progress: Math.round((Math.min(i + batch.length, need.length) / need.length) * 100) })        }
       } catch (error) {
         embeddingError = error instanceof Error ? error.message : String(error)
+        embeddingErrorCode ??= 'embedding_provider'
         this.ctx.logger.warn(`knowledge: embedding during import failed, storing lexical-only chunks: ${embeddingError}`)
       } finally {
+        const active = this.indexing.get(docId)
         this.indexing.delete(docId)
+        // Cherry's linger: keep the final percentage visible for ~60s so the
+        // UI does not blank it while the row still reads processing.
+        if (active !== undefined) {
+          this.progressLinger.set(docId, {
+            baseId,
+            title,
+            phase: active.phase,
+            progress: active.progress,
+            expireAt: Date.now() + PROGRESS_LINGER_TTL_MS,
+          })
+        }
       }
     }
-    return { chunks, embeddingError }
+    return { chunks, embeddingError, embeddingErrorCode }
   }
 
   /** Embed one batch through the configured provider (empty input → empty output). */
-  private async embedTextsOnce(config: KnowledgeConfig, texts: readonly string[]): Promise<number[][]> {
+  private async embedTextsOnce(config: KnowledgeConfig, texts: readonly string[], signal?: AbortSignal): Promise<number[][]> {
     if (texts.length === 0) return []
     return embedTexts(
       config.embeddingProvider,
@@ -2494,7 +2644,30 @@ export class KnowledgeService extends Service {
       config.embeddingModel,
       config.embeddingApiKey,
       texts,
+      signal,
     )
+  }
+
+  /**
+   * Embed with Cherry's job retry policy: 3 attempts, exponential backoff
+   * (1s → 30s), so a transient provider/network failure self-heals instead of
+   * degrading a whole import to lexical-only. An external abort (delete)
+   * interrupts the request chain immediately.
+   */
+  private async embedWithRetry(config: KnowledgeConfig, texts: readonly string[], signal?: AbortSignal): Promise<number[][]> {
+    let attempt = 1
+    for (;;) {
+      if (signal?.aborted === true) throw new Error('embedding aborted (document was deleted)')
+      try {
+        return await this.embedTextsOnce(config, texts, signal)
+      } catch (error) {
+        if (attempt >= EMBED_MAX_ATTEMPTS) throw error
+        const delay = Math.min(EMBED_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), EMBED_RETRY_MAX_DELAY_MS)
+        attempt += 1
+        this.ctx.logger.warn(`knowledge: embedding attempt ${attempt - 1}/${EMBED_MAX_ATTEMPTS} failed, retrying in ${delay}ms: ${error instanceof Error ? error.message : String(error)}`)
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
+    }
   }
 
   /** Bump the base's updatedAt so the data view's "更新于" stays meaningful. */

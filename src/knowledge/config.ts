@@ -79,8 +79,8 @@ export const Config: Schema<Config> = Schema.object({
   rerankApiKey: Schema.string().default(''),
   smartChunk: Schema.boolean().default(true),
   chunkSeparator: Schema.string().default('\n\n'),
-  chunkSize: Schema.number().default(800),
-  chunkOverlap: Schema.number().default(100),
+  chunkSize: Schema.number().default(1024),
+  chunkOverlap: Schema.number().default(200),
   topK: Schema.number().default(6),
   searchMode: Schema.union(['auto', 'hybrid', 'vector', 'lexical']).default('auto'),
   similarityThreshold: Schema.number().default(0),
@@ -114,7 +114,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
   const rerankApiKey = overrides.rerankApiKey
     ?? process.env.KNOWLEDGE_RERANK_API_KEY
     ?? config.rerankApiKey
-  const chunkSize = clampInt(overrides.chunkSize ?? config.chunkSize, 64, 100_000, 800)
+  const chunkSize = clampInt(overrides.chunkSize ?? config.chunkSize, 64, 100_000, 1024)
   const chunkOverlap = clampInt(overrides.chunkOverlap ?? config.chunkOverlap, 0, chunkSize - 1, 0)
   const topK = clampInt(overrides.topK ?? config.topK, 1, 50, 6)
   const embeddingBatchSize = clampInt(overrides.embeddingBatchSize ?? config.embeddingBatchSize, 1, 512, 32)

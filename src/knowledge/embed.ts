@@ -76,14 +76,15 @@ export async function embedTexts(
   model: string,
   apiKey: string,
   texts: readonly string[],
+  signal?: AbortSignal,
 ): Promise<number[][]> {
   if (texts.length === 0) return []
   if (provider === 'none') throw new Error('embedding provider is "none" — configure an endpoint or a local model, or keep lexical search')
   if (provider === 'local') return embedLocal(model.trim() === '' ? DEFAULT_LOCAL_MODEL : model, texts)
   if (baseUrl.trim() === '') throw new Error('embedding base URL is empty')
   if (model.trim() === '') throw new Error('embedding model is empty')
-  if (provider === 'openai') return embedOpenAI(baseUrl, model, apiKey, texts)
-  if (provider === 'ollama') return embedOllama(baseUrl, model, apiKey, texts)
+  if (provider === 'openai') return embedOpenAI(baseUrl, model, apiKey, texts, signal)
+  if (provider === 'ollama') return embedOllama(baseUrl, model, apiKey, texts, signal)
   throw new Error(`unknown embedding provider ${String(provider)}`)
 }
 
@@ -411,6 +412,7 @@ async function embedOpenAI(
   model: string,
   apiKey: string,
   texts: readonly string[],
+  signal?: AbortSignal,
 ): Promise<number[][]> {
   const url = `${trimBase(baseUrl)}/embeddings`
   const response = await httpFetch(url, {
@@ -421,6 +423,7 @@ async function embedOpenAI(
     },
     body: JSON.stringify({ model, input: texts }),
     timeoutMs: 60000,
+    ...(signal !== undefined ? { signal } : {}),
   })
   if (!response.ok) {
     throw new Error(`embedding request failed: HTTP ${response.status} ${await response.text()}`)
@@ -438,6 +441,7 @@ async function embedOllama(
   model: string,
   _apiKey: string,
   texts: readonly string[],
+  signal?: AbortSignal,
 ): Promise<number[][]> {
   const base = trimBase(baseUrl)
   // Modern Ollama: POST /api/embed { model, input: [..] } -> { embeddings: [[..]] }
@@ -446,6 +450,7 @@ async function embedOllama(
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model, input: texts }),
     timeoutMs: 60000,
+    ...(signal !== undefined ? { signal } : {}),
   })
   if (response.ok) {
     const json = (await response.json()) as { embeddings?: number[][] }
@@ -459,6 +464,7 @@ async function embedOllama(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model, prompt: text }),
       timeoutMs: 60000,
+      ...(signal !== undefined ? { signal } : {}),
     })
     if (!legacy.ok) throw new Error(`ollama embedding failed: HTTP ${legacy.status} ${await legacy.text()}`)
     const json = (await legacy.json()) as { embedding?: number[] }

@@ -83,6 +83,7 @@ const documentSchema = z.object({
   chunkCount: z.number().int().gte(0),
   incomplete: z.boolean().optional(),
   embeddingError: z.string().optional(),
+  errorCode: z.enum(['interrupted', 'dimension_mismatch', 'parse_failed', 'embedding_provider']).optional(),
   createdAt: z.number(),
   updatedAt: z.number().optional(),
 })

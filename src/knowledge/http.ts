@@ -12,6 +12,8 @@ import { ConflictError, type KnowledgeService } from './index.js'
 import type { ConfigOverrides } from './domain.js'
 import type {
   AddFileDocumentRequest,
+  AddFilesItem,
+  AddFilesRequest,
   AddTextDocumentRequest,
   BaseConfig,
   CreateBaseRequest,
@@ -268,6 +270,26 @@ async function route(
     if (segments.length === 3) {
       if (segments[2] === 'stats' && method === 'GET') return service.stats(baseId)
       if (segments[2] === 'reindex' && method === 'POST') return service.startReindexBase(baseId)
+      if (segments[2] === 'files-batch' && method === 'POST') {
+        const bodyRequest = body as Partial<AddFilesRequest>
+        if (!Array.isArray(bodyRequest.files)) {
+          return undefined
+        }
+        return service.addFiles({
+          baseId,
+          files: bodyRequest.files
+            .filter((file): file is AddFilesItem => typeof file === 'object' && file !== null && typeof (file as AddFilesItem).fileName === 'string')
+            .map(file => ({
+              fileName: file.fileName,
+              ...(typeof file.mimeType === 'string' ? { mimeType: file.mimeType } : {}),
+              ...(typeof file.contentBase64 === 'string' ? { contentBase64: file.contentBase64 } : {}),
+            })),
+          ...(bodyRequest.conflict === 'rename' || bodyRequest.conflict === 'replace' || bodyRequest.conflict === 'detect'
+            ? { conflict: bodyRequest.conflict }
+            : {}),
+          ...(typeof bodyRequest.parentDirectoryId === 'string' ? { parentDirectoryId: bodyRequest.parentDirectoryId } : {}),
+        })
+      }
       if (segments[2] === 'restore' && method === 'POST') {
         const config = typeof body.config === 'object' && body.config !== null
           ? body.config as BaseConfig
