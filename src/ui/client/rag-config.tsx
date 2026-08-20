@@ -32,6 +32,12 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [localStatus, setLocalStatus] = useState<LocalModelStatus | null>(null)
   const [suggestions, setSuggestions] = useState<ModelSuggestions>({ embedding: [], local: [], rerank: [], ollamaEmbedding: [], ollamaVision: [] })
+  // Models actually downloaded/installed on this machine — the pickers below
+  // are dropdowns over these lists, not free-typed names.
+  const [readyLocalEmbeddings, setReadyLocalEmbeddings] = useState<string[]>([])
+  const [readyLocalRerankers, setReadyLocalRerankers] = useState<string[]>([])
+  const [ollamaEmbeddingModels, setOllamaEmbeddingModels] = useState<string[]>([])
+  const [ollamaCaptionModels, setOllamaCaptionModels] = useState<string[]>([])
   const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -39,6 +45,40 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
     void api.getModelSuggestions().then(result => { if (!cancelled) setSuggestions(result) }).catch(() => {})
     return () => { cancelled = true }
   }, [api])
+
+  // Downloaded local models (Settings → Local Models): ready embedding
+  // models feed the `local` embedding dropdown, ready rerankers the rerank
+  // suggestions (as `local:` prefixed ids).
+  useEffect(() => {
+    let cancelled = false
+    void api.listLocalModels().then(list => {
+      if (cancelled) return
+      const ready = list.filter(m => m.status === 'ready').map(m => ({ id: m.id, kind: m.kind as string }))
+      setReadyLocalEmbeddings(ready.filter(m => m.kind === 'embedding').map(m => m.id))
+      setReadyLocalRerankers(ready.filter(m => m.kind === 'reranking').map(m => m.id))
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [api])
+
+  // Installed Ollama models, per relevant base URL: the embedding picker
+  // uses the embedding base URL, the captioning picker its own.
+  const ollamaBaseFor = (base: string): string => (base.trim() === '' ? 'http://127.0.0.1:11434' : base.trim())
+  useEffect(() => {
+    let cancelled = false
+    const base = ollamaBaseFor(values.embeddingBaseUrl)
+    void api.listOllamaModels(base).then(({ models }) => {
+      if (!cancelled) setOllamaEmbeddingModels(models.map(m => m.name))
+    }).catch(() => { if (!cancelled) setOllamaEmbeddingModels([]) })
+    return () => { cancelled = true }
+  }, [api, values.embeddingBaseUrl])
+  useEffect(() => {
+    let cancelled = false
+    const base = ollamaBaseFor(values.imageCaptionBaseUrl)
+    void api.listOllamaModels(base).then(({ models }) => {
+      if (!cancelled) setOllamaCaptionModels(models.map(m => m.name))
+    }).catch(() => { if (!cancelled) setOllamaCaptionModels([]) })
+    return () => { cancelled = true }
+  }, [api, values.imageCaptionBaseUrl])
 
   const listId = (kind: 'embedding' | 'local' | 'rerank'): string => `kb-${kind}-models-${base.id}`
 
@@ -139,14 +179,28 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
             </select>
             {values.imageCaptionProvider !== 'off' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <input
-                  style={style.input}
-                  placeholder={values.imageCaptionProvider === 'ollama'
-                    ? 'Ollama 视觉模型（如 llava、qwen2.5vl）'
-                    : '视觉模型（如 qwen-vl-plus、gpt-4o-mini）'}
-                  value={values.imageCaptionModel}
-                  onChange={(e) => patch({ imageCaptionModel: e.target.value })}
-                />
+                {values.imageCaptionProvider === 'ollama' ? (
+                  <select
+                    style={style.input}
+                    value={ollamaCaptionModels.includes(values.imageCaptionModel) ? values.imageCaptionModel : ''}
+                    onChange={(e) => { if (e.target.value !== '') patch({ imageCaptionModel: e.target.value }) }}
+                  >
+                    {ollamaCaptionModels.length === 0 && (
+                      <option value="">{t('noOllamaModels')}</option>
+                    )}
+                    {!ollamaCaptionModels.includes(values.imageCaptionModel) && values.imageCaptionModel.trim() !== '' && (
+                      <option value="">{values.imageCaptionModel}</option>
+                    )}
+                    {ollamaCaptionModels.map(name => <option key={name} value={name}>{name}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    style={style.input}
+                    placeholder="视觉模型（如 qwen-vl-plus、gpt-4o-mini）"
+                    value={values.imageCaptionModel}
+                    onChange={(e) => patch({ imageCaptionModel: e.target.value })}
+                  />
+                )}
                 <input
                   style={style.input}
                   placeholder={values.imageCaptionProvider === 'ollama'
@@ -191,12 +245,19 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
           {values.embeddingProvider === 'local' && (
             <div style={{ marginTop: 10 }}>
               <label style={style.label}>{t('embeddingModel')}</label>
-              <input
-                list={listId('local')}
+              <select
                 style={style.input}
-                value={values.embeddingModel}
-                onChange={(e) => patch({ embeddingModel: e.target.value })}
-              />
+                value={readyLocalEmbeddings.includes(values.embeddingModel) ? values.embeddingModel : ''}
+                onChange={(e) => { if (e.target.value !== '') patch({ embeddingModel: e.target.value }) }}
+              >
+                {readyLocalEmbeddings.length === 0 && (
+                  <option value="">{t('noLocalModelsReady')}</option>
+                )}
+                {!readyLocalEmbeddings.includes(values.embeddingModel) && values.embeddingModel.trim() !== '' && (
+                  <option value="">{values.embeddingModel}</option>
+                )}
+                {readyLocalEmbeddings.map(id => <option key={id} value={id}>{id}</option>)}
+              </select>
               <div style={style.warningHint}>{t('localModelHint')}</div>
               {localStatus !== null && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12 }}>
@@ -222,7 +283,31 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
               )}
             </div>
           )}
-          {values.embeddingProvider !== 'none' && values.embeddingProvider !== 'local' && (
+          {values.embeddingProvider === 'ollama' && (
+            <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+              <div style={{ flex: 1 }}>
+                <label style={style.label}>{t('embeddingModel')}</label>
+                <select
+                  style={style.input}
+                  value={ollamaEmbeddingModels.includes(values.embeddingModel) ? values.embeddingModel : ''}
+                  onChange={(e) => { if (e.target.value !== '') patch({ embeddingModel: e.target.value }) }}
+                >
+                  {ollamaEmbeddingModels.length === 0 && (
+                    <option value="">{t('noOllamaModels')}</option>
+                  )}
+                  {!ollamaEmbeddingModels.includes(values.embeddingModel) && values.embeddingModel.trim() !== '' && (
+                    <option value="">{values.embeddingModel}</option>
+                  )}
+                  {ollamaEmbeddingModels.map(name => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={style.label}>{t('embeddingBaseUrl')}</label>
+                <input style={style.input} value={values.embeddingBaseUrl} onChange={(e) => patch({ embeddingBaseUrl: e.target.value })} />
+              </div>
+            </div>
+          )}
+          {values.embeddingProvider === 'openai' && (
             <>
               <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
                 <div style={{ flex: 1 }}>
@@ -442,7 +527,8 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
         {suggestions.local.map(model => <option key={model} value={model} />)}
       </datalist>
       <datalist id={listId('rerank')}>
-        {suggestions.rerank.map(model => <option key={model} value={model} />)}
+        {/* Downloaded local rerankers first (as local: ids), then remote suggestions. */}
+        {[...readyLocalRerankers.map(id => `local:${id}`), ...suggestions.rerank].map(model => <option key={model} value={model} />)}
       </datalist>
     </div>
   )

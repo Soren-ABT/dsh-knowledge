@@ -174,6 +174,8 @@ export type KnowledgeKey =
   | 'topKHint'
   | 'thresholdHint'
   | 'providerLocal'
+  | 'noLocalModelsReady'
+  | 'noOllamaModels'
   | 'localModelHint'
   | 'localModelReady'
   | 'localModelDownloading'
@@ -418,6 +420,8 @@ export const zh: Record<KnowledgeKey, string> = {
   thresholdHint: '用于过滤低相关性重排片段的相似度阈值，数值越高召回越严格。',
   providerLocal: '本地模型',
   localModelHint: '进程内推理（transformers.js），无需联网服务；首次使用需下载模型权重。模型为 Hugging Face 仓库 id，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX',
+  noLocalModelsReady: '暂无已下载的本地模型，请到「设置 → 本地模型」下载',
+  noOllamaModels: '暂无已安装的 Ollama 模型，请在「设置 → 本地模型」拉取',
   localModelReady: '本地模型就绪',
   localModelDownloading: '模型下载中',
   localModelError: '模型加载失败',
@@ -659,6 +663,8 @@ export const en: Record<KnowledgeKey, string> = {
   thresholdHint: 'Similarity threshold used to filter low-relevance reranked chunks; higher is stricter.',
   providerLocal: 'Local model',
   localModelHint: 'In-process inference (transformers.js), no server needed; first use downloads the weights. Model = Hugging Face repo id, default onnx-community/Qwen3-Embedding-0.6B-ONNX',
+  noLocalModelsReady: 'No downloaded local models — download one in Settings → Local Models',
+  noOllamaModels: 'No installed Ollama models — pull one in Settings → Local Models',
   localModelReady: 'Local model ready',
   localModelDownloading: 'Downloading model',
   localModelError: 'Model load failed',
