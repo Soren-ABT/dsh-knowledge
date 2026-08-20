@@ -38,6 +38,11 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   const [readyLocalRerankers, setReadyLocalRerankers] = useState<string[]>([])
   const [ollamaEmbeddingModels, setOllamaEmbeddingModels] = useState<string[]>([])
   const [ollamaCaptionModels, setOllamaCaptionModels] = useState<string[]>([])
+  // Distinguish "Ollama has no models" from "Ollama is unreachable" — an
+  // empty list caused by a connection failure should not look like a model
+  // that was never pulled.
+  const [ollamaEmbeddingUnreachable, setOllamaEmbeddingUnreachable] = useState(false)
+  const [ollamaCaptionUnreachable, setOllamaCaptionUnreachable] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -67,16 +72,28 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
     let cancelled = false
     const base = ollamaBaseFor(values.embeddingBaseUrl)
     void api.listOllamaModels(base).then(({ models }) => {
-      if (!cancelled) setOllamaEmbeddingModels(models.map(m => m.name))
-    }).catch(() => { if (!cancelled) setOllamaEmbeddingModels([]) })
+      if (cancelled) return
+      setOllamaEmbeddingModels(models.map(m => m.name))
+      setOllamaEmbeddingUnreachable(false)
+    }).catch(() => {
+      if (cancelled) return
+      setOllamaEmbeddingModels([])
+      setOllamaEmbeddingUnreachable(true)
+    })
     return () => { cancelled = true }
   }, [api, values.embeddingBaseUrl])
   useEffect(() => {
     let cancelled = false
     const base = ollamaBaseFor(values.imageCaptionBaseUrl)
     void api.listOllamaModels(base).then(({ models }) => {
-      if (!cancelled) setOllamaCaptionModels(models.map(m => m.name))
-    }).catch(() => { if (!cancelled) setOllamaCaptionModels([]) })
+      if (cancelled) return
+      setOllamaCaptionModels(models.map(m => m.name))
+      setOllamaCaptionUnreachable(false)
+    }).catch(() => {
+      if (cancelled) return
+      setOllamaCaptionModels([])
+      setOllamaCaptionUnreachable(true)
+    })
     return () => { cancelled = true }
   }, [api, values.imageCaptionBaseUrl])
 
@@ -105,6 +122,15 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   }), [globalConfig, base.config])
 
   const dirty = JSON.stringify(values) !== JSON.stringify(initial)
+
+  // Cherry semantics: switching the embedding model of a NON-EMPTY base that
+  // already HAS vectors is refused by the host (the user must rebuild via
+  // 重建知识库). Warn BEFORE the user saves, so a refused save never reads
+  // as "my selection did nothing".
+  const embeddingChanged = values.embeddingProvider !== initial.embeddingProvider
+    || values.embeddingModel !== initial.embeddingModel
+  const hadModel = initial.embeddingProvider !== 'none' && (initial.embeddingModel ?? '').trim() !== ''
+  const needsRebuild = embeddingChanged && hadModel && (base.documentCount ?? 0) > 0
 
   const patch = (p: Partial<KnowledgeConfig>): void => setValues(prev => ({ ...prev, ...p }))
 
@@ -186,10 +212,12 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                     onChange={(e) => { if (e.target.value !== '') patch({ imageCaptionModel: e.target.value }) }}
                   >
                     {ollamaCaptionModels.length === 0 && (
-                      <option value="">{t('noOllamaModels')}</option>
+                      <option value="">{ollamaCaptionUnreachable ? t('ollamaUnreachable') : t('noOllamaModels')}</option>
                     )}
-                    {!ollamaCaptionModels.includes(values.imageCaptionModel) && values.imageCaptionModel.trim() !== '' && (
-                      <option value="">{values.imageCaptionModel}</option>
+                    {!ollamaCaptionModels.includes(values.imageCaptionModel) && (
+                      <option value="">
+                        {values.imageCaptionModel.trim() !== '' ? values.imageCaptionModel : t('selectModelPlaceholder')}
+                      </option>
                     )}
                     {ollamaCaptionModels.map(name => <option key={name} value={name}>{name}</option>)}
                   </select>
@@ -253,8 +281,14 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 {readyLocalEmbeddings.length === 0 && (
                   <option value="">{t('noLocalModelsReady')}</option>
                 )}
-                {!readyLocalEmbeddings.includes(values.embeddingModel) && values.embeddingModel.trim() !== '' && (
-                  <option value="">{values.embeddingModel}</option>
+                {/* A stale/unset value must show as its own option — without
+                    this, an empty value makes the browser display the FIRST
+                    list entry as if it were selected while the saved config
+                    stays empty (the 'selection' then never applies). */}
+                {!readyLocalEmbeddings.includes(values.embeddingModel) && (
+                  <option value="">
+                    {values.embeddingModel.trim() !== '' ? values.embeddingModel : t('selectModelPlaceholder')}
+                  </option>
                 )}
                 {readyLocalEmbeddings.map(id => <option key={id} value={id}>{id}</option>)}
               </select>
@@ -293,10 +327,12 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   onChange={(e) => { if (e.target.value !== '') patch({ embeddingModel: e.target.value }) }}
                 >
                   {ollamaEmbeddingModels.length === 0 && (
-                    <option value="">{t('noOllamaModels')}</option>
+                    <option value="">{ollamaEmbeddingUnreachable ? t('ollamaUnreachable') : t('noOllamaModels')}</option>
                   )}
-                  {!ollamaEmbeddingModels.includes(values.embeddingModel) && values.embeddingModel.trim() !== '' && (
-                    <option value="">{values.embeddingModel}</option>
+                  {!ollamaEmbeddingModels.includes(values.embeddingModel) && (
+                    <option value="">
+                      {values.embeddingModel.trim() !== '' ? values.embeddingModel : t('selectModelPlaceholder')}
+                    </option>
                   )}
                   {ollamaEmbeddingModels.map(name => <option key={name} value={name}>{name}</option>)}
                 </select>
@@ -333,6 +369,11 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 />
               </div>
             </>
+          )}
+          {needsRebuild && (
+            <div style={{ marginTop: 10 }}>
+              <div style={style.warningHint}>{t('embeddingSwitchWarning')}</div>
+            </div>
           )}
         </Section>
 

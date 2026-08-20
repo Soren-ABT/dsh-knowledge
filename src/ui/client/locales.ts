@@ -176,6 +176,9 @@ export type KnowledgeKey =
   | 'providerLocal'
   | 'noLocalModelsReady'
   | 'noOllamaModels'
+  | 'selectModelPlaceholder'
+  | 'ollamaUnreachable'
+  | 'embeddingSwitchWarning'
   | 'localModelHint'
   | 'localModelReady'
   | 'localModelDownloading'
@@ -422,6 +425,9 @@ export const zh: Record<KnowledgeKey, string> = {
   localModelHint: '进程内推理（transformers.js），无需联网服务；首次使用需下载模型权重。模型为 Hugging Face 仓库 id，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX',
   noLocalModelsReady: '暂无已下载的本地模型，请到「设置 → 本地模型」下载',
   noOllamaModels: '暂无已安装的 Ollama 模型，请在「设置 → 本地模型」拉取',
+  selectModelPlaceholder: '请选择模型',
+  ollamaUnreachable: '无法连接 Ollama（检查地址或是否已启动）',
+  embeddingSwitchWarning: '⚠ 切换嵌入模型会使本库已有向量全部失效，保存会被拒绝——请改用「重建知识库」以新模型重建（或先清空本库文档）',
   localModelReady: '本地模型就绪',
   localModelDownloading: '模型下载中',
   localModelError: '模型加载失败',
@@ -665,6 +671,9 @@ export const en: Record<KnowledgeKey, string> = {
   localModelHint: 'In-process inference (transformers.js), no server needed; first use downloads the weights. Model = Hugging Face repo id, default onnx-community/Qwen3-Embedding-0.6B-ONNX',
   noLocalModelsReady: 'No downloaded local models — download one in Settings → Local Models',
   noOllamaModels: 'No installed Ollama models — pull one in Settings → Local Models',
+  selectModelPlaceholder: 'Select a model',
+  ollamaUnreachable: 'Cannot reach Ollama (check the address or whether it is running)',
+  embeddingSwitchWarning: '⚠ Switching the embedding model invalidates this base\'s stored vectors, so the save will be refused — rebuild via 重建知识库 with the new model instead (or empty the base first)',
   localModelReady: 'Local model ready',
   localModelDownloading: 'Downloading model',
   localModelError: 'Model load failed',
