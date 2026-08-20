@@ -96,7 +96,9 @@ describe('embedding hash reuse (Cherry decision A4)', () => {
       name: 'reuse',
       config: { embeddingProvider: 'openai', embeddingBaseUrl: 'http://x', embeddingModel: 'm1', embeddingApiKey: 'k' },
     })
-    const content = 'word '.repeat(50) + '\n\n' + 'another paragraph '.repeat(40)
+    // Long enough that the 800-token and 300-token budgets slice differently
+    // (≈4600 latin chars ≈ 1150 tokens: 800t → 3 chunks, 300t → 5 chunks).
+    const content = 'word '.repeat(200) + '\n\n' + 'another paragraph '.repeat(200)
     const doc = await service.addTextDocument({ baseId: base.id, title: 't', content })
     const firstCalls = embedTextsMock.mock.calls.length
     expect(firstCalls).toBeGreaterThan(0)

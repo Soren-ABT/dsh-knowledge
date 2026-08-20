@@ -26,7 +26,7 @@
 - **每库独立配置**：每个知识库可单独指定 embedding 提供方/模型（含**本地模型**）、**重排模型**（远程 API 或 **本地 bge-reranker**）、分块大小与 topK、**语义分块**、冲突策略、URL 自动刷新等，未设置字段自动继承全局配置；改配置后一键重建索引（全库或单条资料）。
 - **可选 MinerU 远程文档处理**：PDF 可交给 [MinerU](https://github.com/opendatalab/MinerU) 服务解析（公式、表格、版式还原成 Markdown），知识库设置里填入 MinerU API Key（全局或每库覆盖）即可；未配置时自动走本地解析链路。
 - **向量化与检索**：可插拔 embedding 提供方 —— 任意 OpenAI 兼容 `/embeddings` 端点（OpenAI、DeepSeek、SiliconFlow、本地网关…）、Ollama，或 **进程内本地模型（transformers.js，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX，无需联网服务）**；**混合检索**（BM25 + 向量 + Reciprocal Rank Fusion）、**重排模型（rerank，Jina/SiliconFlow/Cohere v2 风格 API 或本地跨编码器）**、**MMR 结果去重**、检索模式（auto/hybrid/vector/lexical）与相似度阈值、**多查询检索（extraQueries，换说法/翻译扩召回）**；未配置时自动退化关键词（CJK 二元组 + 拉丁词 BM25），零配置即可用；召回测试显示命中来源、相关度、双分数、**耗时**，**复制引用（Markdown 引用块 + 来源行）**，并保留**检索历史**可一键重放。
-- **智能分块**：标题感知分块（保留 Markdown 标题路径，**代码围栏保护**），并将「文档标题 + 标题路径」作为上下文注入 embedding 与检索；**语义分块**（段落嵌入 + 相邻相似段合并，零额外嵌入开销）与 **Token 上限细化**（超限在句号/逗号/空格边界继续切分）可选开启。
+- **智能分块**：标题感知分块（保留 Markdown 标题路径，**代码围栏保护**），并将「文档标题 + 标题路径」作为上下文注入 embedding 与检索；分块大小/重叠为 **Token 预算**（按文档实测字符/Token 比换算，与 Cherry Studio 一致），长块按 **Cherry 断点评分模型**切分（标题 100 → 代码边界 80 → 分隔线 60 → 段落 20 → 句读 8 → 列表 5 → 裸换行 1，窗口内距离衰减），CJK/拉丁语混排窗口大小一致；**语义分块**（段落嵌入 + 相邻相似段合并，零额外嵌入开销）与 **Token 上限细化**（超限在句号/逗号/空格边界继续切分）可选开启。
 - **索引管理**：按当前配置**重建索引**（改分块大小 / 换 embedding 后一键重切 + 重向量化）、批量 embedding、统计（文档/分块/字符/Token 数、是否已向量化）。
 - **模型工具**：`knowledge_search`（含 citations 引用数组）、`knowledge_list_bases`、`knowledge_create_base`、`knowledge_delete_base`、`knowledge_add_document`、`knowledge_list_documents`、`knowledge_delete_document`、`knowledge_import_url`、`knowledge_refresh_url`、`knowledge_stats`、`knowledge_get_document`、`knowledge_read_document`（按字符区间分段阅读 / 正则定位）、`knowledge_reindex_document`、`knowledge_reindex_base`（共 14 个）。
 - **管理面板**：**不在设置内** —— 侧边栏底部（设置旁）的「知识库」入口打开工作区整页浮层，布局：左侧搜索框 + **分组折叠导航** + 彩色头像知识库卡片（右键菜单：重命名/移动到分组/新建分组/删除），右侧统计芯片、**「更新于」时间**、添加文档弹窗、**表格化资料列表（勾选列 + 名称/类型/状态/更新时间 + 多选批量重建/批量删除）**、分块/原文预览、重建索引、检索测试（命中高亮 + 向量/关键词双分数 + 历史 + 复制引用）、全局与每库设置弹窗（文档处理 / 图表描述 / 嵌入模型 / 重排模型 / TopK / 高级设置）、Toast 通知、空状态与悬停动效。
@@ -125,8 +125,8 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 | `rerankModel` / `rerankBaseUrl` / `rerankApiKey` | `''` | 重排模型（留空=不启用），Jina / SiliconFlow / Cohere v2 风格接口 |
 | `smartChunk` | `true` | 智能分段（标题/段落感知）；关闭后仅按 `chunkSeparator` 切分 |
 | `chunkSeparator` | `\n\n` | 智能分段关闭时的段落边界（可写 `\n`） |
-| `chunkSize` | `800` | 分块字符数 |
-| `chunkOverlap` | `100` | 相邻分块重叠字符数 |
+| `chunkSize` | `800` | 分块 Token 预算（按文档实测字符/Token 比换算字符窗口；对齐 Cherry Studio） |
+| `chunkOverlap` | `100` | 相邻分块重叠 Token 数（同上换算） |
 | `topK` | `6` | 检索返回条数（1–50） |
 | `searchMode` | `auto` | `auto` / `hybrid` / `vector` / `lexical` |
 | `similarityThreshold` | `0` | 相似度阈值（0–1），低于该分数的结果被过滤 |

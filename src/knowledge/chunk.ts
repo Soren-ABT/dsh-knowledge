@@ -35,10 +35,15 @@ export function chunkText(
 ): ChunkPiece[] {
   const normalized = normalizeText(text)
   if (normalized.length === 0) return []
-  // NaN/Infinity must not propagate: Math.trunc(NaN) is NaN and would poison
-  // every window boundary, producing empty-string chunks.
-  const safeSize = Number.isFinite(size) ? Math.max(64, Math.trunc(size)) : 64
-  const safeOverlap = Number.isFinite(overlap) ? Math.min(Math.max(0, Math.trunc(overlap)), safeSize - 1) : 0
+  // Cherry's chunkSize/chunkOverlap are TOKEN budgets: convert to characters
+  // with the document's measured chars-per-token ratio so CJK and Latin
+  // content produce comparable token-sized chunks (a fixed character budget
+  // made Chinese chunks ~4x the token size of English ones).
+  const tokenBudget = Number.isFinite(size) ? Math.max(64, Math.trunc(size)) : 64
+  const tokenOverlap = Number.isFinite(overlap) ? Math.min(Math.max(0, Math.trunc(overlap)), tokenBudget - 1) : 0
+  const charsPerToken = normalized.length / Math.max(1, estimateTokens(normalized))
+  const safeSize = Math.max(64, Math.round(tokenBudget * charsPerToken))
+  const safeOverlap = Math.min(Math.round(tokenOverlap * charsPerToken), safeSize - 1)
   const smartChunk = options?.smartChunk ?? true
   const blocks = smartChunk
     ? splitBlocks(normalized)
@@ -110,7 +115,12 @@ export function mergeSemanticSegments(
   size: number,
   threshold = 0.75,
 ): Array<ChunkPiece & { embedding?: number[] }> {
-  const safeSize = Number.isFinite(size) ? Math.max(64, Math.trunc(size)) : 64
+  // `size` is a token budget like chunkText's; convert with the document's
+  // measured chars-per-token ratio.
+  const fullText = segments.map(segment => segment.text).join('\n')
+  const charsPerToken = fullText.length / Math.max(1, estimateTokens(fullText))
+  const tokenBudget = Number.isFinite(size) ? Math.max(64, Math.trunc(size)) : 64
+  const safeSize = Math.max(64, Math.round(tokenBudget * charsPerToken))
   const out: Array<ChunkPiece & { embedding?: number[] }> = []
   if (segments.length === 0) return out
   let text = segments[0].text
@@ -306,7 +316,7 @@ function matchHeading(line: string): { level: number; title: string } | undefine
   return { level: match[1].length, title: match[2].trim() }
 }
 
-/** Window one long block at sentence boundaries. */
+/** Window one long block at the best scored break (Cherry's splitter). */
 function windowBlock(block: string, size: number, overlap: number): string[] {
   const chunks: string[] = []
   let start = 0
@@ -316,8 +326,10 @@ function windowBlock(block: string, size: number, overlap: number): string[] {
       chunks.push(block.slice(start).trim())
       break
     }
-    // Prefer a sentence boundary within the last 40% of the window.
-    const cut = Math.max(findCut(block, end, start + Math.floor(size * 0.6)), start + 1)
+    // Prefer a high-quality break within the last WINDOW_RATIO of the budget
+    // (heading > code edge > rule > paragraph > list > sentence > newline).
+    const windowStart = Math.max(start + 1, end - Math.max(1, Math.round(size * WINDOW_RATIO)))
+    const cut = Math.max(findCut(block, end, windowStart), start + 1)
     chunks.push(block.slice(start, cut).trim())
     const next = Math.max(cut - overlap, start + 1)
     if (next <= start) break
@@ -326,12 +338,56 @@ function windowBlock(block: string, size: number, overlap: number): string[] {
   return chunks
 }
 
+/**
+ * Cherry's break-point model (adapted from splitter.ts): markdown boundaries
+ * scored by structural quality, distance-decayed toward the end of the window
+ * (a break at the window edge keeps DECAY_FACTOR of its score). Chinese
+ * sentence punctuation joins as a low-scoring fallback. The cut lands at the
+ * pattern's match index (the newline stays with the next block), except
+ * sentence punctuation which cuts AFTER the mark.
+ */
+const BREAK_PATTERNS: ReadonlyArray<{ pattern: RegExp; score: number; after?: boolean }> = [
+  { pattern: /\n#{1}(?!#)/g, score: 100 },
+  { pattern: /\n#{2}(?!#)/g, score: 90 },
+  { pattern: /\n#{3}(?!#)/g, score: 80 },
+  { pattern: /\n#{4}(?!#)/g, score: 70 },
+  { pattern: /\n#{5}(?!#)/g, score: 60 },
+  { pattern: /\n#{6}(?!#)/g, score: 50 },
+  { pattern: /\n```/g, score: 80 },
+  { pattern: /\n(?:---|\*\*\*|___)\s*\n/g, score: 60 },
+  { pattern: /\n\n+/g, score: 20 },
+  { pattern: /[。！？]/g, score: 8, after: true },
+  { pattern: /\n[-*]\s/g, score: 5 },
+  { pattern: /\n\d+\.\s/g, score: 5 },
+  { pattern: /\n/g, score: 1 },
+]
+/** ~22% of the chunk budget — how far back from the target we hunt for a break. */
+const WINDOW_RATIO = 0.22
+/** Distance-decay strength: a break at the window edge keeps 70% of its score. */
+const DECAY_FACTOR = 0.7
+
 function findCut(block: string, end: number, min: number): number {
-  const window = block.slice(min, end)
-  let best = -1
-  for (const sep of ['。', '！', '？', '. ', '! ', '? ', '\n']) {
-    const idx = window.lastIndexOf(sep)
-    if (idx >= 0) best = Math.max(best, min + idx + sep.length)
+  const windowSize = Math.max(1, end - min)
+  let bestPos = -1
+  let bestScore = -1
+  const source = block.slice(min, end)
+  for (const { pattern, score, after } of BREAK_PATTERNS) {
+    pattern.lastIndex = 0
+    for (const match of source.matchAll(pattern)) {
+      const cut = min + match.index + (after === true ? match[0].length : 0)
+      const decayed = score * Math.pow(DECAY_FACTOR, (end - cut) / windowSize)
+      if (decayed > bestScore) {
+        bestScore = decayed
+        bestPos = cut
+      }
+    }
   }
-  return best > min ? best : end
+  return bestPos > min ? bestPos : end
+}
+
+/** CJK-heavy text costs ~1.5 chars/token, latin ~4 — same rule as the service layer. */
+function estimateTokens(text: string): number {
+  const cjk = (text.match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/g) ?? []).length
+  const latin = text.length - cjk
+  return Math.max(1, Math.ceil(cjk / 1.5 + latin / 4))
 }

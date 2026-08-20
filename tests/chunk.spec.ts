@@ -14,7 +14,12 @@ describe('chunkText', () => {
     const text = 'word '.repeat(1000) // 5000 chars
     const chunks = chunkText(text, 500, 50)
     expect(chunks.length).toBeGreaterThan(1)
-    for (const chunk of chunks) expect(chunk.text.length).toBeLessThanOrEqual(500)
+    // chunkSize is a TOKEN budget (Cherry semantics): latin text ≈ 4 chars/token,
+    // so each chunk carries at most ~500 tokens, i.e. ~2000 chars + slack.
+    for (const chunk of chunks) {
+      const tokens = Math.ceil(chunk.text.length / 4)
+      expect(tokens).toBeLessThanOrEqual(550)
+    }
   })
 
   it('splits on paragraph boundaries', () => {
@@ -65,12 +70,12 @@ describe('mergeSemanticSegments', () => {
       { text: 'd'.repeat(200) },
     ]
     // All vectors identical → all merge until size; then the size bound cuts.
-    // The '\n' joiners count toward the budget (100+100+100+2 = 302).
+    // `size` is a TOKEN budget: 502 latin chars ≈ 126 tokens, so a budget of
+    // 60 tokens ≈ 239 chars → 'a\nb' (201) fits, +'c' (302) does not.
     const vectors = segments.map(() => [1, 0, 0])
-    const merged = mergeSemanticSegments(segments, vectors, 350)
-    expect(merged.length).toBe(2)
-    expect(merged[0].text.length).toBe(302)
-    expect(merged[1].text.length).toBe(200)
+    const merged = mergeSemanticSegments(segments, vectors, 60)
+    expect(merged.length).toBe(3)
+    expect(merged[0].text.length).toBe(201)
     // Merged vector is the length-weighted mean, still normalized.
     expect(merged[0].embedding?.[0]).toBeCloseTo(1, 5)
   })
@@ -104,8 +109,10 @@ describe('mergeSemanticSegments', () => {
   })
 
   it('handles missing vectors by merging on size only', () => {
-    const segments = [{ text: 'x'.repeat(100) }, { text: 'y'.repeat(100) }]
-    const merged = mergeSemanticSegments(segments, [undefined, undefined], 150)
+    const segments = [{ text: 'x'.repeat(200) }, { text: 'y'.repeat(200) }]
+    // 401 latin chars ≈ 100 tokens; the 64-token floor → ~252 chars budget,
+    // so 200 fits but 200+200 does not.
+    const merged = mergeSemanticSegments(segments, [undefined, undefined], 20)
     expect(merged.length).toBe(2)
     expect(merged[0].embedding).toBeUndefined()
   })
