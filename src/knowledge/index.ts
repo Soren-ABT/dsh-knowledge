@@ -1000,10 +1000,24 @@ export class KnowledgeService extends Service {
     // In-flight leaves are skipped (Cherry's REINDEX_ALLOWED_STATUSES), not
     // failed, so reindexing a busy directory never aborts mid-subtree.
     if (document.sourceType === 'directory') {
+      // One bad leaf must not abort the rest of the subtree (Cherry's
+      // reindex-subtree job keeps going; failing leaves are surfaced, not
+      // fatal). Failures are collected and reported as a summary after the
+      // sweep, so the user sees "N failed" instead of a silent partial run.
+      let failed = 0
+      let firstError = ''
       for (const child of store.listDocuments(document.baseId)) {
         if (child.parentDirectoryId !== document.id) continue
         if (this.indexing.has(child.id)) continue
-        await this.reindexDocument(child.id)
+        try {
+          await this.reindexDocument(child.id)
+        } catch (error) {
+          failed += 1
+          if (firstError === '') firstError = error instanceof Error ? error.message : String(error)
+        }
+      }
+      if (failed > 0) {
+        throw new Error(`directory reindex finished with ${failed} failed item(s): ${firstError}`)
       }
       return document
     }
