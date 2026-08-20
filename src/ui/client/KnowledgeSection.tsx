@@ -1214,8 +1214,19 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                       <span className="kb-spinner" style={{ ...style.spinner, width: 10, height: 10, borderWidth: 2 }} />
                                       {t('statusImporting')}
                                     </span>
+                                  ) : doc.indexingPhase !== undefined ? (
+                                    // The container itself is being rescanned (reindex of a
+                                    // source-backed folder) — Cherry's directory preparing.
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: C.accent }}>
+                                      <span className="kb-spinner" style={{ ...style.spinner, width: 10, height: 10, borderWidth: 2 }} />
+                                      {doc.indexingPhase === 'parsing' ? t('statusParsing') : t('statusProcessing')}
+                                    </span>
                                   ) : (
-                                    <span style={{ fontSize: 11, color: C.muted }}>—</span>
+                                    // Cherry's directory completed → ready badge (dsh used a
+                                    // bare '—' here, which read as 'no model running').
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, color: C.success }}>
+                                      <IconCheck size={12} />{t('ready')}
+                                    </span>
                                   )
                                 ) : (() => {
                                   const phase = doc.indexingPhase

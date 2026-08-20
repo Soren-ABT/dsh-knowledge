@@ -1108,6 +1108,19 @@ export class KnowledgeService extends Service {
   private async rescanDirectory(document: KnowledgeDocument): Promise<KnowledgeDocument> {
     const store = this.requireStore()
     const source = document.sourcePath!
+    // Mark the container itself active so its row shows a live status while
+    // the rescan runs (Cherry's directory `preparing` state); children get
+    // their own per-item statuses underneath.
+    this.indexing.set(document.id, { baseId: document.baseId, title: document.title, phase: 'parsing', total: 0, progress: 0 })
+    try {
+      return await this.rescanDirectoryInner(document, source)
+    } finally {
+      this.indexing.delete(document.id)
+    }
+  }
+
+  private async rescanDirectoryInner(document: KnowledgeDocument, source: string): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
     let entries
     try {
       entries = await readdir(source, { withFileTypes: true })
