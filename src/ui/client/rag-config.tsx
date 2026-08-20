@@ -134,6 +134,14 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
 
   const patch = (p: Partial<KnowledgeConfig>): void => setValues(prev => ({ ...prev, ...p }))
 
+  // Number inputs: an emptied field yields NaN, which must not reach the
+  // config (the durable schema would reject the save). Ignore non-finite
+  // values — the controlled input snaps back to the last valid number.
+  const patchNumber = (key: keyof KnowledgeConfig, raw: string): void => {
+    const n = Number(raw)
+    if (Number.isFinite(n)) patch({ [key]: n } as Partial<KnowledgeConfig>)
+  }
+
   const save = async (): Promise<void> => {
     setSaveError(null)
     const overrides: BaseConfig = {}
@@ -197,7 +205,19 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
             <select
               style={style.input}
               value={values.imageCaptionProvider}
-              onChange={(e) => patch({ imageCaptionProvider: e.target.value as 'off' | 'openai' | 'ollama' })}
+              onChange={(e) => {
+                const provider = e.target.value as 'off' | 'openai' | 'ollama'
+                if (provider === 'ollama') {
+                  // Don't carry a leftover openai model name into the Ollama
+                  // dropdown; auto-pick the first installed vision model.
+                  const next = ollamaCaptionModels.includes(values.imageCaptionModel)
+                    ? values.imageCaptionModel
+                    : (ollamaCaptionModels[0] ?? '')
+                  patch({ imageCaptionProvider: provider, imageCaptionModel: next })
+                } else {
+                  patch({ imageCaptionProvider: provider })
+                }
+              }}
             >
               <option value="off">{t('imageCaptionOff')}</option>
               <option value="openai">{t('imageCaptionOpenAI')}</option>
@@ -258,11 +278,28 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
             value={values.embeddingProvider}
             onChange={(e) => {
               const provider = e.target.value as EmbeddingProvider
-              patch(
-                provider === 'local' && values.embeddingModel.trim() === ''
-                  ? { embeddingProvider: provider, embeddingModel: 'onnx-community/Qwen3-Embedding-0.6B-ONNX' }
-                  : { embeddingProvider: provider }
-              )
+              if (provider === 'local') {
+                // Keep the current model only when it is actually a
+                // downloaded local model; otherwise auto-pick the first
+                // ready one (or leave it unset). Never inject a default name
+                // the user has not downloaded — that made the dropdown show
+                // a model that does not exist.
+                const next = readyLocalEmbeddings.includes(values.embeddingModel)
+                  ? values.embeddingModel
+                  : (readyLocalEmbeddings[0] ?? '')
+                patch({ embeddingProvider: provider, embeddingModel: next })
+              } else if (provider === 'ollama') {
+                // Same for Ollama: a leftover name from another provider
+                // (e.g. a local model id) must not appear in the Ollama
+                // dropdown as if it were installed there.
+                const next = ollamaEmbeddingModels.includes(values.embeddingModel)
+                  ? values.embeddingModel
+                  : (ollamaEmbeddingModels[0] ?? '')
+                patch({ embeddingProvider: provider, embeddingModel: next })
+              } else {
+                // openai / none: free-text or none — keep whatever was typed.
+                patch({ embeddingProvider: provider })
+              }
             }}
           >
             <option value="none">{t('providerNone')}</option>
@@ -292,7 +329,6 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 )}
                 {readyLocalEmbeddings.map(id => <option key={id} value={id}>{id}</option>)}
               </select>
-              <div style={style.warningHint}>{t('localModelHint')}</div>
               {localStatus !== null && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12 }}>
                   {localStatus.status === 'downloading' && (
@@ -469,7 +505,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                     max={1}
                     step={0.05}
                     value={values.semanticChunkThreshold}
-                    onChange={(e) => patch({ semanticChunkThreshold: Number(e.target.value) })}
+                    onChange={(e) => patchNumber('semanticChunkThreshold', e.target.value)}
                   />
                 </FieldRow>
               )}
@@ -479,7 +515,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   type="number"
                   min={0}
                   value={values.chunkTokenLimit}
-                  onChange={(e) => patch({ chunkTokenLimit: Number(e.target.value) })}
+                  onChange={(e) => patchNumber('chunkTokenLimit', e.target.value)}
                 />
               </FieldRow>
               <FieldRow label={t('conflictStrategy')} hint={t('conflictStrategyHint')}>
@@ -499,7 +535,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   type="number"
                   min={0}
                   value={values.urlRefreshHours}
-                  onChange={(e) => patch({ urlRefreshHours: Number(e.target.value) })}
+                  onChange={(e) => patchNumber('urlRefreshHours', e.target.value)}
                 />
               </FieldRow>
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
@@ -514,7 +550,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   style={{ ...style.input, width: 100 }}
                   type="number"
                   value={values.chunkSize}
-                  onChange={(e) => patch({ chunkSize: Number(e.target.value) })}
+                  onChange={(e) => patchNumber('chunkSize', e.target.value)}
                 />
               </FieldRow>
               <FieldRow label={t('chunkOverlap')}>
@@ -522,7 +558,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   style={{ ...style.input, width: 100 }}
                   type="number"
                   value={values.chunkOverlap}
-                  onChange={(e) => patch({ chunkOverlap: Number(e.target.value) })}
+                  onChange={(e) => patchNumber('chunkOverlap', e.target.value)}
                 />
               </FieldRow>
               <FieldRow label={t('rrfVectorWeight')} hint={t('rrfVectorWeightHint')}>
@@ -533,7 +569,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   min="0.1"
                   max="5"
                   value={values.rrfVectorWeight}
-                  onChange={(e) => patch({ rrfVectorWeight: Number(e.target.value) })}
+                  onChange={(e) => patchNumber('rrfVectorWeight', e.target.value)}
                 />
               </FieldRow>
               <div style={style.warningHint}>{t('chunkChangeWarning')}</div>
