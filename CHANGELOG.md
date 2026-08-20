@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3 — local-model status fix (npm release, pending)
+
+### Fixes
+
+- **本地模型状态误报修复**：`getLocalModelStatus` 只查询进程内存的下载/加载记录，模型在磁盘上（例如迁移或重启后从未惰性加载）会误报「未就绪」；现在内存无记录时回退**磁盘探测**（权重文件在盘即视为就绪，加载仍惰性）。迁移到新缓存目录后状态查询自动跟随新位置（无需重启）。
+
 ## 0.3.2 — Cherry Studio deep-alignment (npm release, pending)
 
 ### Retrieval & storage
