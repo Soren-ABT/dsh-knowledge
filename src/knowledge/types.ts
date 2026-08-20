@@ -297,6 +297,8 @@ export interface AddTextDocumentRequest {
   readonly baseId: string
   readonly title: string
   readonly content: string
+  /** Parent directory id, when this text lives inside a directory container. */
+  readonly parentDirectoryId?: string
 }
 
 /** Payload for adding a document from an uploaded file (base64 content). */
@@ -326,6 +328,8 @@ export interface ImportUrlRequest {
   readonly baseId: string
   readonly url: string
   readonly title?: string
+  /** Parent directory id, when this URL lives inside a directory container. */
+  readonly parentDirectoryId?: string
 }
 
 /** Metadata filters narrowing a search to a subset of documents (all optional, ANDed). */

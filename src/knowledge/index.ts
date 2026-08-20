@@ -578,6 +578,7 @@ export class KnowledgeService extends Service {
       baseId: request.baseId,
       title: request.title.trim(),
       sourceType: 'text',
+      ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
       text: request.content,
     })
   }
@@ -902,6 +903,7 @@ export class KnowledgeService extends Service {
       title,
       sourceType: 'url',
       url: request.url,
+      ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
       rawFilePath,
       text: extracted.text,
     })

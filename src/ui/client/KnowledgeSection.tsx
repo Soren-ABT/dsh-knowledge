@@ -163,6 +163,10 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   const [recallHistory, setRecallHistory] = useState<RecallEntry[]>([])
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; doc: DocumentSummary } | null>(null)
   const [indexingMap, setIndexingMap] = useState<Map<string, { progress: number; phase: 'parsing' | 'embedding' }>>(new Map())
+  // Cherry's empty-state guidance: when the global embedding provider is the
+  // local model and it is not downloaded yet, the empty base explains what to
+  // do instead of silently importing vectors-less content.
+  const [localEmbeddingDownloaded, setLocalEmbeddingDownloaded] = useState<boolean | null>(null)
   const [docLimit, setDocLimit] = useState(100)
   const [navWidth, setNavWidth] = useState(272)
   const [dragOver, setDragOver] = useState(false)
@@ -224,6 +228,15 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
   }, [navWidth])
+
+  // Local embedding readiness, for the empty-state guidance.
+  useEffect(() => {
+    let cancelled = false
+    void api.listLocalModels().then(list => {
+      if (!cancelled) setLocalEmbeddingDownloaded(list.some(m => m.kind === 'embedding' && m.status === 'ready'))
+    }).catch(() => { if (!cancelled) setLocalEmbeddingDownloaded(true) })
+    return () => { cancelled = true }
+  }, [api])
 
   const refreshStats = useCallback(async (baseId: string | null): Promise<void> => {
     setStats(await api.stats(baseId ?? undefined))
@@ -344,7 +357,14 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       } catch {
         // polling is best-effort
       }
-      if (!disposed) timer = window.setTimeout(() => { void poll() }, 800)
+      // Cherry-style conditional polling: 800ms while anything is importing/
+      // embedding (rows flip live), 10s when idle (cheap freshness — the list
+      // also refreshes on every user action). The old constant 800ms poll ran
+      // forever with the panel open.
+      if (!disposed) {
+        const delay = activeIds.size > 0 ? 800 : 10_000
+        timer = window.setTimeout(() => { void poll() }, delay)
+      }
     }
     void poll()
     return () => {
@@ -457,13 +477,13 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     if (trimmed === '') return
     void run(async () => {
       try {
-        await api.addUrlDocument(selectedBaseId, trimmed)
+        await api.addUrlDocument(selectedBaseId, trimmed, currentDirectoryId ?? undefined)
         onImported(trimmed)
       } catch (err) {
         notify('error', err instanceof Error ? err.message : String(err))
       }
     })
-  }, [api, run, onImported, notify, selectedBaseId])
+  }, [api, run, onImported, notify, selectedBaseId, currentDirectoryId])
 
   // Cherry Studio parity: every picked file becomes a row immediately (parsing
   // status) and the per-base worker pool processes them in the background; the
@@ -487,7 +507,11 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     for (const file of accepted) {
       try {
         const contentBase64 = await readFileAsBase64(file)
-        await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64)
+        // Files added while inside a directory land IN that directory
+        // (Cherry disables adding inside directories; carrying the parent id
+        // keeps the drill-down consistent instead of silently dropping the
+        // file at the base root).
+        await api.addFileDocument(selectedBaseId, file.webkitRelativePath || file.name, file.type || 'application/octet-stream', contentBase64, undefined, currentDirectoryId ?? undefined)
       } catch (err) {
         failed += 1
         if (firstError === '') firstError = err instanceof Error ? err.message : String(err)
@@ -500,7 +524,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       notify('warning', `${accepted.length - failed}/${accepted.length} ${t('uploaded')}`)
       notify('error', `${failed} ${t('importFailed')}: ${firstError}`)
     }
-  }, [api, notify, reloadDocuments, selectedBaseId, t])
+  }, [api, notify, reloadDocuments, selectedBaseId, currentDirectoryId, t])
 
   // ── drag & drop upload (Cherry Studio drops files onto the knowledge list) ──
 
@@ -1114,6 +1138,13 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                   entries={addSourceMenu}
                                 />
                               </div>
+                              {globalConfig !== null
+                                && globalConfig.embeddingProvider === 'local'
+                                && localEmbeddingDownloaded === false && (
+                                <div style={{ ...style.warningHint, marginTop: 14, maxWidth: 420, marginLeft: 'auto', marginRight: 'auto', textAlign: 'center' }}>
+                                  {t('embeddingModelMissingHint')}
+                                </div>
+                              )}
                             </div>
                           ) : (
                             <div style={style.empty}>

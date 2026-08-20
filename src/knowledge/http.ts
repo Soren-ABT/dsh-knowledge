@@ -279,6 +279,7 @@ async function route(
               baseId,
               url: body.url,
               ...(typeof body.title === 'string' ? { title: body.title } : {}),
+              ...(typeof body.parentDirectoryId === 'string' ? { parentDirectoryId: body.parentDirectoryId } : {}),
             } satisfies ImportUrlRequest)
           }
           const request = body as Partial<AddTextDocumentRequest & AddFileDocumentRequest>
@@ -300,6 +301,7 @@ async function route(
             baseId,
             title: typeof body.title === 'string' ? body.title : 'untitled',
             content: typeof body.content === 'string' ? body.content : '',
+            ...(typeof body.parentDirectoryId === 'string' ? { parentDirectoryId: body.parentDirectoryId } : {}),
           })
         }
       }

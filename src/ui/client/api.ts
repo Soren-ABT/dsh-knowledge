@@ -374,8 +374,11 @@ export class KnowledgeApi {
     return this.call('GET', `/bases/${encodeURIComponent(baseId)}/documents`)
   }
 
-  addTextDocument(baseId: string, title: string, content: string): Promise<{ id: string; title: string; chunkCount: number }> {
-    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/documents`, { baseId, title, content })
+  addTextDocument(baseId: string, title: string, content: string, parentDirectoryId?: string): Promise<{ id: string; title: string; chunkCount: number }> {
+    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/documents`, {
+      baseId, title, content,
+      ...(parentDirectoryId !== undefined ? { parentDirectoryId } : {}),
+    })
   }
 
   addFileDocument(
@@ -399,8 +402,11 @@ export class KnowledgeApi {
     })
   }
 
-  addUrlDocument(baseId: string, url: string): Promise<{ id: string; title: string; chunkCount: number }> {
-    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/documents`, { baseId, url })
+  addUrlDocument(baseId: string, url: string, parentDirectoryId?: string): Promise<{ id: string; title: string; chunkCount: number }> {
+    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/documents`, {
+      baseId, url,
+      ...(parentDirectoryId !== undefined ? { parentDirectoryId } : {}),
+    })
   }
 
   startDirectoryImport(baseId: string, path: string): Promise<{ jobId: string; total: number }> {

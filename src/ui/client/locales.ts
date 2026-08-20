@@ -180,6 +180,7 @@ export type KnowledgeKey =
   | 'ollamaUnreachable'
   | 'embeddingSwitchWarning'
   | 'staleModelSuffix'
+  | 'embeddingModelMissingHint'
   | 'localModelHint'
   | 'localModelReady'
   | 'localModelDownloading'
@@ -430,6 +431,7 @@ export const zh: Record<KnowledgeKey, string> = {
   ollamaUnreachable: '无法连接 Ollama（检查地址或是否已启动）',
   embeddingSwitchWarning: '⚠ 切换嵌入模型会使本库已有向量全部失效，保存会被拒绝——请改用「重建知识库」以新模型重建（或先清空本库文档）',
   staleModelSuffix: '（未安装）',
+  embeddingModelMissingHint: '嵌入模型使用本地模型，但尚未下载——导入的内容将无法向量化检索。请先到「设置 → 本地模型」下载嵌入模型（约 585MB）。',
   localModelReady: '本地模型就绪',
   localModelDownloading: '模型下载中',
   localModelError: '模型加载失败',
@@ -677,6 +679,7 @@ export const en: Record<KnowledgeKey, string> = {
   ollamaUnreachable: 'Cannot reach Ollama (check the address or whether it is running)',
   embeddingSwitchWarning: '⚠ Switching the embedding model invalidates this base\'s stored vectors, so the save will be refused — rebuild via 重建知识库 with the new model instead (or empty the base first)',
   staleModelSuffix: ' (not installed)',
+  embeddingModelMissingHint: 'The embedding provider is the local model, which is not downloaded yet — imported content cannot be vectorized for retrieval. Download the embedding model (~585MB) in Settings → Local Models first.',
   localModelReady: 'Local model ready',
   localModelDownloading: 'Downloading model',
   localModelError: 'Model load failed',
