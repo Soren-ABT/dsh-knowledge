@@ -655,10 +655,27 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     })
   }, [api, run, reloadDocuments, notify, selectedDocId, t])
 
+  // All descendants of a directory row (every nesting level), for the
+  // optimistic processing marks — a reindex touches the whole subtree.
+  const collectSubtreeIds = useCallback((rootId: string): string[] => {
+    const ids: string[] = []
+    const walk = (parentId: string): void => {
+      for (const doc of documents) {
+        if (doc.parentDirectoryId === parentId) {
+          ids.push(doc.id)
+          walk(doc.id)
+        }
+      }
+    }
+    walk(rootId)
+    return [rootId, ...ids]
+  }, [documents])
+
   const reindexDoc = useCallback(async (doc: DocumentSummary): Promise<void> => {
-    // Optimistic: mark the folder AND its children as processing immediately
-    // (a fast reindex would otherwise finish before any poll observes it).
-    const optimisticIds = [doc.id, ...documents.filter(d => d.parentDirectoryId === doc.id).map(d => d.id)]
+    // Optimistic: mark the folder and its WHOLE subtree (all nesting levels)
+    // as processing immediately — a fast reindex would otherwise finish
+    // before any poll observes it, leaving deep folders/files on 'ready'.
+    const optimisticIds = collectSubtreeIds(doc.id)
     setOptimisticProcessing(prev => new Set([...prev, ...optimisticIds]))
     // Kick the poll BEFORE the request: the host reindexes synchronously and
     // rows flip parsing → embedding NN% server-side while the request is in
@@ -675,7 +692,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       for (const id of optimisticIds) next.delete(id)
       return next
     })
-  }, [api, run, reloadDocuments, notify, t, documents])
+  }, [api, run, reloadDocuments, notify, t, collectSubtreeIds])
 
   const refreshUrlDoc = useCallback(async (doc: DocumentSummary): Promise<void> => {
     await run(async () => {
@@ -716,7 +733,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       notify('warning', t('bulkReindexNone'))
       return
     }
-    const optimisticIds = reindexable.map(doc => doc.id)
+    const optimisticIds = reindexable.flatMap(doc => collectSubtreeIds(doc.id))
     setOptimisticProcessing(prev => new Set([...prev, ...optimisticIds]))
     setPollKick(kick => kick + 1)
     await run(async () => {
@@ -731,7 +748,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       for (const id of optimisticIds) next.delete(id)
       return next
     })
-  }, [api, run, reloadDocuments, notify, checkedDocs, t])
+  }, [api, run, reloadDocuments, notify, checkedDocs, t, collectSubtreeIds])
 
   const bulkDelete = useCallback(async (): Promise<void> => {
     await run(async () => {
@@ -1241,7 +1258,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                     // source-backed folder) — Cherry's directory preparing.
                                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: C.accent }}>
                                       <span className="kb-spinner" style={{ ...style.spinner, width: 10, height: 10, borderWidth: 2 }} />
-                                      {doc.indexingPhase === 'parsing' ? t('statusParsing') : t('statusProcessing')}
+                                      {doc.indexingPhase === 'parsing' || optimisticProcessing.has(doc.id) ? t('statusParsing') : t('statusProcessing')}
                                     </span>
                                   ) : (
                                     // Cherry's directory completed → ready badge (dsh used a
