@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — next npm release (0.3.1)
+## 0.3.1 — Full-project audit fixes + AGPL-3.0 relicensing (npm release, 2026-08-20)
 
 ### License
 

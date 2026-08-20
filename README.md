@@ -65,7 +65,7 @@
 dsh plugin --profile <name> add dsh-knowledge
 
 # 从发布 tarball（GitHub Releases 或 npm pack 产物）
-dsh plugin --profile <name> add ./dsh-knowledge-0.3.0.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.3.1.tgz
 
 # 从本地源码目录（需先构建，见下方「开发」）
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge

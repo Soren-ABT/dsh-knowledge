@@ -58,7 +58,7 @@ The package declares `dsh.bundle.patch`, so `dsh plugin add` registers it automa
 ```bash
 dsh plugin --profile <name> add dsh-knowledge          # from npm
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
-dsh plugin --profile <name> add ./dsh-knowledge-0.3.0.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.3.1.tgz
 ```
 
 > **pnpm 10+ build allowlist (required)**: the plugin's dependencies `onnxruntime-node`, `sharp`, `protobufjs`, and `tesseract.js` ship postinstall scripts that pnpm refuses to run by default and exits non-zero — `dsh plugin add` then **stops before registering the bundle, so the plugin never activates**. Add this to the profile's `pnpm-workspace.yaml` **before** installing, then run the add:
