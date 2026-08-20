@@ -650,6 +650,11 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   }, [api, run, reloadDocuments, notify, selectedDocId, t])
 
   const reindexDoc = useCallback(async (doc: DocumentSummary): Promise<void> => {
+    // Kick the poll BEFORE the request: the host reindexes synchronously and
+    // rows flip parsing → embedding NN% server-side while the request is in
+    // flight — the poll must be running to surface that live state (Cherry's
+    // reindex job reports progress continuously).
+    setPollKick(kick => kick + 1)
     await run(async () => {
       await api.reindexDocument(doc.id)
       notify('success', `${t('reindexDone')}: ${doc.title}`)
@@ -696,6 +701,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       notify('warning', t('bulkReindexNone'))
       return
     }
+    setPollKick(kick => kick + 1)
     await run(async () => {
       const result = await api.reindexDocuments(reindexable.map(doc => doc.id))
       const totalSkipped = skipped + (result.skipped ?? 0)

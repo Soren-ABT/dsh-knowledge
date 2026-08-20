@@ -256,6 +256,19 @@ const pdfjsWasmUrl: string | undefined = (() => {
   }
 })()
 
+/** pdfjs-dist's cmaps directory: CID-keyed CJK fonts (SimSun/NSimSun/KaiTi…)
+ *  map glyph ids to characters through these — without it pdfjs warns
+ *  'cMapUrl/cMapPacked missing' and CJK text extraction silently degrades. */
+const pdfjsCMapUrl: string | undefined = (() => {
+  try {
+    const require = createRequire(import.meta.url)
+    const pkg = require.resolve('pdfjs-dist/package.json')
+    return `${dirname(pkg).replace(/\\/g, '/')}/cmaps/`
+  } catch {
+    return undefined
+  }
+})()
+
 /**
  * Page renderer — mupdf (Artifex' WASM build). pdfjs's CanvasGraphics
  * rendering onto @napi-rs/canvas crashes the process (native incompatibility
@@ -443,6 +456,8 @@ export async function extractPdfImages(bytes: Uint8Array): Promise<Array<PdfImag
     // Fake-worker mode cannot derive the image-decoder wasm path by itself on
     // some hosts — point it at pdfjs-dist/wasm explicitly (trailing slash).
     ...(pdfjsWasmUrl !== undefined ? { wasmUrl: pdfjsWasmUrl } : {}),
+    // CID-font cmaps for CJK PDFs (SimSun etc.) — see pdfjsCMapUrl above.
+    ...(pdfjsCMapUrl !== undefined ? { cMapUrl: pdfjsCMapUrl, cMapPacked: true } : {}),
   })
   try {
     const doc = await loadingTask.promise as { numPages: number; getPage(n: number): Promise<unknown> }

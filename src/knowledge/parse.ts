@@ -146,11 +146,25 @@ async function extractTextWithLayout(bytes: Uint8Array): Promise<string> {
       destroy(): Promise<void>
     }
   }
+  // CID-keyed CJK fonts (SimSun/NSimSun/KaiTi…) need pdfjs-dist's cmaps to
+  // map glyph ids to characters; without them extraction silently degrades
+  // for Chinese PDFs (and pdfjs warns about cMapUrl/cMapPacked).
+  let cMapUrl: string | undefined
+  try {
+    const { createRequire } = await import('node:module')
+    const { dirname } = await import('node:path')
+    const require = createRequire(import.meta.url)
+    const pkg = require.resolve('pdfjs-dist/package.json')
+    cMapUrl = `${dirname(pkg).replace(/\\/g, '/')}/cmaps/`
+  } catch {
+    // cmaps unavailable — extraction still works for non-CID fonts
+  }
   const loadingTask = pdfjs.getDocument({
     data: Uint8Array.from(bytes),
     disableWorker: true,
     isEvalSupported: false,
     useSystemFonts: true,
+    ...(cMapUrl !== undefined ? { cMapUrl, cMapPacked: true } : {}),
   })
   try {
     const doc = await loadingTask.promise as { numPages: number; getPage(n: number): Promise<unknown> }
