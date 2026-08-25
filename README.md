@@ -105,7 +105,7 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 
 ## 兼容性
 
-- **DSH 版本**：在 [deepseek-harness](https://github.com/deepseek-ai/DeepSeek-Harness) 提交 `47f943859b`（2026-08，npm 插件生态时代）上开发并验证。插件不再声明 peer 依赖——DSH 宿主以 externals 注入 cordis/zod/存储等运行时；更新的 DSH 源码也能无解析错误安装。若新版 DSH 出现兼容问题，请带上你运行的 DSH 提交号提 issue。
+- **DSH 版本**：在 [deepseek-harness](https://github.com/deepseek-ai/DeepSeek-Harness) 提交 `b150a55`（2026.8.21）上开发并验证。插件不再声明 peer 依赖——DSH 宿主以 externals 注入 cordis/zod/存储等运行时；更新的 DSH 源码也能无解析错误安装。若新版 DSH 出现兼容问题，请带上你运行的 DSH 提交号提 issue。
 - **Node.js**：`^22.19.0 || >=24.0.0`（与 DSH 自身要求一致——分块存储使用 Node 内置 `node:sqlite`，DSH 自己的会话存储也在用）。
 - **平台**：Windows / macOS（Apple Silicon）/ Linux x64 + arm64 全功能。旧版 `.doc` / `.ppt` / `.xls` 解析依赖 `@firecrawl/anydoc`（各平台原生二进制）；`@napi-rs/canvas` 的 Windows 平台包声明为 optionalDependencies，非 Windows 平台自动跳过。**Intel Mac（darwin-x64）**：onnxruntime 无该平台二进制，本地嵌入与本地 OCR 不可用，请用远程嵌入（OpenAI 兼容 / Ollama）。
 - **首次运行联网**：启用 `embeddingProvider: local` 后首次使用会从 Hugging Face 下载模型权重（缓存于 `localModelCacheDir`）；OCR 模型（约 21MB）在设置 → 本地模型页下载。两者都可经面板的 `hfEndpoint` 字段或环境变量 `HF_ENDPOINT` 指向镜像（OCR 默认 hf-mirror.com，海外可改为 huggingface.co）。
