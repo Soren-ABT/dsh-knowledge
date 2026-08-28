@@ -14,11 +14,32 @@ import type { KnowledgeService } from '../knowledge/index.js'
 import type { SearchHit, SearchResult } from '../knowledge/types.js'
 
 /** Services required before the tools can register. */
-export const inject = ['knowledge', 'tools']
+export const inject = ['knowledge', 'tools', 'systemPrompt']
 
 /** Register the knowledge tool surface. */
 export function apply(ctx: Context): void {
   const knowledge = ctx.knowledge
+
+  // Proactive-use guidance: the model decides whether to call a tool from its
+  // system prompt, so a deployment that never says "use the knowledge base"
+  // still gets knowledge_search called for facts that may live in imported
+  // material. The section renders only while knowledge is enabled AND at
+  // least one base exists (an empty/disabled deployment contributes nothing).
+  ctx.systemPrompt.section({
+    name: 'knowledge:usage',
+    order: 110,
+    text: () => {
+      if (!knowledge.isEnabled()) return ''
+      const bases = knowledge.listBases()
+      if (bases.length === 0) return ''
+      const names = bases.map(base => base.name).join(', ')
+      return 'You have access to knowledge bases (' + names + '). '
+        + 'When the user asks about facts, internal documents, specific numbers, or anything that may '
+        + 'exist in their imported material (reports, manuals, notes, archived web pages) — even if they '
+        + 'never mention a knowledge base — proactively call `knowledge_search` before answering, and '
+        + 'quote the returned excerpts with their citations instead of answering from general knowledge alone.'
+    },
+  })
 
   // Invocation switch: when knowledge is disabled in the panel, every
   // knowledge_* tool is denied (Cherry's kb_* `applies` gate equivalent).
@@ -32,7 +53,10 @@ export function apply(ctx: Context): void {
     name: 'knowledge_search',
     description: 'Search a knowledge base for chunks relevant to a query. '
       + 'Returns ranked excerpts with scores (hybrid BM25+vector when embeddings exist, lexical otherwise) '
-      + 'that the caller should quote when answering. Omit baseId to search every base.',
+      + 'that the caller should quote when answering. Omit baseId to search every base. '
+      + 'USE THIS PROACTIVELY: whenever the user asks about facts, internal documents, specific numbers, '
+      + 'or anything that may exist in their imported material — even if they never said "knowledge base" — '
+      + 'search BEFORE answering so the reply cites the sources.',
     parameters: {
       query: { type: 'string', required: true, description: 'The search query.' },
       baseId: { type: 'string', description: 'Optional knowledge base id to restrict the search to.' },
