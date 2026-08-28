@@ -695,6 +695,7 @@ export function apply(ctx: Context): void {
       autoRetrieveInjectedAt.delete(agent.id)
       lastInjectedKeywords.delete(agent.id)
       recentUserTexts.delete(agent.id)
+      injectedChunkIds.delete(agent.id)
     })
   })
 }
@@ -730,6 +731,17 @@ const AUTO_RETRIEVE_MIN_INTERVAL_MS = 5 * 60_000
 const AUTO_RETRIEVE_CONTEXT_TURNS = 2
 /** Per-chunk character cap for injected background (long documents stay bounded). */
 const AUTO_RETRIEVE_CHUNK_MAX_CHARS = 300
+/** Absolute floor for the top hit (a score below this is noise, period). */
+const AUTO_RETRIEVE_ABS_MIN_SCORE = 0.12
+/** The top hit must lead the runner-up by at least this factor — a flat set of
+ *  weak matches has no clear winner and injects nothing. */
+const AUTO_RETRIEVE_LEAD_RATIO = 1.2
+/** Chunks kept alongside the top hit: score ≥ top × this (the "same relevance group"). */
+const AUTO_RETRIEVE_GROUP_RATIO = 0.6
+/** Candidate pool fetched from the store (multi-base coverage before per-base voting). */
+const AUTO_RETRIEVE_CANDIDATE_POOL = 12
+/** Chunk-id memory cap for injection dedup; over it the memory resets. */
+const AUTO_RETRIEVE_MAX_MEMORY = 50
 
 /** Last injection time per agent id (throttle). */
 const autoRetrieveInjectedAt = new Map<string, number>()
@@ -737,6 +749,8 @@ const autoRetrieveInjectedAt = new Map<string, number>()
 const lastInjectedKeywords = new Map<string, string[]>()
 /** Recent user-message texts per agent id (follow-up retrieval context). */
 const recentUserTexts = new Map<string, string[]>()
+/** Chunk ids already injected per agent id (dedup across turns). */
+const injectedChunkIds = new Map<string, Set<string>>()
 
 /** Search the bases for `text` and inject relevant chunks as agent background. */
 export async function autoRetrieveBackground(
@@ -763,20 +777,42 @@ export async function autoRetrieveBackground(
     // An explicit library mention ("看看 atest 里的…") restricts the search to
     // that base — cross-base noise otherwise dilutes a clearly scoped request.
     const namedBase = bases.find(base => base.name !== '' && text.includes(base.name))
-    const searchResult = await knowledge.search(
-      namedBase !== undefined
-        ? { query, topK: AUTO_RETRIEVE_TOP_K, mode: 'lexical', baseId: namedBase.id }
-        : { query, topK: AUTO_RETRIEVE_TOP_K, mode: 'lexical' },
-    )
+    const searchRequest = namedBase !== undefined
+      ? { query, topK: AUTO_RETRIEVE_CANDIDATE_POOL, mode: 'lexical' as const, baseId: namedBase.id }
+      : { query, topK: AUTO_RETRIEVE_CANDIDATE_POOL, mode: 'lexical' as const }
+    const searchResult = await knowledge.search(searchRequest)
     // A hit only counts when its text actually shares keywords with the query
     // — a high BM25 score without any overlapping term is a degenerate match.
-    const relevant = searchResult.hits.filter(hit => hit.score >= AUTO_RETRIEVE_MIN_SCORE && sharesKeywords(query, hit.text))
-    if (relevant.length === 0) return
+    const scored = searchResult.hits.filter(hit => sharesKeywords(query, hit.text)).sort((a, b) => b.score - a.score)
+    const top1 = scored[0]
+    // Adaptive relevance: an absolute floor, then a clear lead over the
+    // runner-up — a flat set of weak matches has no winner and injects nothing.
+    if (top1 === undefined || top1.score < AUTO_RETRIEVE_ABS_MIN_SCORE) return
+    const runnerUp = scored[1]
+    if (runnerUp !== undefined && top1.score < runnerUp.score * AUTO_RETRIEVE_LEAD_RATIO) return
+    // Keep the top hit's relevance group; when multiple bases are represented,
+    // vote one chunk per base so no single library monopolizes the injection.
+    const groupFloor = top1.score * AUTO_RETRIEVE_GROUP_RATIO
+    const inGroup = scored.filter(hit => hit.score >= groupFloor)
+    const perBaseTop = new Map<string, typeof scored[number]>()
+    for (const hit of inGroup) if (!perBaseTop.has(hit.baseId)) perBaseTop.set(hit.baseId, hit)
+    let chosen: typeof scored = perBaseTop.size > 1
+      ? [...perBaseTop.values()].slice(0, AUTO_RETRIEVE_TOP_K)
+      : inGroup.slice(0, AUTO_RETRIEVE_TOP_K)
+    // Dedup across turns: chunks already injected for this agent are skipped.
+    const injected = injectedChunkIds.get(agent.id) ?? new Set<string>()
+    const fresh = chosen.filter(hit => !injected.has(hit.chunkId))
+    if (fresh.length === 0) return
+    chosen = fresh.slice(0, AUTO_RETRIEVE_TOP_K)
+    const nextInjected = new Set(injected)
+    for (const hit of chosen) nextInjected.add(hit.chunkId)
+    if (nextInjected.size > AUTO_RETRIEVE_MAX_MEMORY) nextInjected.clear()
+    injectedChunkIds.set(agent.id, nextInjected)
     const clip = (chunk: string): string =>
       chunk.length > AUTO_RETRIEVE_CHUNK_MAX_CHARS ? `${chunk.slice(0, AUTO_RETRIEVE_CHUNK_MAX_CHARS)}…` : chunk
     const nameOf = (baseId: string): string => bases.find(base => base.id === baseId)?.name ?? baseId
     const background = 'Relevant background retrieved automatically from the user\'s imported knowledge (use and cite it when it answers the question):\n'
-      + relevant.map(hit => `[${nameOf(hit.baseId)} / ${hit.documentTitle}${hit.heading !== undefined && hit.heading.length > 0 ? ` / ${hit.heading}` : ''}] ${clip(hit.text)}`).join('\n\n')
+      + chosen.map(hit => `[${nameOf(hit.baseId)} / ${hit.documentTitle}${hit.heading !== undefined && hit.heading.length > 0 ? ` / ${hit.heading}` : ''}] ${clip(hit.text)}`).join('\n\n')
     agent.inject({
       role: 'user',
       content: [{ type: 'text', text: background }],

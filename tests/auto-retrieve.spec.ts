@@ -24,8 +24,8 @@ function stubAgent(): { id: string; inject(message: unknown): void; injected: un
   return { id: `test-agent-${agentSeq}`, inject: (message) => { injected.push(message) }, injected }
 }
 
-const hit = (text: string, score: number, title = 'doc', heading?: string): SearchResult['hits'][number] =>
-  ({ chunkId: 'c', docId: 'd', baseId: 'b0', documentTitle: title, text, score, index: 0, ...(heading !== undefined ? { heading } : {}) })
+const hit = (text: string, score: number, title = 'doc', heading?: string, baseId = 'b0', chunkId?: string): SearchResult['hits'][number] =>
+  ({ chunkId: chunkId ?? `c-${text.slice(0, 8)}`, docId: 'd', baseId, documentTitle: title, text, score, index: 0, ...(heading !== undefined ? { heading } : {}) })
 
 describe('autoRetrieveBackground', () => {
   it('injects a background message when the top hit clears the relevance gate', async () => {
@@ -164,6 +164,41 @@ describe('autoRetrieveBackground', () => {
     await autoRetrieveBackground(knowledge as never, agent as never, '看看 base0 里的报销流程')
     expect(searched.length).toBe(1)
     expect(searched[0].baseId).toBe('b0')
+    expect(agent.injected).toHaveLength(1)
+  })
+
+  it('votes one chunk per base when multiple bases are represented', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      baseCount: 2,
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 4, reranked: false, elapsedMs: 0,
+        hits: [
+          hit('base0 top content', 0.8, 'docA', undefined, 'b0'),
+          hit('base1 top content', 0.6, 'docB', undefined, 'b1'),
+          hit('base0 second content', 0.55, 'docC', undefined, 'b0'),
+        ],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, 'look for the relevant content')
+    const message = agent.injected[0] as { content: Array<{ text: string }> }
+    expect(message.content[0].text).toContain('base0 top')
+    expect(message.content[0].text).toContain('base1 top')
+    // The same-base second chunk loses the per-base vote.
+    expect(message.content[0].text).not.toContain('base0 second')
+  })
+
+  it('does not re-inject a chunk already injected for the same agent', async () => {
+    const agent = stubAgent()
+    const hits = [hit('报销流程是提交发票后审批', 0.6, '手册')]
+    const knowledge = stubKnowledge({
+      search: async () => ({ query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, '报销流程是什么？')
+    expect(agent.injected).toHaveLength(1)
+    // Same chunk returns for a later (new-topic-keyword) query — dedup suppresses it.
+    hits[0] = hit('报销流程是提交发票后审批', 0.7, '手册')
+    await autoRetrieveBackground(knowledge as never, agent as never, '发票审批的步骤是什么')
     expect(agent.injected).toHaveLength(1)
   })
 })
