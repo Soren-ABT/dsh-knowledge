@@ -296,6 +296,30 @@ try {
   }
   rerankServer.close()
 
+  // ── 15. noise/symbol boundary ───────────────────────────────────────────────
+  // A trap base holds docs whose words (好的, 12345678) appear in the noise
+  // inputs below — a false positive would show up as an injection. Pure
+  // symbols, chit-chat, repeated filler, and bare digits must never inject;
+  // a short valid query wrapped in symbols still does (no raw-length gate).
+  console.log('\n15. noise/symbol boundary')
+  const noiseBase = await service.createBase({ name: '噪声库' })
+  await service.addTextDocument({ baseId: noiseBase.id, title: '客服常用语', content: '好的，收到，谢谢。请稍等，我马上帮您处理。' })
+  await service.addTextDocument({ baseId: noiseBase.id, title: '编号', content: '产品编号 12345678 与 2024-01-01 对应。' })
+  await service.waitForIdle()
+  const expectNone = async (label: string, input: string): Promise<void> => {
+    const agent = stubAgent(`noise-${label}`)
+    await autoRetrieveBackground(service as never, agent as never, input)
+    check(`${label} injects nothing`, agent.injected.length === 0, `got ${agent.injected.length}`)
+  }
+  await expectNone('pure symbols', '！！！！！！！！')
+  await expectNone('chit-chat', '？？你好啊？？哈哈 今天天气真不错 ！！！')
+  await expectNone('repeated filler', '好的好的好的')
+  await expectNone('bare digits', '12345678')
+  await expectNone('laugh', '哈哈哈哈哈哈哈哈哈')
+  const a13 = stubAgent('short-query')
+  await autoRetrieveBackground(service as never, a13 as never, '报销流程？')
+  check('short symbol-wrapped query still injects', a13.injected.length === 1, `got ${a13.injected.length}`)
+
   console.log(`\n${checks} checks, ${failures} failed`)
   console.log(failures === 0 ? 'ALL STRESS CHECKS PASSED' : `${failures} STRESS CHECK(S) FAILED`)
 } finally {

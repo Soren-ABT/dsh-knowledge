@@ -680,7 +680,11 @@ export function apply(ctx: Context): void {
         .map(block => block.text ?? '')
         .join(' ')
         .trim()
-      if (text.length < AUTO_RETRIEVE_MIN_CHARS) return
+      // No raw-length gate here: it would count symbols and starve short but
+      // valid queries ("报销流程？" is 5 chars and must still retrieve). The
+      // real filters live inside autoRetrieveBackground — cleaned query
+      // non-empty, topic signal present, and CJK/word signal — so pure
+      // symbols, filler, and bare digits all die there before any search.
       // Follow-up context: keep the last few user messages and query with
       // them joined, so a deictic follow-up ("那第二步呢？") still retrieves
       // the document the earlier turn established.
@@ -712,7 +716,9 @@ interface AutoRetrieveMessage {
   readonly content: ReadonlyArray<{ readonly type?: string; readonly text?: string }>
 }
 
-/** Shortest user message worth probing the bases for (greetings/single tokens skip). */
+/** Shortest user message worth probing the bases for (greetings/single tokens
+ *  skip). Retained for reference; the live guards are the cleaned-query and
+ *  topic-signal checks inside autoRetrieveBackground. */
 const AUTO_RETRIEVE_MIN_CHARS = 8
 /** How many top chunks to inject as background. */
 const AUTO_RETRIEVE_TOP_K = 3
@@ -781,6 +787,18 @@ export async function autoRetrieveBackground(
     // Topic signal excludes generic bigrams ('什么' shared by every question
     // tail would otherwise make unrelated topics look like follow-ups).
     const topicSignal = topicKeywords(keywords)
+    // Signal gate: a message must carry real retrieval intent. Pure filler
+    // (好的好的/哈哈哈哈 — all generic bigrams) or a bare digit/version/URL
+    // (12345678, v1.2.3) has no CJK or word signal and never searches;
+    // symbols are already stripped by cleanRetrieveQuery, so '报销流程！！！'
+    // still retrieves while '！！！' dies here.
+    const hasCjkSignal = topicSignal.some(keyword => /[\u4e00-\u9fff]/.test(keyword))
+    const hasWordSignal = topicSignal.some(keyword => /^[a-z]{3,}$/i.test(keyword))
+    // Repetitive filler (好的好的好的, 哈哈哈哈哈) has no retrieval intent even
+    // though its cross-boundary bigrams would pass the CJK-signal check above.
+    const runs = query.match(/[\u4e00-\u9fff]+/g) ?? []
+    const fillerOnly = runs.length > 0 && runs.every(run => isRepetitiveRun(run))
+    if (topicSignal.length === 0 || (!hasCjkSignal && !hasWordSignal) || fillerOnly) return
     const sameTopic = prevKeywords.length > 0 && topicSignal.some(keyword => prevKeywords.includes(keyword))
     // Same-topic follow-up inside the window: its background was just injected,
     // skip (prevents context accumulation). A NEW topic always gets a chance.
@@ -927,15 +945,35 @@ function retrieveKeywords(text: string): string[] {
 
 /** Generic CJK bigrams with no topic signal (question tails, filler) — the
  *  topic-aware throttle must ignore these, or '制度是什么' vs '流程是什么'
- *  would share '什么' and read as the same topic. */
+ *  would share '什么' and read as the same topic. Also covers spoken filler
+ *  (好的/收到/哈哈…) so a pure-acknowledgement message carries no retrieval
+ *  signal and never triggers a search. */
 const RETRIEVE_GENERIC_BIGRAMS = new Set([
   '什么', '是什', '怎么', '么样', '如何', '为什', '哪个', '哪些', '哪里', '怎样',
   '这样', '那样', '这个', '那个', '一下', '请问', '帮我', '知道', '应该', '可以', '需要',
+  '好的', '收到', '谢谢', '哈哈', '嗯嗯', '呵呵', '嘻嘻', '嘿嘿', '哦哦', '啊啊', '嗯呢',
+  '好吧', '是的', '没错', '对啊', '对呀', '是吗', '明白', '了解', '行吧', '算了', '没事',
+  '再见', '拜拜', '早安', '晚安', '加油', '辛苦', '感谢', '客气', '不错', '挺好',
 ])
 
 /** Topic signal of a query: keywords minus generic bigrams. */
 function topicKeywords(keywords: string[]): string[] {
   return keywords.filter(keyword => !RETRIEVE_GENERIC_BIGRAMS.has(keyword))
+}
+
+/** True when a CJK run is a single unit repeated (哈哈哈哈, 好的好的好的,
+ *  哈哈哈…): pure spoken filler. Its cross-boundary bigrams (好的/的好) would
+ *  otherwise form a bogus topic signal and could retrieve a chunk that merely
+ *  contains the filler word. */
+function isRepetitiveRun(run: string): boolean {
+  if (run.length < 4) return false
+  const chars = [...run]
+  if (chars.every(ch => ch === chars[0])) return true
+  const pair = run.slice(0, 2)
+  if (run.length % 2 === 0 && run === pair.repeat(run.length / 2)) return true
+  const triple = run.slice(0, 3)
+  if (run.length % 3 === 0 && run === triple.repeat(run.length / 3)) return true
+  return false
 }
 
 /** Build the BM25 query: drop English stopwords but keep CJK runs WHOLE — the

@@ -102,6 +102,51 @@ describe('autoRetrieveBackground', () => {
     expect(agent.injected).toHaveLength(0)
   })
 
+  it('never searches for repeated filler even when a chunk contains the word', async () => {
+    const agent = stubAgent()
+    let searches = 0
+    const knowledge = stubKnowledge({
+      search: async () => {
+        searches += 1
+        return { query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('好的，收到，谢谢。请稍等。', 0.3)] }
+      },
+    })
+    // 好的好的好的 / 哈哈哈哈哈 are spoken filler: the signal gate must stop
+    // them BEFORE the search lane runs, so no chunk containing 好的 can leak.
+    await autoRetrieveBackground(knowledge as never, agent as never, '好的好的好的')
+    expect(searches).toBe(0)
+    expect(agent.injected).toHaveLength(0)
+    await autoRetrieveBackground(knowledge as never, agent as never, '哈哈哈哈哈哈哈哈哈')
+    expect(searches).toBe(0)
+    expect(agent.injected).toHaveLength(0)
+  })
+
+  it('never searches for a bare digit string', async () => {
+    const agent = stubAgent()
+    let searches = 0
+    const knowledge = stubKnowledge({
+      search: async () => {
+        searches += 1
+        return { query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('产品编号 12345678 对应订单', 0.3)] }
+      },
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, '12345678')
+    expect(searches).toBe(0)
+    expect(agent.injected).toHaveLength(0)
+  })
+
+  it('retrieves a short symbol-wrapped query (no raw-length gate)', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      search: async () => ({ query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('报销流程是提交发票后审批', 0.7, '手册')] }),
+    })
+    // 7 raw characters including the punctuation — the old entry gate (<8)
+    // starved it; the signal gate passes it because the cleaned query carries
+    // a real topic.
+    await autoRetrieveBackground(knowledge as never, agent as never, '报销流程？')
+    expect(agent.injected).toHaveLength(1)
+  })
+
   it('injects nothing when the deployment is disabled or has no bases', async () => {
     const agent = stubAgent()
     await autoRetrieveBackground(stubKnowledge({ enabled: false }) as never, agent as never, 'some question here')
