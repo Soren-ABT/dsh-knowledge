@@ -599,6 +599,13 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   onChange={(e) => patch({ resumeInterruptedOnStartup: e.target.checked })}
                 />
               </FieldRow>
+              <FieldRow label={t('autoRetrieve')} hint={t('autoRetrieveHint')}>
+                <input
+                  type="checkbox"
+                  checked={values.autoRetrieve}
+                  onChange={(e) => patch({ autoRetrieve: e.target.checked })}
+                />
+              </FieldRow>
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
                 <input
                   style={{ ...style.input, width: 140 }}

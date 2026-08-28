@@ -145,6 +145,7 @@ export interface KnowledgeConfig {
   mineruApiKey: string
   mineruApiHost: string
   resumeInterruptedOnStartup: boolean
+  autoRetrieve: boolean
 }
 
 export interface SearchHit {

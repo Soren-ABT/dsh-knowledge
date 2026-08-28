@@ -40,6 +40,7 @@ const base: Config = {
   imageCaptionBaseUrl: '',
   imageCaptionApiKey: '',
   resumeInterruptedOnStartup: true,
+  autoRetrieve: true,
 }
 
 describe('resolveConfig', () => {

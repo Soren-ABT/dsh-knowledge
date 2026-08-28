@@ -155,6 +155,8 @@ export type KnowledgeKey =
   | 'urlRefreshHours'
   | 'urlRefreshHoursHint'
   | 'resumeInterrupted'
+  | 'autoRetrieve'
+  | 'autoRetrieveHint'
   | 'resumeInterruptedHint'
   | 'imageCaptionHint'
   | 'imageCaptionOff'
@@ -431,6 +433,8 @@ export const zh: Record<KnowledgeKey, string> = {
   urlRefreshHoursHint: '超过该时长的 URL 文档每小时自动重新抓取并更新索引（0 = 关闭）',
   resumeInterrupted: '重启后自动恢复中断的导入',
   resumeInterruptedHint: '关闭后，重启时中断的导入标记为失败（需手动重建），不再自动重跑嵌入（Cherry Studio 行为）',
+  autoRetrieve: '自动检索（用户消息进来时预检索并注入相关背景）',
+  autoRetrieveHint: '开启后，模型回答事实性问题时自动使用知识库内容，无需显式提到“知识库”；关闭后仅按需调用（knowledge_search 工具 + 显式请求）',
   imageCaptionHint: '图表描述（可选）：用视觉模型描述 PDF 中的图片/图表，描述文本可被检索',
   imageCaptionOff: '关闭',
   imageCaptionOpenAI: 'OpenAI 兼容视觉模型',
@@ -709,6 +713,8 @@ export const en: Record<KnowledgeKey, string> = {
   urlRefreshHoursHint: 'URL documents older than this are re-fetched and re-indexed hourly (0 = off)',
   resumeInterrupted: 'Resume interrupted imports on restart',
   resumeInterruptedHint: 'When off, imports interrupted by a shutdown are marked failed instead of auto re-embedding (Cherry Studio behavior)',
+  autoRetrieve: 'Auto-retrieve (pre-search user messages and inject relevant background)',
+  autoRetrieveHint: 'When on, the model automatically uses knowledge-base content for factual questions without an explicit "knowledge base" mention; when off, only on-demand calls (knowledge_search tool + explicit requests)',
   imageCaptionHint: 'Image/table captioning (optional): a vision model describes embedded PDF figures so charts become searchable',
   imageCaptionOff: 'Off',
   imageCaptionOpenAI: 'OpenAI-compatible vision model',

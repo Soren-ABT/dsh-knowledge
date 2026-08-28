@@ -67,6 +67,13 @@ export interface Config {
    * posture: a deliberate app quit must not re-spend the embedding API.
    */
   resumeInterruptedOnStartup: boolean
+  /**
+   * Proactive auto-retrieval: on every user message, cheaply search the
+   * enabled bases and inject clearly relevant chunks as model-visible
+   * background, so imported facts reach the model even without an explicit
+   * "use the knowledge base" instruction or a knowledge_search call.
+   */
+  autoRetrieve: boolean
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -104,6 +111,7 @@ export const Config: Schema<Config> = Schema.object({
   imageCaptionBaseUrl: Schema.string().default(''),
   imageCaptionApiKey: Schema.string().default(''),
   resumeInterruptedOnStartup: Schema.boolean().default(true),
+  autoRetrieve: Schema.boolean().default(true),
 })
 
 /** Resolve a full config from deployment defaults plus runtime overrides. */
@@ -153,6 +161,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     imageCaptionBaseUrl: overrides.imageCaptionBaseUrl ?? config.imageCaptionBaseUrl,
     imageCaptionApiKey: overrides.imageCaptionApiKey ?? config.imageCaptionApiKey,
     resumeInterruptedOnStartup: overrides.resumeInterruptedOnStartup ?? config.resumeInterruptedOnStartup,
+    autoRetrieve: overrides.autoRetrieve ?? config.autoRetrieve,
     localModelCacheDir: overrides.localModelCacheDir ?? config.localModelCacheDir,
   }
 }

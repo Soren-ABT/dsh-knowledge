@@ -670,8 +670,8 @@ export function apply(ctx: Context): void {
   // knowledge bases; when the top hit is clearly relevant, inject the top
   // chunks as model-visible background so facts that live in imported material
   // reach the model even when the user never mentions a knowledge base and the
-  // model never calls knowledge_search. Best-effort: a base-less or disabled
-  // deployment contributes nothing, and a low score injects nothing.
+  // model never calls knowledge_search. Best-effort: a disabled deployment,
+  // no bases, or a below-gate score injects nothing; failures are swallowed.
   ctx.on('agent/created', (payload: { agent: AutoRetrieveAgent }) => {
     const agent = payload.agent
     agent.ctx.on('agent/inbox/claimed', (claimed: { message: AutoRetrieveMessage }) => {
@@ -683,11 +683,14 @@ export function apply(ctx: Context): void {
       if (text.length < AUTO_RETRIEVE_MIN_CHARS) return
       void autoRetrieveBackground(knowledge, agent, text)
     })
+    // Forget this agent's injection throttle when it goes away.
+    agent.ctx.on('agent/disposed', () => { autoRetrieveInjectedAt.delete(agent.id) })
   })
 }
 
 /** Minimal structural view of an agent the auto-retriever injects into. */
 interface AutoRetrieveAgent {
+  readonly id: string
   readonly ctx: Context
   inject(message: unknown): void
 }
@@ -703,6 +706,18 @@ const AUTO_RETRIEVE_MIN_CHARS = 8
 const AUTO_RETRIEVE_TOP_K = 3
 /** BM25 relevance gate: below this the hit is treated as noise, nothing injects. */
 const AUTO_RETRIEVE_MIN_SCORE = 0.2
+/**
+ * Minimum gap between injections for one agent: injected background rides a
+ * user-role message that persists in the session log, so without a throttle a
+ * long conversation accumulates one background dump per turn and inflates the
+ * context for every later step.
+ */
+const AUTO_RETRIEVE_MIN_INTERVAL_MS = 5 * 60_000
+/** Per-chunk character cap for injected background (long documents stay bounded). */
+const AUTO_RETRIEVE_CHUNK_MAX_CHARS = 300
+
+/** Last injection time per agent id (throttle). */
+const autoRetrieveInjectedAt = new Map<string, number>()
 
 /** Search the bases for `text` and inject relevant chunks as agent background. */
 export async function autoRetrieveBackground(
@@ -713,17 +728,23 @@ export async function autoRetrieveBackground(
   try {
     if (!knowledge.isEnabled()) return
     if (knowledge.listBases().length === 0) return
+    if (!knowledge.getConfig().autoRetrieve) return
+    const now = Date.now()
+    if (now - (autoRetrieveInjectedAt.get(agent.id) ?? 0) < AUTO_RETRIEVE_MIN_INTERVAL_MS) return
     const result = await knowledge.search({ query: text.slice(0, 200), topK: AUTO_RETRIEVE_TOP_K, mode: 'lexical' })
     const relevant = result.hits.filter(hit => hit.score >= AUTO_RETRIEVE_MIN_SCORE)
     if (relevant.length === 0) return
+    const clip = (chunk: string): string =>
+      chunk.length > AUTO_RETRIEVE_CHUNK_MAX_CHARS ? `${chunk.slice(0, AUTO_RETRIEVE_CHUNK_MAX_CHARS)}…` : chunk
     const background = 'Relevant background retrieved automatically from the user\'s imported knowledge (use and cite it when it answers the question):\n'
-      + relevant.map(hit => `[${hit.documentTitle}${hit.heading !== undefined && hit.heading.length > 0 ? ` / ${hit.heading}` : ''}] ${hit.text}`).join('\n\n')
+      + relevant.map(hit => `[${hit.documentTitle}${hit.heading !== undefined && hit.heading.length > 0 ? ` / ${hit.heading}` : ''}] ${clip(hit.text)}`).join('\n\n')
     agent.inject({
       role: 'user',
       content: [{ type: 'text', text: background }],
       source: { kind: 'plugin', plugin: 'dsh-knowledge' },
       id: crypto.randomUUID(),
     })
+    autoRetrieveInjectedAt.set(agent.id, now)
   } catch (error) {
     // Best-effort: auto-retrieval must never break a turn.
     console.warn(`[dsh-knowledge] auto-retrieve failed: ${error instanceof Error ? error.message : String(error)}`)

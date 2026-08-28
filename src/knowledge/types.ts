@@ -190,6 +190,8 @@ export interface KnowledgeConfig {
   readonly imageCaptionApiKey: string
   /** Re-run interrupted imports on startup (off = mark them failed, Cherry's posture). */
   readonly resumeInterruptedOnStartup: boolean
+  /** Proactive auto-retrieval on every user message. */
+  readonly autoRetrieve: boolean
 }
 
 /** One file of a batch import (content optional for the detect round). */

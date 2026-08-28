@@ -6,18 +6,22 @@ import type { SearchResult } from '../src/knowledge/types.js'
 function stubKnowledge(overrides: Partial<{
   enabled: boolean
   baseCount: number
+  autoRetrieve: boolean
   search: () => Promise<SearchResult>
 }>): KnowledgeService {
   return {
     isEnabled: () => overrides.enabled ?? true,
     listBases: () => Array.from({ length: overrides.baseCount ?? 1 }, (_, i) => ({ id: `b${i}`, name: `base${i}` } as never)),
+    getConfig: () => ({ autoRetrieve: overrides.autoRetrieve ?? true }) as never,
     search: overrides.search ?? (async () => ({ query: '', mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] })),
   } as unknown as KnowledgeService
 }
 
-function stubAgent(): { inject(message: unknown): void; injected: unknown[] } {
+let agentSeq = 0
+function stubAgent(): { id: string; inject(message: unknown): void; injected: unknown[] } {
+  agentSeq += 1
   const injected: unknown[] = []
-  return { inject: (message) => { injected.push(message) }, injected }
+  return { id: `test-agent-${agentSeq}`, inject: (message) => { injected.push(message) }, injected }
 }
 
 const hit = (text: string, score: number, title = 'doc', heading?: string): SearchResult['hits'][number] =>
@@ -53,6 +57,16 @@ describe('autoRetrieveBackground', () => {
     await autoRetrieveBackground(stubKnowledge({ enabled: false }) as never, agent as never, 'some question here')
     expect(agent.injected).toHaveLength(0)
     await autoRetrieveBackground(stubKnowledge({ baseCount: 0 }) as never, agent as never, 'some question here')
+    expect(agent.injected).toHaveLength(0)
+  })
+
+  it('injects nothing when auto-retrieve is turned off', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      autoRetrieve: false,
+      search: async () => ({ query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('highly relevant content', 0.9)] }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, 'some question here')
     expect(agent.injected).toHaveLength(0)
   })
 
