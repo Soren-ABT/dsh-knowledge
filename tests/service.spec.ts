@@ -44,6 +44,7 @@ const DEFAULT_CONFIG: Config = {
   imageCaptionApiKey: '',
   resumeInterruptedOnStartup: true,
   autoRetrieve: true,
+  autoRetrieveWeight: 3,
 }
 
 function fakeWebServer() {

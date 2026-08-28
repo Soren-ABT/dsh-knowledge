@@ -36,6 +36,7 @@ export interface BaseConfig {
   imageCaptionModel?: string
   imageCaptionBaseUrl?: string
   imageCaptionApiKey?: string
+  autoRetrieveWeight?: number
 }
 
 export interface BaseSummary {
@@ -146,6 +147,7 @@ export interface KnowledgeConfig {
   mineruApiHost: string
   resumeInterruptedOnStartup: boolean
   autoRetrieve: boolean
+  autoRetrieveWeight: number
 }
 
 export interface SearchHit {

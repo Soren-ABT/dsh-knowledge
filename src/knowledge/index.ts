@@ -362,6 +362,26 @@ export class KnowledgeService extends Service {
     return this.getConfig()
   }
 
+  /**
+   * Rerank settings for proactive (cross-base) retrieval, which has no single
+   * base config: the global rerank model wins; otherwise the first enabled
+   * base that configured one. Returns undefined when none is set.
+   */
+  rerankSettings(): { model: string; baseUrl: string; apiKey: string } | undefined {
+    const global = this.getConfig()
+    if (global.rerankModel.trim() !== '') {
+      return { model: global.rerankModel, baseUrl: global.rerankBaseUrl, apiKey: global.rerankApiKey }
+    }
+    const store = this.requireStore()
+    for (const base of store.listBases()) {
+      const config = this.getConfigFor(base.id)
+      if (config.rerankModel.trim() !== '') {
+        return { model: config.rerankModel, baseUrl: config.rerankBaseUrl, apiKey: config.rerankApiKey }
+      }
+    }
+    return undefined
+  }
+
   async setConfig(overrides: ConfigOverrides): Promise<KnowledgeConfig> {
     await this.requireStore().setConfigOverrides(overrides)
     const resolved = this.getConfig()

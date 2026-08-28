@@ -1,18 +1,35 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { autoRetrieveBackground } from '../src/tool-knowledge/index.js'
 import type { KnowledgeService } from '../src/knowledge/index.js'
 import type { SearchResult } from '../src/knowledge/types.js'
+
+// Mock the rerank call: 'rerank-ok' scores 'top' hits high, 'rerank-fail'
+// throws so the BM25 fallback is exercised.
+vi.mock('../src/knowledge/rerank.js', () => ({
+  rerankCandidates: vi.fn(async (_baseUrl: string, model: string, _apiKey: string, _query: string, candidates: Array<{ id: string; text: string }>, _topN: number) => {
+    if (model === 'rerank-fail') throw new Error('rerank down')
+    const out = new Map<string, number>()
+    for (const candidate of candidates) out.set(candidate.id, candidate.text.includes('top') ? 0.9 : 0.1)
+    return out
+  }),
+}))
 
 function stubKnowledge(overrides: Partial<{
   enabled: boolean
   baseCount: number
   autoRetrieve: boolean
+  rerank: { model: string; baseUrl: string; apiKey: string } | undefined
+  weights: Record<string, number>
   search: (request?: { query: string; topK?: number; mode?: string; baseId?: string }) => Promise<SearchResult>
 }>): KnowledgeService {
   return {
     isEnabled: () => overrides.enabled ?? true,
-    listBases: () => Array.from({ length: overrides.baseCount ?? 1 }, (_, i) => ({ id: `b${i}`, name: `base${i}` } as never)),
+    listBases: () => Array.from({ length: overrides.baseCount ?? 1 }, (_, i) => {
+      const weight = overrides.weights?.[`b${i}`]
+      return { id: `b${i}`, name: `base${i}`, ...(weight !== undefined ? { config: { autoRetrieveWeight: weight } } : {}) } as never
+    }),
     getConfig: () => ({ autoRetrieve: overrides.autoRetrieve ?? true }) as never,
+    rerankSettings: () => overrides.rerank,
     search: overrides.search ?? (async () => ({ query: '', mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] })),
   } as unknown as KnowledgeService
 }
@@ -167,7 +184,7 @@ describe('autoRetrieveBackground', () => {
     expect(agent.injected).toHaveLength(1)
   })
 
-  it('votes one chunk per base when multiple bases are represented', async () => {
+  it('gives a high-scoring base more seats with the default weight', async () => {
     const agent = stubAgent()
     const knowledge = stubKnowledge({
       baseCount: 2,
@@ -184,8 +201,82 @@ describe('autoRetrieveBackground', () => {
     const message = agent.injected[0] as { content: Array<{ text: string }> }
     expect(message.content[0].text).toContain('base0 top')
     expect(message.content[0].text).toContain('base1 top')
-    // The same-base second chunk loses the per-base vote.
+    // Default weight (3) lets the high-scoring base take a second seat.
+    expect(message.content[0].text).toContain('base0 second')
+  })
+
+  it('caps a base to one seat when its weight is 1', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      baseCount: 2,
+      weights: { b0: 1 },
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 4, reranked: false, elapsedMs: 0,
+        hits: [
+          hit('base0 top content', 0.8, 'docA', undefined, 'b0'),
+          hit('base1 top content', 0.6, 'docB', undefined, 'b1'),
+          hit('base0 second content', 0.55, 'docC', undefined, 'b0'),
+        ],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, 'look for the relevant content')
+    const message = agent.injected[0] as { content: Array<{ text: string }> }
+    expect(message.content[0].text).toContain('base0 top')
+    expect(message.content[0].text).toContain('base1 top')
+    // weight 1 → one seat per base; the second b0 chunk loses.
     expect(message.content[0].text).not.toContain('base0 second')
+  })
+
+  it('excludes a base entirely when its weight is 0', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      baseCount: 2,
+      weights: { b1: 0 },
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 4, reranked: false, elapsedMs: 0,
+        hits: [
+          hit('base0 top content', 0.8, 'docA', undefined, 'b0'),
+          hit('base1 top content', 0.6, 'docB', undefined, 'b1'),
+        ],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, 'look for the relevant content')
+    const message = agent.injected[0] as { content: Array<{ text: string }> }
+    expect(message.content[0].text).toContain('base0 top')
+    expect(message.content[0].text).not.toContain('base1 top')
+  })
+
+  it('reranks candidates when a remote rerank model is configured', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      rerank: { model: 'rerank-ok', baseUrl: 'http://x', apiKey: 'k' },
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 2, reranked: false, elapsedMs: 0,
+        // BM25 order: noise first; rerank flips it (top hits score 0.9).
+        hits: [hit('noise content here', 0.5, 'n'), hit('top relevant content', 0.4, 't')],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, 'relevant question about content')
+    expect(agent.injected).toHaveLength(1)
+    const message = agent.injected[0] as { content: Array<{ text: string }> }
+    expect(message.content[0].text).toContain('top relevant')
+    expect(message.content[0].text).not.toContain('noise content')
+  })
+
+  it('falls back to BM25 order when rerank fails', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      rerank: { model: 'rerank-fail', baseUrl: 'http://x', apiKey: 'k' },
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 2, reranked: false, elapsedMs: 0,
+        hits: [hit('noise content here', 0.03, 'n'), hit('top relevant content', 0.5, 't')],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, 'relevant question about content')
+    // BM25 order preserved: the 0.5 hit injects, the below-floor 0.03 doesn't.
+    expect(agent.injected).toHaveLength(1)
+    const message = agent.injected[0] as { content: Array<{ text: string }> }
+    expect(message.content[0].text).toContain('top relevant')
   })
 
   it('does not re-inject a chunk already injected for the same agent', async () => {

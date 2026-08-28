@@ -45,6 +45,12 @@ export interface BaseConfig {
   readonly imageCaptionModel?: string
   readonly imageCaptionBaseUrl?: string
   readonly imageCaptionApiKey?: string
+  /**
+   * Auto-retrieve weight (0–5, default 3): how many chunks of THIS base may
+   * enter a proactive-retrieval injection. 0 excludes the base entirely;
+   * the per-base seat cap keeps one library from monopolizing the context.
+   */
+  readonly autoRetrieveWeight?: number
 }
 
 /** One knowledge base (a namespace of documents). */
@@ -192,6 +198,8 @@ export interface KnowledgeConfig {
   readonly resumeInterruptedOnStartup: boolean
   /** Proactive auto-retrieval on every user message. */
   readonly autoRetrieve: boolean
+  /** Auto-retrieve seat cap per base (0–5, 0 = excluded; see BaseConfig). */
+  readonly autoRetrieveWeight: number
 }
 
 /** One file of a batch import (content optional for the detect round). */

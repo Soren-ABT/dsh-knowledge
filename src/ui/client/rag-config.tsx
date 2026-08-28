@@ -606,6 +606,16 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   onChange={(e) => patch({ autoRetrieve: e.target.checked })}
                 />
               </FieldRow>
+              <FieldRow label={t('autoRetrieveWeight')} hint={t('autoRetrieveWeightHint')}>
+                <input
+                  style={{ ...style.input, width: 100 }}
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={values.autoRetrieveWeight}
+                  onChange={(e) => patchNumber('autoRetrieveWeight', e.target.value)}
+                />
+              </FieldRow>
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
                 <input
                   style={{ ...style.input, width: 140 }}

@@ -41,6 +41,7 @@ const base: Config = {
   imageCaptionApiKey: '',
   resumeInterruptedOnStartup: true,
   autoRetrieve: true,
+  autoRetrieveWeight: 3,
 }
 
 describe('resolveConfig', () => {

@@ -48,6 +48,7 @@ const TEST_CONFIG: Config = {
   imageCaptionApiKey: '',
   resumeInterruptedOnStartup: true,
   autoRetrieve: true,
+  autoRetrieveWeight: 3,
 }
 
 /** Minimal in-memory KvTable matching the storage-domain runtime contract. */

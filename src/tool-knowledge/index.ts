@@ -733,6 +733,10 @@ const AUTO_RETRIEVE_CONTEXT_TURNS = 2
 const AUTO_RETRIEVE_CHUNK_MAX_CHARS = 300
 /** Absolute floor for the top hit (a score below this is noise, period). */
 const AUTO_RETRIEVE_ABS_MIN_SCORE = 0.12
+/** Relevance floor for rerank-scored candidates (rerank scores are 0–1). */
+const AUTO_RETRIEVE_RERANK_MIN_SCORE = 0.3
+/** Default per-base seat cap (matches the old per-base vote with topK 3). */
+const AUTO_RETRIEVE_WEIGHT_DEFAULT = 3
 /** The top hit must lead the runner-up by at least this factor — a flat set of
  *  weak matches has no clear winner and injects nothing. */
 const AUTO_RETRIEVE_LEAD_RATIO = 1.2
@@ -787,35 +791,75 @@ export async function autoRetrieveBackground(
     // A hit only counts when its text actually shares keywords with the query
     // — a high BM25 score without any overlapping term is a degenerate match.
     const scored = searchResult.hits.filter(hit => sharesKeywords(query, hit.text)).sort((a, b) => b.score - a.score)
-    const top1 = scored[0]
+    // Rerank participation: when a rerank model is configured (global or any
+    // enabled base) and it is a remote API, re-score the candidates with it —
+    // relevance scores replace BM25 for the injection order. The local
+    // cross-encoder is skipped (loading ~280MB per user message is too heavy).
+    const rerank = knowledge.rerankSettings()
+    let ranked = scored
+    let relevanceFloor = AUTO_RETRIEVE_ABS_MIN_SCORE
+    let adaptive = true
+    if (rerank !== undefined && !rerank.model.startsWith('local:') && scored.length > 1) {
+      try {
+        const { rerankCandidates } = await import('../knowledge/rerank.js')
+        const scores = await rerankCandidates(
+          rerank.baseUrl, rerank.model, rerank.apiKey, query,
+          scored.map(hit => ({ id: hit.chunkId, text: hit.text })),
+          AUTO_RETRIEVE_CANDIDATE_POOL,
+        )
+        const reranked = scored
+          .filter(hit => scores.has(hit.chunkId))
+          .map(hit => ({ ...hit, score: scores.get(hit.chunkId)! }))
+          .sort((a, b) => b.score - a.score)
+        if (reranked.length > 0) {
+          ranked = reranked
+          // Rerank relevance is 0–1 and already ordered — a flat absolute
+          // floor applies, no leading-ratio or group logic.
+          relevanceFloor = AUTO_RETRIEVE_RERANK_MIN_SCORE
+          adaptive = false
+        }
+      } catch (error) {
+        console.warn(`[dsh-knowledge] auto-retrieve rerank failed, keeping BM25 order: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const top1 = ranked[0]
     // Adaptive relevance: an absolute floor, then a clear lead over the
     // runner-up — a flat set of weak matches has no winner and injects nothing.
-    if (top1 === undefined || top1.score < AUTO_RETRIEVE_ABS_MIN_SCORE) return
-    const runnerUp = scored[1]
-    if (runnerUp !== undefined && top1.score < runnerUp.score * AUTO_RETRIEVE_LEAD_RATIO) return
-    // Keep the top hit's relevance group; when multiple bases are represented,
-    // vote one chunk per base so no single library monopolizes the injection.
-    const groupFloor = top1.score * AUTO_RETRIEVE_GROUP_RATIO
-    const inGroup = scored.filter(hit => hit.score >= groupFloor)
-    const perBaseTop = new Map<string, typeof scored[number]>()
-    for (const hit of inGroup) if (!perBaseTop.has(hit.baseId)) perBaseTop.set(hit.baseId, hit)
-    let chosen: typeof scored = perBaseTop.size > 1
-      ? [...perBaseTop.values()].slice(0, AUTO_RETRIEVE_TOP_K)
-      : inGroup.slice(0, AUTO_RETRIEVE_TOP_K)
+    if (top1 === undefined || top1.score < relevanceFloor) return
+    if (adaptive) {
+      const runnerUp = ranked[1]
+      if (runnerUp !== undefined && top1.score < runnerUp.score * AUTO_RETRIEVE_LEAD_RATIO) return
+    }
+    const groupFloor = adaptive ? top1.score * AUTO_RETRIEVE_GROUP_RATIO : relevanceFloor
+    // Per-base seat cap (autoRetrieveWeight, 0–5; 0 excludes the base): each
+    // base contributes at most its weight of chunks, so a high-weight base can
+    // dominate the injection while weight-0 bases are skipped entirely.
+    const seatsOf = (baseId: string): number => {
+      const weight = bases.find(base => base.id === baseId)?.config?.autoRetrieveWeight
+      return weight === undefined ? AUTO_RETRIEVE_WEIGHT_DEFAULT : Math.max(0, Math.min(5, Math.trunc(weight)))
+    }
+    const taken = new Map<string, number>()
+    const chosen: typeof ranked = []
+    for (const hit of ranked) {
+      if (hit.score < groupFloor) continue
+      const seats = seatsOf(hit.baseId)
+      if (seats === 0) continue
+      const used = taken.get(hit.baseId) ?? 0
+      if (used >= seats) continue
+      taken.set(hit.baseId, used + 1)
+      chosen.push(hit)
+      if (chosen.length >= AUTO_RETRIEVE_TOP_K) break
+    }
+    if (chosen.length === 0) return
     // Dedup across turns: chunks already injected for this agent are skipped.
     const injected = injectedChunkIds.get(agent.id) ?? new Set<string>()
     const fresh = chosen.filter(hit => !injected.has(hit.chunkId))
     if (fresh.length === 0) return
-    chosen = fresh.slice(0, AUTO_RETRIEVE_TOP_K)
-    const nextInjected = new Set(injected)
-    for (const hit of chosen) nextInjected.add(hit.chunkId)
-    if (nextInjected.size > AUTO_RETRIEVE_MAX_MEMORY) nextInjected.clear()
-    injectedChunkIds.set(agent.id, nextInjected)
     const clip = (chunk: string): string =>
       chunk.length > AUTO_RETRIEVE_CHUNK_MAX_CHARS ? `${chunk.slice(0, AUTO_RETRIEVE_CHUNK_MAX_CHARS)}…` : chunk
     const nameOf = (baseId: string): string => bases.find(base => base.id === baseId)?.name ?? baseId
     const background = 'Relevant background retrieved automatically from the user\'s imported knowledge (use and cite it when it answers the question):\n'
-      + chosen.map(hit => `[${nameOf(hit.baseId)} / ${hit.documentTitle}${hit.heading !== undefined && hit.heading.length > 0 ? ` / ${hit.heading}` : ''}] ${clip(hit.text)}`).join('\n\n')
+      + fresh.slice(0, AUTO_RETRIEVE_TOP_K).map(hit => `[${nameOf(hit.baseId)} / ${hit.documentTitle}${hit.heading !== undefined && hit.heading.length > 0 ? ` / ${hit.heading}` : ''}] ${clip(hit.text)}`).join('\n\n')
     agent.inject({
       role: 'user',
       content: [{ type: 'text', text: background }],
@@ -824,6 +868,10 @@ export async function autoRetrieveBackground(
     })
     autoRetrieveInjectedAt.set(agent.id, now)
     lastInjectedKeywords.set(agent.id, keywords)
+    const nextInjected = new Set(injected)
+    for (const hit of fresh) nextInjected.add(hit.chunkId)
+    if (nextInjected.size > AUTO_RETRIEVE_MAX_MEMORY) nextInjected.clear()
+    injectedChunkIds.set(agent.id, nextInjected)
   } catch (error) {
     // Best-effort: auto-retrieval must never break a turn.
     console.warn(`[dsh-knowledge] auto-retrieve failed: ${error instanceof Error ? error.message : String(error)}`)

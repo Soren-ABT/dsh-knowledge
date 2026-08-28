@@ -74,6 +74,11 @@ export interface Config {
    * "use the knowledge base" instruction or a knowledge_search call.
    */
   autoRetrieve: boolean
+  /**
+   * Auto-retrieve seat cap per base (0–5, default 3; 0 excludes a base):
+   * how many of THIS base's chunks may enter one injection.
+   */
+  autoRetrieveWeight: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -112,6 +117,7 @@ export const Config: Schema<Config> = Schema.object({
   imageCaptionApiKey: Schema.string().default(''),
   resumeInterruptedOnStartup: Schema.boolean().default(true),
   autoRetrieve: Schema.boolean().default(true),
+  autoRetrieveWeight: Schema.number().default(3),
 })
 
 /** Resolve a full config from deployment defaults plus runtime overrides. */
@@ -162,6 +168,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     imageCaptionApiKey: overrides.imageCaptionApiKey ?? config.imageCaptionApiKey,
     resumeInterruptedOnStartup: overrides.resumeInterruptedOnStartup ?? config.resumeInterruptedOnStartup,
     autoRetrieve: overrides.autoRetrieve ?? config.autoRetrieve,
+    autoRetrieveWeight: clampInt(overrides.autoRetrieveWeight ?? config.autoRetrieveWeight, 0, 5, 3),
     localModelCacheDir: overrides.localModelCacheDir ?? config.localModelCacheDir,
   }
 }
@@ -209,6 +216,7 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     imageCaptionModel: baseConfig.imageCaptionModel ?? resolved.imageCaptionModel,
     imageCaptionBaseUrl: baseConfig.imageCaptionBaseUrl ?? resolved.imageCaptionBaseUrl,
     imageCaptionApiKey: baseConfig.imageCaptionApiKey ?? resolved.imageCaptionApiKey,
+    autoRetrieveWeight: clampInt(baseConfig.autoRetrieveWeight ?? resolved.autoRetrieveWeight, 0, 5, 3),
   }
 }
 

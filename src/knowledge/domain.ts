@@ -48,6 +48,8 @@ export const baseConfigSchema = z.object({
   imageCaptionModel: z.string().optional(),
   imageCaptionBaseUrl: z.string().optional(),
   imageCaptionApiKey: z.string().optional(),
+  /** Auto-retrieve seat cap per base (0–5, 0 = excluded). */
+  autoRetrieveWeight: z.number().int().gte(0).lte(5).optional(),
   /** Re-run interrupted imports (re-embedding the missing batches) on startup; off = mark them failed instead (Cherry's posture). */
   resumeInterruptedOnStartup: z.boolean().optional(),
   /** Proactive auto-retrieval on every user message. */
@@ -161,6 +163,7 @@ export interface ConfigOverrides {
   imageCaptionApiKey?: string
   resumeInterruptedOnStartup?: boolean
   autoRetrieve?: boolean
+  autoRetrieveWeight?: number
   localModelCacheDir?: string
 }
 
