@@ -31,7 +31,7 @@ describe('autoRetrieveBackground', () => {
   it('injects a background message when the top hit clears the relevance gate', async () => {
     const agent = stubAgent()
     const knowledge = stubKnowledge({
-      search: async () => ({ query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('the reimbursement workflow is A then B', 0.7, '手册', '报销')] }),
+      search: async () => ({ query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('报销流程是提交发票后审批', 0.7, '手册', '报销')] }),
     })
     await autoRetrieveBackground(knowledge, agent as never, '报销流程是什么？')
     expect(agent.injected).toHaveLength(1)
@@ -39,7 +39,7 @@ describe('autoRetrieveBackground', () => {
     expect(message.role).toBe('user')
     expect(message.source.kind).toBe('plugin')
     expect(message.content[0].type).toBe('text')
-    expect(message.content[0].text).toContain('reimbursement workflow')
+    expect(message.content[0].text).toContain('报销流程是提交发票后审批')
     expect(message.content[0].text).toContain('手册 / 报销')
   })
 
@@ -73,12 +73,48 @@ describe('autoRetrieveBackground', () => {
   it('keeps only the top relevant chunks (drops below-gate hits in a mixed result)', async () => {
     const agent = stubAgent()
     const knowledge = stubKnowledge({
-      search: async () => ({ query: 'q', mode: 'lexical', total: 3, reranked: false, elapsedMs: 0, hits: [hit('relevant one', 0.6, 'A'), hit('noise', 0.03, 'B'), hit('relevant two', 0.5, 'C')] }),
+      search: async () => ({ query: 'q', mode: 'lexical', total: 3, reranked: false, elapsedMs: 0, hits: [hit('relevant one content', 0.6, 'A'), hit('noise unrelated', 0.03, 'B'), hit('relevant two content', 0.5, 'C')] }),
     })
-    await autoRetrieveBackground(knowledge, agent as never, 'question text')
+    await autoRetrieveBackground(knowledge, agent as never, 'relevant question')
     const message = agent.injected[0] as { content: Array<{ text: string }> }
     expect(message.content[0].text).toContain('relevant one')
     expect(message.content[0].text).toContain('relevant two')
     expect(message.content[0].text).not.toContain('noise')
+  })
+
+  it('drops a high-score hit that shares no keyword with the query', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0,
+        hits: [hit('entirely different topic content', 0.9, 'other')],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, '公司的报销流程')
+    expect(agent.injected).toHaveLength(0)
+  })
+
+  it('passes a hit sharing a CJK keyword with the query', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0,
+        hits: [hit('报销流程是提交发票后审批', 0.6, '手册')],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, '请问公司的报销流程是什么')
+    expect(agent.injected).toHaveLength(1)
+  })
+
+  it('injects for a stopword-heavy English query when the hit shares the content word', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0,
+        hits: [hit('the reimbursement workflow content', 0.6)],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, 'please tell me about the reimbursement workflow')
+    expect(agent.injected).toHaveLength(1)
   })
 })

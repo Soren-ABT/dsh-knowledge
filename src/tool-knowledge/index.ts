@@ -731,8 +731,12 @@ export async function autoRetrieveBackground(
     if (!knowledge.getConfig().autoRetrieve) return
     const now = Date.now()
     if (now - (autoRetrieveInjectedAt.get(agent.id) ?? 0) < AUTO_RETRIEVE_MIN_INTERVAL_MS) return
-    const result = await knowledge.search({ query: text.slice(0, 200), topK: AUTO_RETRIEVE_TOP_K, mode: 'lexical' })
-    const relevant = result.hits.filter(hit => hit.score >= AUTO_RETRIEVE_MIN_SCORE)
+    const query = cleanRetrieveQuery(text)
+    if (query.length < 2) return
+    const result = await knowledge.search({ query, topK: AUTO_RETRIEVE_TOP_K, mode: 'lexical' })
+    // A hit only counts when its text actually shares keywords with the query
+    // — a high BM25 score without any overlapping term is a degenerate match.
+    const relevant = result.hits.filter(hit => hit.score >= AUTO_RETRIEVE_MIN_SCORE && sharesKeywords(query, hit.text))
     if (relevant.length === 0) return
     const clip = (chunk: string): string =>
       chunk.length > AUTO_RETRIEVE_CHUNK_MAX_CHARS ? `${chunk.slice(0, AUTO_RETRIEVE_CHUNK_MAX_CHARS)}…` : chunk
@@ -749,6 +753,66 @@ export async function autoRetrieveBackground(
     // Best-effort: auto-retrieval must never break a turn.
     console.warn(`[dsh-knowledge] auto-retrieve failed: ${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+/** Common conversational filler that carries no retrieval signal (English words,
+ *  Chinese interjections/fronters — whole-token matches only, no segmentation). */
+const RETRIEVE_STOPWORDS = new Set([
+  'a', 'an', 'the', 'to', 'of', 'in', 'on', 'at', 'for', 'and', 'or', 'is', 'are', 'was', 'were',
+  'be', 'been', 'it', 'this', 'that', 'with', 'from', 'by', 'as', 'about', 'what', 'how', 'why',
+  'when', 'where', 'which', 'who', 'can', 'could', 'should', 'would', 'please', 'help', 'tell',
+  'know', 'want', 'look', 'find', 'search', 'explain', 'describe', 'me', 'you', 'my', 'your',
+  'our', 'their', 'i', 'we', 'they', 'he', 'she', 'do', 'does', 'did', 'have', 'has', 'had', 'if',
+  'then', 'also', 'just', 'like', 'say', 'said', 'see', 'get', 'make',
+  '请问', '帮我', '一下', '知道', '我想', '我问', '看看', '查查', '这个', '那个', '我们', '你们', '他们',
+])
+
+/** Tokenize into latin words (≥2 chars, stopword-filtered) plus CJK bigrams —
+ *  Chinese has no word boundaries, so bigrams keep the query's signal without
+ *  a segmenter. */
+function retrieveKeywords(text: string): string[] {
+  const out: string[] = []
+  for (const segment of text.split(/[^a-z0-9\u4e00-\u9fff]+/i)) {
+    if (segment.length === 0) continue
+    if (/^[a-z0-9]+$/i.test(segment)) {
+      const lower = segment.toLowerCase()
+      if (lower.length >= 2 && !RETRIEVE_STOPWORDS.has(lower)) out.push(lower)
+      continue
+    }
+    const runs = segment.match(/[\u4e00-\u9fff]+/g) ?? []
+    for (const run of runs) {
+      if (run.length === 1) continue
+      if (run.length === 2) out.push(run)
+      else for (let i = 0; i < run.length - 1; i += 1) out.push(run.slice(i, i + 2))
+    }
+  }
+  return [...new Set(out)]
+}
+
+/** Build the BM25 query: drop English stopwords but keep CJK runs WHOLE — the
+ *  FTS lane matches CJK via trigram windows (OR'd), so splitting Chinese into
+ *  space-separated bigrams would turn them into AND'd LIKE filters and make
+ *  the query implausibly strict. */
+function cleanRetrieveQuery(text: string): string {
+  const parts: string[] = []
+  for (const segment of text.split(/[^a-z0-9\u4e00-\u9fff]+/i)) {
+    if (segment.length === 0) continue
+    if (/^[a-z0-9]+$/i.test(segment)) {
+      const lower = segment.toLowerCase()
+      if (lower.length >= 2 && !RETRIEVE_STOPWORDS.has(lower)) parts.push(lower)
+    } else {
+      parts.push(segment)
+    }
+  }
+  return parts.join(' ').slice(0, 200)
+}
+
+/** True when at least one query keyword appears in the hit text. */
+function sharesKeywords(query: string, hitText: string): boolean {
+  const keywords = retrieveKeywords(query)
+  if (keywords.length === 0) return true
+  const lowerHit = hitText.toLowerCase()
+  return keywords.some(keyword => lowerHit.includes(keyword))
 }
 
 /** A Markdown citation block for one search hit: quote + source line. */
