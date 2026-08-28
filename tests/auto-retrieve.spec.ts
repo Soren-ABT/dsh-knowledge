@@ -117,4 +117,38 @@ describe('autoRetrieveBackground', () => {
     await autoRetrieveBackground(knowledge as never, agent as never, 'please tell me about the reimbursement workflow')
     expect(agent.injected).toHaveLength(1)
   })
+
+  it('skips a same-topic follow-up inside the throttle window', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0,
+        hits: [hit('报销流程是提交发票后审批', 0.6, '手册')],
+      }),
+    })
+    // First message injects…
+    await autoRetrieveBackground(knowledge as never, agent as never, '报销流程是什么？')
+    expect(agent.injected).toHaveLength(1)
+    // …a same-topic follow-up right after is throttled (no context accumulation).
+    await autoRetrieveBackground(knowledge as never, agent as never, '那第一步怎么走？')
+    expect(agent.injected).toHaveLength(1)
+  })
+
+  it('injects a NEW topic even inside the throttle window', async () => {
+    const agent = stubAgent()
+    let topic = '报销流程是提交发票后审批'
+    const knowledge = stubKnowledge({
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0,
+        hits: [hit(topic, 0.6, 'doc')],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, '报销流程是什么？')
+    expect(agent.injected).toHaveLength(1)
+    // Switch the stub's corpus to an unrelated topic; the new keywords must
+    // not overlap the last injected ones, so the throttle lets it through.
+    topic = '年假申请需要提前三天'
+    await autoRetrieveBackground(knowledge as never, agent as never, '年假怎么申请？')
+    expect(agent.injected).toHaveLength(2)
+  })
 })

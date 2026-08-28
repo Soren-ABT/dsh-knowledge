@@ -681,10 +681,21 @@ export function apply(ctx: Context): void {
         .join(' ')
         .trim()
       if (text.length < AUTO_RETRIEVE_MIN_CHARS) return
-      void autoRetrieveBackground(knowledge, agent, text)
+      // Follow-up context: keep the last few user messages and query with
+      // them joined, so a deictic follow-up ("那第二步呢？") still retrieves
+      // the document the earlier turn established.
+      const recent = recentUserTexts.get(agent.id) ?? []
+      recent.push(text)
+      if (recent.length > AUTO_RETRIEVE_CONTEXT_TURNS) recent.shift()
+      recentUserTexts.set(agent.id, recent)
+      void autoRetrieveBackground(knowledge, agent, recent.join(' '))
     })
-    // Forget this agent's injection throttle when it goes away.
-    agent.ctx.on('agent/disposed', () => { autoRetrieveInjectedAt.delete(agent.id) })
+    // Forget this agent's throttle + context when it goes away.
+    agent.ctx.on('agent/disposed', () => {
+      autoRetrieveInjectedAt.delete(agent.id)
+      lastInjectedKeywords.delete(agent.id)
+      recentUserTexts.delete(agent.id)
+    })
   })
 }
 
@@ -710,14 +721,22 @@ const AUTO_RETRIEVE_MIN_SCORE = 0.2
  * Minimum gap between injections for one agent: injected background rides a
  * user-role message that persists in the session log, so without a throttle a
  * long conversation accumulates one background dump per turn and inflates the
- * context for every later step.
+ * context for every later step. The gate is topic-aware: a NEW topic injects
+ * even inside the window, while a same-topic follow-up inside the window is
+ * skipped (its background was just injected).
  */
 const AUTO_RETRIEVE_MIN_INTERVAL_MS = 5 * 60_000
+/** How many recent user messages join the retrieval query (follow-up resolution). */
+const AUTO_RETRIEVE_CONTEXT_TURNS = 2
 /** Per-chunk character cap for injected background (long documents stay bounded). */
 const AUTO_RETRIEVE_CHUNK_MAX_CHARS = 300
 
 /** Last injection time per agent id (throttle). */
 const autoRetrieveInjectedAt = new Map<string, number>()
+/** Keywords of the last injected query per agent id (topic-aware throttle). */
+const lastInjectedKeywords = new Map<string, string[]>()
+/** Recent user-message texts per agent id (follow-up retrieval context). */
+const recentUserTexts = new Map<string, string[]>()
 
 /** Search the bases for `text` and inject relevant chunks as agent background. */
 export async function autoRetrieveBackground(
@@ -730,9 +749,15 @@ export async function autoRetrieveBackground(
     if (knowledge.listBases().length === 0) return
     if (!knowledge.getConfig().autoRetrieve) return
     const now = Date.now()
-    if (now - (autoRetrieveInjectedAt.get(agent.id) ?? 0) < AUTO_RETRIEVE_MIN_INTERVAL_MS) return
     const query = cleanRetrieveQuery(text)
     if (query.length < 2) return
+    const keywords = retrieveKeywords(query)
+    const throttled = now - (autoRetrieveInjectedAt.get(agent.id) ?? 0) < AUTO_RETRIEVE_MIN_INTERVAL_MS
+    const prevKeywords = lastInjectedKeywords.get(agent.id) ?? []
+    const sameTopic = prevKeywords.length > 0 && keywords.some(keyword => prevKeywords.includes(keyword))
+    // Same-topic follow-up inside the window: its background was just injected,
+    // skip (prevents context accumulation). A NEW topic always gets a chance.
+    if (throttled && sameTopic) return
     const result = await knowledge.search({ query, topK: AUTO_RETRIEVE_TOP_K, mode: 'lexical' })
     // A hit only counts when its text actually shares keywords with the query
     // — a high BM25 score without any overlapping term is a degenerate match.
@@ -749,6 +774,7 @@ export async function autoRetrieveBackground(
       id: crypto.randomUUID(),
     })
     autoRetrieveInjectedAt.set(agent.id, now)
+    lastInjectedKeywords.set(agent.id, keywords)
   } catch (error) {
     // Best-effort: auto-retrieval must never break a turn.
     console.warn(`[dsh-knowledge] auto-retrieve failed: ${error instanceof Error ? error.message : String(error)}`)
