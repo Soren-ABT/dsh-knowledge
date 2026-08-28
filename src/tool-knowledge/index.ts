@@ -664,6 +664,70 @@ export function apply(ctx: Context): void {
   }))
 
   void (knowledge as KnowledgeService)
+
+  // ── proactive auto-retrieval ────────────────────────────────────────────────
+  // On every user message, cheaply (BM25, no embedding round-trip) check the
+  // knowledge bases; when the top hit is clearly relevant, inject the top
+  // chunks as model-visible background so facts that live in imported material
+  // reach the model even when the user never mentions a knowledge base and the
+  // model never calls knowledge_search. Best-effort: a base-less or disabled
+  // deployment contributes nothing, and a low score injects nothing.
+  ctx.on('agent/created', (payload: { agent: AutoRetrieveAgent }) => {
+    const agent = payload.agent
+    agent.ctx.on('agent/inbox/claimed', (claimed: { message: AutoRetrieveMessage }) => {
+      const text = claimed.message.content
+        .filter(block => block.type === 'text')
+        .map(block => block.text ?? '')
+        .join(' ')
+        .trim()
+      if (text.length < AUTO_RETRIEVE_MIN_CHARS) return
+      void autoRetrieveBackground(knowledge, agent, text)
+    })
+  })
+}
+
+/** Minimal structural view of an agent the auto-retriever injects into. */
+interface AutoRetrieveAgent {
+  readonly ctx: Context
+  inject(message: unknown): void
+}
+
+/** Minimal structural view of a claimed user message. */
+interface AutoRetrieveMessage {
+  readonly content: ReadonlyArray<{ readonly type?: string; readonly text?: string }>
+}
+
+/** Shortest user message worth probing the bases for (greetings/single tokens skip). */
+const AUTO_RETRIEVE_MIN_CHARS = 8
+/** How many top chunks to inject as background. */
+const AUTO_RETRIEVE_TOP_K = 3
+/** BM25 relevance gate: below this the hit is treated as noise, nothing injects. */
+const AUTO_RETRIEVE_MIN_SCORE = 0.2
+
+/** Search the bases for `text` and inject relevant chunks as agent background. */
+export async function autoRetrieveBackground(
+  knowledge: KnowledgeService,
+  agent: AutoRetrieveAgent,
+  text: string,
+): Promise<void> {
+  try {
+    if (!knowledge.isEnabled()) return
+    if (knowledge.listBases().length === 0) return
+    const result = await knowledge.search({ query: text.slice(0, 200), topK: AUTO_RETRIEVE_TOP_K, mode: 'lexical' })
+    const relevant = result.hits.filter(hit => hit.score >= AUTO_RETRIEVE_MIN_SCORE)
+    if (relevant.length === 0) return
+    const background = 'Relevant background retrieved automatically from the user\'s imported knowledge (use and cite it when it answers the question):\n'
+      + relevant.map(hit => `[${hit.documentTitle}${hit.heading !== undefined && hit.heading.length > 0 ? ` / ${hit.heading}` : ''}] ${hit.text}`).join('\n\n')
+    agent.inject({
+      role: 'user',
+      content: [{ type: 'text', text: background }],
+      source: { kind: 'plugin', plugin: 'dsh-knowledge' },
+      id: crypto.randomUUID(),
+    })
+  } catch (error) {
+    // Best-effort: auto-retrieval must never break a turn.
+    console.warn(`[dsh-knowledge] auto-retrieve failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 /** A Markdown citation block for one search hit: quote + source line. */
