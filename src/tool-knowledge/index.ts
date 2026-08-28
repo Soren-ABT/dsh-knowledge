@@ -37,7 +37,11 @@ export function apply(ctx: Context): void {
         + 'When the user asks about facts, internal documents, specific numbers, or anything that may '
         + 'exist in their imported material (reports, manuals, notes, archived web pages) — even if they '
         + 'never mention a knowledge base — proactively call `knowledge_search` before answering, and '
-        + 'quote the returned excerpts with their citations instead of answering from general knowledge alone.'
+        + 'quote the returned excerpts with their citations instead of answering from general knowledge alone. '
+        + 'Explicit phrasings such as 「查看/查询/运用 我的资料/知识/文档」, "look up / search my materials", '
+        + 'or "use the knowledge base" are direct requests to search. If a search returns nothing relevant, '
+        + 'say so plainly instead of guessing. For a hard-to-query question, submit 2–3 phrasings or a '
+        + 'translation through the `extraQueries` parameter to widen recall.'
     },
   })
 
@@ -56,7 +60,10 @@ export function apply(ctx: Context): void {
       + 'that the caller should quote when answering. Omit baseId to search every base. '
       + 'USE THIS PROACTIVELY: whenever the user asks about facts, internal documents, specific numbers, '
       + 'or anything that may exist in their imported material — even if they never said "knowledge base" — '
-      + 'search BEFORE answering so the reply cites the sources.',
+      + 'search BEFORE answering so the reply cites the sources. Explicit requests to 查看/查询/运用 your '
+      + '资料/知识/文档 (look up, review, or search "my materials") are direct commands to search. '
+      + 'If nothing relevant comes back, say so instead of guessing; for a hard query try 2–3 phrasings '
+      + 'via extraQueries.',
     parameters: {
       query: { type: 'string', required: true, description: 'The search query.' },
       baseId: { type: 'string', description: 'Optional knowledge base id to restrict the search to.' },
