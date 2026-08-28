@@ -1,9 +1,11 @@
 /* High-intensity stress test for auto-retrieve: real KnowledgeService + real
  * SQLite chunk store, exercising multi-base retrieval, follow-up context,
  * topic-aware throttle, injection dedup, adaptive thresholds, per-base
- * voting + per-base weights (0 = excluded, 1 = single seat), named-base
+ * voting + per-base weights (0 = excluded, 1 = single seat), rerank
+ * participation through a fake remote /rerank endpoint, named-base
  * targeting, chunk clipping, and concurrent agents. */
 import { Context } from '@deepseek-ai/cordis'
+import { createServer } from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,6 +37,8 @@ function check(name: string, ok: boolean, detail = ''): void {
 
 const dir = mkdtempSync(join(tmpdir(), 'kb-stress-'))
 process.env.DSH_HOME = dir
+// Keep the fake rerank endpoint direct even when a proxy is configured.
+process.env.NO_PROXY = '127.0.0.1,localhost'
 
 async function mount(): Promise<{ service: KnowledgeService; close: () => void }> {
   const ctx = new Context()
@@ -241,6 +245,56 @@ try {
     // proves the single chunk in the weight-1 case is the seat cap at work.
     check('control admits leader and runner-up', text.includes('明基') && text.includes('爱普生'), text.slice(0, 120))
   }
+
+  // ── 14. rerank participation: a fake remote reranker flips the winner ───────
+  // The per-base rerank config reaches rerankSettings(); the real rerank.ts
+  // client POSTs to the fake endpoint; its scores REPLACE the BM25 order, so
+  // the injection must follow the reranker — the BM25 runner-up (0.05 rerank
+  // score) is dropped even though it cleared the BM25 floor.
+  console.log('\n14. rerank participation (fake remote endpoint)')
+  const rerankServer = createServer((req, res) => {
+    let body = ''
+    req.on('data', (chunk) => { body += String(chunk) })
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body) as { documents?: string[] }
+        const documents = payload.documents ?? []
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          results: documents.map((doc, index) => ({
+            index,
+            // The fake reranker prefers the doc mentioning 首选词, flipping the
+            // BM25 winner so the injection order must follow the rerank scores.
+            relevance_score: doc.includes('首选词') ? 0.95 : 0.05,
+          })),
+        }))
+      } catch {
+        res.writeHead(400).end()
+      }
+    })
+  })
+  await new Promise<void>(resolve => rerankServer.listen(0, '127.0.0.1', resolve))
+  const rerankPort = (rerankServer.address() as { port: number }).port
+  const rerankBase = await service.createBase({
+    name: '重排库',
+    config: {
+      rerankModel: 'fake-reranker',
+      rerankBaseUrl: `http://127.0.0.1:${rerankPort}`,
+      rerankApiKey: '',
+    },
+  })
+  await service.addTextDocument({ baseId: rerankBase.id, title: '首选文档', content: '主题甲 相关内容 首选词。' })
+  await service.addTextDocument({ baseId: rerankBase.id, title: '次选文档', content: '主题甲 相关内容。' })
+  await service.waitForIdle()
+  const a12 = stubAgent('rerank')
+  await autoRetrieveBackground(service as never, a12 as never, '主题甲 相关内容')
+  check('rerank path injects exactly the rerank winner', a12.injected.length === 1, `got ${a12.injected.length}`)
+  if (a12.injected.length === 1) {
+    const text = textOf(a12.injected[0])
+    check('rerank winner (首选词) injected', text.includes('首选词'))
+    check('BM25 winner without 首选词 dropped by rerank', !text.includes('次选文档'), text.slice(0, 120))
+  }
+  rerankServer.close()
 
   console.log(`\n${checks} checks, ${failures} failed`)
   console.log(failures === 0 ? 'ALL STRESS CHECKS PASSED' : `${failures} STRESS CHECK(S) FAILED`)
