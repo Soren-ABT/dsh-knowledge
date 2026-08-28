@@ -758,15 +758,25 @@ export async function autoRetrieveBackground(
     // Same-topic follow-up inside the window: its background was just injected,
     // skip (prevents context accumulation). A NEW topic always gets a chance.
     if (throttled && sameTopic) return
-    const result = await knowledge.search({ query, topK: AUTO_RETRIEVE_TOP_K, mode: 'lexical' })
+    const bases = knowledge.listBases()
+    if (bases.length === 0) return
+    // An explicit library mention ("看看 atest 里的…") restricts the search to
+    // that base — cross-base noise otherwise dilutes a clearly scoped request.
+    const namedBase = bases.find(base => base.name !== '' && text.includes(base.name))
+    const searchResult = await knowledge.search(
+      namedBase !== undefined
+        ? { query, topK: AUTO_RETRIEVE_TOP_K, mode: 'lexical', baseId: namedBase.id }
+        : { query, topK: AUTO_RETRIEVE_TOP_K, mode: 'lexical' },
+    )
     // A hit only counts when its text actually shares keywords with the query
     // — a high BM25 score without any overlapping term is a degenerate match.
-    const relevant = result.hits.filter(hit => hit.score >= AUTO_RETRIEVE_MIN_SCORE && sharesKeywords(query, hit.text))
+    const relevant = searchResult.hits.filter(hit => hit.score >= AUTO_RETRIEVE_MIN_SCORE && sharesKeywords(query, hit.text))
     if (relevant.length === 0) return
     const clip = (chunk: string): string =>
       chunk.length > AUTO_RETRIEVE_CHUNK_MAX_CHARS ? `${chunk.slice(0, AUTO_RETRIEVE_CHUNK_MAX_CHARS)}…` : chunk
+    const nameOf = (baseId: string): string => bases.find(base => base.id === baseId)?.name ?? baseId
     const background = 'Relevant background retrieved automatically from the user\'s imported knowledge (use and cite it when it answers the question):\n'
-      + relevant.map(hit => `[${hit.documentTitle}${hit.heading !== undefined && hit.heading.length > 0 ? ` / ${hit.heading}` : ''}] ${clip(hit.text)}`).join('\n\n')
+      + relevant.map(hit => `[${nameOf(hit.baseId)} / ${hit.documentTitle}${hit.heading !== undefined && hit.heading.length > 0 ? ` / ${hit.heading}` : ''}] ${clip(hit.text)}`).join('\n\n')
     agent.inject({
       role: 'user',
       content: [{ type: 'text', text: background }],

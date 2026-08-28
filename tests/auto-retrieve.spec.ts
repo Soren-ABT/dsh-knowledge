@@ -7,7 +7,7 @@ function stubKnowledge(overrides: Partial<{
   enabled: boolean
   baseCount: number
   autoRetrieve: boolean
-  search: () => Promise<SearchResult>
+  search: (request?: { query: string; topK?: number; mode?: string; baseId?: string }) => Promise<SearchResult>
 }>): KnowledgeService {
   return {
     isEnabled: () => overrides.enabled ?? true,
@@ -40,7 +40,7 @@ describe('autoRetrieveBackground', () => {
     expect(message.source.kind).toBe('plugin')
     expect(message.content[0].type).toBe('text')
     expect(message.content[0].text).toContain('报销流程是提交发票后审批')
-    expect(message.content[0].text).toContain('手册 / 报销')
+    expect(message.content[0].text).toContain('base0 / 手册 / 报销')
   })
 
   it('injects nothing when every hit scores below the gate', async () => {
@@ -150,5 +150,20 @@ describe('autoRetrieveBackground', () => {
     topic = '年假申请需要提前三天'
     await autoRetrieveBackground(knowledge as never, agent as never, '年假怎么申请？')
     expect(agent.injected).toHaveLength(2)
+  })
+
+  it('restricts the search to an explicitly named base', async () => {
+    const agent = stubAgent()
+    const searched: Array<Record<string, unknown>> = []
+    const knowledge = stubKnowledge({
+      search: async (request) => {
+        searched.push(request as unknown as Record<string, unknown>)
+        return { query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('报销流程内容', 0.6, 'doc')] }
+      },
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, '看看 base0 里的报销流程')
+    expect(searched.length).toBe(1)
+    expect(searched[0].baseId).toBe('b0')
+    expect(agent.injected).toHaveLength(1)
   })
 })
