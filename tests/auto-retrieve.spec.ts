@@ -201,4 +201,21 @@ describe('autoRetrieveBackground', () => {
     await autoRetrieveBackground(knowledge as never, agent as never, '发票审批的步骤是什么')
     expect(agent.injected).toHaveLength(1)
   })
+
+  it('treats different topics as not-same even when both end in 什么', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      search: async () => ({ query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('报销流程内容', 0.6, 'a')] }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, '报销流程是什么？')
+    expect(agent.injected).toHaveLength(1)
+    // A clearly different topic inside the window must not be throttled just
+    // because both questions share the generic bigram 什么.
+    const other = stubAgent()
+    const knowledge2 = stubKnowledge({
+      search: async () => ({ query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('年假申请需要提前三天', 0.6, 'b')] }),
+    })
+    await autoRetrieveBackground(knowledge2 as never, other as never, '年假制度是什么？')
+    expect(other.injected).toHaveLength(1)
+  })
 })

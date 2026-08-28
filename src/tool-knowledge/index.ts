@@ -768,7 +768,10 @@ export async function autoRetrieveBackground(
     const keywords = retrieveKeywords(query)
     const throttled = now - (autoRetrieveInjectedAt.get(agent.id) ?? 0) < AUTO_RETRIEVE_MIN_INTERVAL_MS
     const prevKeywords = lastInjectedKeywords.get(agent.id) ?? []
-    const sameTopic = prevKeywords.length > 0 && keywords.some(keyword => prevKeywords.includes(keyword))
+    // Topic signal excludes generic bigrams ('什么' shared by every question
+    // tail would otherwise make unrelated topics look like follow-ups).
+    const topicSignal = topicKeywords(keywords)
+    const sameTopic = prevKeywords.length > 0 && topicSignal.some(keyword => prevKeywords.includes(keyword))
     // Same-topic follow-up inside the window: its background was just injected,
     // skip (prevents context accumulation). A NEW topic always gets a chance.
     if (throttled && sameTopic) return
@@ -859,6 +862,19 @@ function retrieveKeywords(text: string): string[] {
     }
   }
   return [...new Set(out)]
+}
+
+/** Generic CJK bigrams with no topic signal (question tails, filler) — the
+ *  topic-aware throttle must ignore these, or '制度是什么' vs '流程是什么'
+ *  would share '什么' and read as the same topic. */
+const RETRIEVE_GENERIC_BIGRAMS = new Set([
+  '什么', '是什', '怎么', '么样', '如何', '为什', '哪个', '哪些', '哪里', '怎样',
+  '这样', '那样', '这个', '那个', '一下', '请问', '帮我', '知道', '应该', '可以', '需要',
+])
+
+/** Topic signal of a query: keywords minus generic bigrams. */
+function topicKeywords(keywords: string[]): string[] {
+  return keywords.filter(keyword => !RETRIEVE_GENERIC_BIGRAMS.has(keyword))
 }
 
 /** Build the BM25 query: drop English stopwords but keep CJK runs WHOLE — the
