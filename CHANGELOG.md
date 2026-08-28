@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.4 — Auto-retrieve (NexusRAG-style) (npm release, pending)
+
+### Auto-retrieve
+
+- **自动预检索**：用户消息到达 agent 时**无需显式调用知识库工具**即自动检索并注入相关背景（NexusRAG 风格）。事件接线走 `agent/inbox/claimed`，注入为 user-role 消息（source=dsh-knowledge），持久进会话日志。
+- **自适应相关闸门**：绝对底线（BM25 0.12 / rerank 0.3）+ 领先比（top1 ≥ 1.2× 次高）+ 组界（0.6×top1），弱匹配/闲聊/数学题不注入。
+- **强并列不再误杀**（本次修复）：领先闸门原本无条件要求 top1 明显领先次高——当多份文档覆盖同一话题（如 0.91/0.89 强并列）时会把完全相关的命中整体吞掉。现在 top1 超过底线 2× 即视为「强命中」，跳过领先闸门（与 rerank 路径一致），组界 + 每库座位仍约束其余块。
+- **Rerank 参与预检索**：配置远程 rerank 模型时先按 BM25 取 12 候选，rerank 重排序后注入；`local:` 模型跳过（每消息加载 ~280MB 过重），rerank 失败降级 BM25。
+- **按库权重**：`autoRetrieveWeight`（0–5，默认 3，0=排除该库）作为每库座位上限；高权重库可主导注入，weight-0 库完全不参与。配套 `autoRetrieve` 总开关（默认开），RAG 设置面板 + 中英文案齐备。
+- **话题感知节流**：同一 agent 5 分钟内同话题追问跳过（避免上下文堆积），新话题立即放行；通用 2-gram（什么/怎么/如何…）不参与话题判定。
+- **注入去重**：per-agent chunk-id 记忆（上限 50，溢出重置），同一块不重复注入；单条注入 ≤3 块、每块 ≤300 字符裁剪，带 `[库名 / 标题 / heading]` 前缀。
+- **追问上下文**：拼接最近 2 轮用户消息做检索查询（指代消解）；库名定向（消息含库名则只搜该库）。
+- **压力测试**：`scripts/stress-auto-retrieve.mts` 真实 KnowledgeService + SQLite，30 项端到端检查（事实问答/追问/换话题/闲聊/数学/库名定向/跨库/去重/截断/弱匹配/10 连发/8 并发/weight-0 排除/weight-1 座位上限 + 默认权重对照）。
+
 ## 0.3.3 — local-model status fix (npm release, pending)
 
 ### Fixes

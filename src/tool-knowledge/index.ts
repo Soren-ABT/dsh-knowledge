@@ -740,6 +740,12 @@ const AUTO_RETRIEVE_WEIGHT_DEFAULT = 3
 /** The top hit must lead the runner-up by at least this factor — a flat set of
  *  weak matches has no clear winner and injects nothing. */
 const AUTO_RETRIEVE_LEAD_RATIO = 1.2
+/** Top score ≥ absolute floor × this counts as "strong": the lead gate stops
+ *  applying, because a near-tie of STRONG chunks is a normal result when
+ *  several docs cover the same topic — suppressing the winner would waste a
+ *  clearly relevant hit. Weak ties (scores bunched just above the floor)
+ *  still inject nothing. */
+const AUTO_RETRIEVE_STRONG_MULT = 2
 /** Chunks kept alongside the top hit: score ≥ top × this (the "same relevance group"). */
 const AUTO_RETRIEVE_GROUP_RATIO = 0.6
 /** Candidate pool fetched from the store (multi-base coverage before per-base voting). */
@@ -828,7 +834,14 @@ export async function autoRetrieveBackground(
     if (top1 === undefined || top1.score < relevanceFloor) return
     if (adaptive) {
       const runnerUp = ranked[1]
-      if (runnerUp !== undefined && top1.score < runnerUp.score * AUTO_RETRIEVE_LEAD_RATIO) return
+      // The lead gate suppresses FLAT WEAK sets: scores bunched just above
+      // the absolute floor have no credible winner. A STRONG top match (well
+      // above the floor) is worth injecting even when the runner-up is close —
+      // near-ties of strong chunks are normal when several docs cover the same
+      // topic, and the group floor + seat caps still bound what gets in. This
+      // also matches the rerank path, which skips the lead gate entirely.
+      const strongTop = top1.score >= AUTO_RETRIEVE_ABS_MIN_SCORE * AUTO_RETRIEVE_STRONG_MULT
+      if (runnerUp !== undefined && !strongTop && top1.score < runnerUp.score * AUTO_RETRIEVE_LEAD_RATIO) return
     }
     const groupFloor = adaptive ? top1.score * AUTO_RETRIEVE_GROUP_RATIO : relevanceFloor
     // Per-base seat cap (autoRetrieveWeight, 0–5; 0 excludes the base): each

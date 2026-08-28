@@ -69,6 +69,39 @@ describe('autoRetrieveBackground', () => {
     expect(agent.injected).toHaveLength(0)
   })
 
+  it('injects the winner of a STRONG near-tie (lead gate is strength-aware)', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 3, reranked: false, elapsedMs: 0,
+        // Top is far above the absolute floor (0.12) and the runner-up is
+        // close: a normal "several docs cover the same topic" result. The
+        // winner must inject, and the runner-up rides along above the group
+        // floor — only the noise chunk is dropped.
+        hits: [hit('明基投影仪支持 4K 分辨率', 0.91, 'A'), hit('爱普生投影仪支持 4K 分辨率', 0.89, 'B'), hit('无关噪声', 0.05, 'C')],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, '明基 投影仪 4K 分辨率')
+    expect(agent.injected).toHaveLength(1)
+    const message = agent.injected[0] as { content: Array<{ text: string }> }
+    expect(message.content[0].text).toContain('明基投影仪')
+    expect(message.content[0].text).toContain('爱普生投影仪')
+    expect(message.content[0].text).not.toContain('无关噪声')
+  })
+
+  it('still suppresses a flat set of WEAK matches (no winner in the weak zone)', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      search: async () => ({
+        query: 'q', mode: 'lexical', total: 2, reranked: false, elapsedMs: 0,
+        // Both just above the absolute floor and tied: no credible winner.
+        hits: [hit('报销流程相关', 0.13), hit('报销流程相关二', 0.13)],
+      }),
+    })
+    await autoRetrieveBackground(knowledge as never, agent as never, '报销流程是什么')
+    expect(agent.injected).toHaveLength(0)
+  })
+
   it('injects nothing when the deployment is disabled or has no bases', async () => {
     const agent = stubAgent()
     await autoRetrieveBackground(stubKnowledge({ enabled: false }) as never, agent as never, 'some question here')

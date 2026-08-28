@@ -1,13 +1,14 @@
 /* High-intensity stress test for auto-retrieve: real KnowledgeService + real
  * SQLite chunk store, exercising multi-base retrieval, follow-up context,
  * topic-aware throttle, injection dedup, adaptive thresholds, per-base
- * voting, named-base targeting, chunk clipping, and concurrent agents. */
+ * voting + per-base weights (0 = excluded, 1 = single seat), named-base
+ * targeting, chunk clipping, and concurrent agents. */
 import { Context } from '@deepseek-ai/cordis'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { KnowledgeService } from './src/knowledge/index.js'
-import { autoRetrieveBackground } from './src/tool-knowledge/index.js'
+import { KnowledgeService } from '../src/knowledge/index.js'
+import { autoRetrieveBackground } from '../src/tool-knowledge/index.js'
 
 const BASE_CONFIG = {
   embeddingProvider: 'none', embeddingBaseUrl: '', embeddingModel: '', embeddingApiKey: '',
@@ -130,9 +131,10 @@ try {
   const a5 = stubAgent('dedup')
   await autoRetrieveBackground(service as never, a5 as never, '报销流程是什么？')
   expectInjections(a5, 1, 'first injection')
-  // Same doc, phrased differently (new keywords pass topic throttle, but the
-  // chunk id is already injected → dedup suppresses).
-  await autoRetrieveBackground(service as never, a5 as never, '发票审批的步骤是怎样的')
+  // A NEW topic (直属上级审批 — no keyword overlap with the first query) whose
+  // ONLY lexical match is the very chunk injected in turn 1: the chunk-id
+  // dedup must suppress the repeat instead of re-injecting it.
+  await autoRetrieveBackground(service as never, a5 as never, '直属上级审批')
   check('same chunk not re-injected', a5.injected.length === 1)
 
   // ── 8. long chunk clipping ─────────────────────────────────────────────────
@@ -180,6 +182,65 @@ try {
   const injectedCount = agents.filter(a => a.injected.length > 0).length
   check('concurrent agents complete without throwing', injectedCount >= 0)
   check('at least half of concurrent agents injected relevant background', injectedCount >= 4, `got ${injectedCount}`)
+
+  // ── 12. per-base weight: weight-0 base is excluded end-to-end ───────────────
+  // (Contrast with scenario 9: there the topic existed nowhere; here it is a
+  // strong lexical match but the only matching base is weight-0 → still nothing.)
+  console.log('\n12. per-base weight (0 = excluded)')
+  const excluded = await service.createBase({ name: '被排除库', config: { autoRetrieveWeight: 0 } })
+  await service.addTextDocument({
+    baseId: excluded.id,
+    title: '量子物理',
+    content: '弦理论与量子引力是当代物理学的核心前沿，涉及额外维度、黑洞信息悖论与全息原理。',
+  })
+  await service.waitForIdle()
+  const a9 = stubAgent('excluded')
+  await autoRetrieveBackground(service as never, a9 as never, '量子物理弦理论前沿进展')
+  check('weight-0 base contributes nothing', a9.injected.length === 0, `got ${a9.injected.length}`)
+
+  // ── 13. per-base weight: weight-1 base is capped to a single seat ──────────
+  // Three projector docs: 明基 clearly leads, 爱普生 is a close runner-up
+  // (both pass the adaptive gates). Weight 1 must admit ONLY the leader —
+  // while an identical default-weight control base admits both.
+  console.log('\n13. per-base weight (1 = single seat)')
+  const single = await service.createBase({ name: '单票库', config: { autoRetrieveWeight: 1 } })
+  for (const [title, content] of [
+    ['明基投影仪', '明基投影仪支持 4K 分辨率，适合会议演示。'],
+    ['爱普生投影仪', '爱普生投影仪支持 4K 分辨率，适合会议演示。'],
+    ['极米投影仪', '极米投影仪支持 4K 分辨率。'],
+  ] as const) {
+    await service.addTextDocument({ baseId: single.id, title, content })
+  }
+  await service.waitForIdle()
+  const a10 = stubAgent('seat')
+  await autoRetrieveBackground(service as never, a10 as never, '明基 投影仪 4K 分辨率 会议演示')
+  check('weight-1 base injects', a10.injected.length === 1, `got ${a10.injected.length}`)
+  if (a10.injected.length === 1) {
+    const text = textOf(a10.injected[0])
+    check('only the leader chunk injected (seat cap drops runner-up)', text.includes('明基') && !text.includes('爱普生'), text.slice(0, 80))
+    check('injection cites 单票库', text.includes('单票库'))
+  }
+  // Control: identical docs under the DEFAULT weight → the gates admit ≥2
+  // chunks, proving the single injection above is the cap, not the gates.
+  const control = await service.createBase({ name: '对照库' })
+  for (const [title, content] of [
+    ['明基投影仪', '明基投影仪支持 4K 分辨率，适合会议演示。'],
+    ['爱普生投影仪', '爱普生投影仪支持 4K 分辨率，适合会议演示。'],
+    ['极米投影仪', '极米投影仪支持 4K 分辨率。'],
+  ] as const) {
+    await service.addTextDocument({ baseId: control.id, title, content })
+  }
+  await service.waitForIdle()
+  const a11 = stubAgent('control')
+  await autoRetrieveBackground(service as never, a11 as never, '明基 投影仪 4K 分辨率 会议演示')
+  check('default-weight control injects one bundled message', a11.injected.length === 1, `got ${a11.injected.length}`)
+  if (a11.injected.length === 1) {
+    const text = textOf(a11.injected[0])
+    // One message may bundle several chunks: under the default weight the
+    // gates admit BOTH the leader and the close runner-up (≥2 chunks), which
+    // proves the single chunk in the weight-1 case is the seat cap at work.
+    check('control admits leader and runner-up', text.includes('明基') && text.includes('爱普生'), text.slice(0, 120))
+  }
 
   console.log(`\n${checks} checks, ${failures} failed`)
   console.log(failures === 0 ? 'ALL STRESS CHECKS PASSED' : `${failures} STRESS CHECK(S) FAILED`)
