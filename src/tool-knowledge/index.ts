@@ -667,53 +667,96 @@ export function apply(ctx: Context): void {
 
   // ── proactive auto-retrieval ────────────────────────────────────────────────
   // On every user message, cheaply (BM25, no embedding round-trip) check the
-  // knowledge bases; when the top hit is clearly relevant, inject the top
-  // chunks as model-visible background so facts that live in imported material
+  // knowledge bases; when the top hit is clearly relevant, fold the top chunks
+  // into the SAME pre-step batch that enters the claimed user message — the
+  // agent-instructions fold pattern — so facts that live in imported material
   // reach the model even when the user never mentions a knowledge base and the
-  // model never calls knowledge_search. Best-effort: a disabled deployment,
-  // no bases, or a below-gate score injects nothing; failures are swallowed.
-  ctx.on('agent/created', (payload: { agent: AutoRetrieveAgent }) => {
-    const agent = payload.agent
-    agent.ctx.on('agent/inbox/claimed', (claimed: { message: AutoRetrieveMessage }) => {
-      const text = claimed.message.content
-        .filter(block => block.type === 'text')
-        .map(block => block.text ?? '')
-        .join(' ')
-        .trim()
-      // No raw-length gate here: it would count symbols and starve short but
-      // valid queries ("报销流程？" is 5 chars and must still retrieve). The
-      // real filters live inside autoRetrieveBackground — cleaned query
-      // non-empty, topic signal present, and CJK/word signal — so pure
-      // symbols, filler, and bare digits all die there before any search.
-      // Follow-up context: keep the last few user messages and query with
-      // them joined, so a deictic follow-up ("那第二步呢？") still retrieves
-      // the document the earlier turn established.
-      const recent = recentUserTexts.get(agent.id) ?? []
-      recent.push(text)
-      if (recent.length > AUTO_RETRIEVE_CONTEXT_TURNS) recent.shift()
-      recentUserTexts.set(agent.id, recent)
-      void autoRetrieveBackground(knowledge, agent, recent.join(' '))
-    })
-    // Forget this agent's throttle + context when it goes away.
-    agent.ctx.on('agent/disposed', () => {
-      autoRetrieveInjectedAt.delete(agent.id)
-      lastInjectedKeywords.delete(agent.id)
-      recentUserTexts.delete(agent.id)
-      injectedChunkIds.delete(agent.id)
-    })
+  // model never calls knowledge_search. Folding (instead of agent.inject from
+  // agent/inbox/claimed) keeps the background WITH its triggering message: an
+  // inject queues to the next pre-step and gets carried into a LATER turn by
+  // an unrelated message ("不需要" showing stale 数学建模 background). Tool
+  // continuations claim an empty batch, so this only fires on user turns.
+  // Best-effort: a disabled deployment, no bases, or a below-gate score folds
+  // nothing; failures are swallowed and never break the step.
+  ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
+    const decision = await next()
+    if (decision.kind === 'reject' || decision.messages.length === 0 || signal.aborted) return decision
+    const text = userTextOf(messages)
+    if (text.length === 0) return decision
+    // Follow-up context: keep the last few user messages and query with them
+    // joined, so a deictic follow-up ("那第二步呢？") still retrieves the
+    // document the earlier turn established.
+    const recent = recentUserTexts.get(agent.id) ?? []
+    recent.push(text)
+    if (recent.length > AUTO_RETRIEVE_CONTEXT_TURNS) recent.shift()
+    recentUserTexts.set(agent.id, recent)
+    const background = await buildAutoRetrieveMessage(knowledge, agent, recent.join(' '), signal)
+    if (background === undefined || signal.aborted) return decision
+    // DSH brands UserMessage#id as MessageId; our literal cannot name the
+    // brand, and the runtime accepts any unique string (the inject path has
+    // used the same literal shape since the feature shipped).
+    return { kind: 'enter', messages: foldBackground(decision.messages, messages, background.message as never) }
+  })
+  // Forget this agent's throttle + context when it goes away.
+  ctx.on('agent/disposed', ({ agent }) => {
+    autoRetrieveInjectedAt.delete(agent.id)
+    lastInjectedKeywords.delete(agent.id)
+    recentUserTexts.delete(agent.id)
+    injectedChunkIds.delete(agent.id)
   })
 }
 
-/** Minimal structural view of an agent the auto-retriever injects into. */
+/** The loop's pre-step decision: enter a step with messages, or reject it.
+ *  The handler return type is inferred from the DSH event declaration. */
+
+/** Extract the claimed USER input (source kind 'user') from a pre-step batch —
+ *  plugin context (our own background, agent-instructions, approvals…) never
+ *  triggers a retrieval, so a folded background cannot re-trigger itself.
+ *  Exported for tests. */
+export function userTextOf(messages: readonly AutoRetrieveMessage[]): string {
+  return messages
+    .filter(message => message.source?.kind === 'user')
+    .map(message => (message.content ?? [])
+      .filter(block => block.type === 'text')
+      .map(block => block.text ?? '')
+      .join(' '))
+    .join(' ')
+    .trim()
+}
+
+/** Insert the background message right after the claimed batch (agent-instructions
+ *  fold posture): the direct prompt precedes it, driver context follows it.
+ *  Exported for tests. */
+export function foldBackground<T>(
+  decisionMessages: T[],
+  claimedMessages: readonly AutoRetrieveMessage[],
+  background: T,
+): T[] {
+  let lastClaimedIndex = -1
+  for (let i = decisionMessages.length - 1; i >= 0; i -= 1) {
+    if (claimedMessages.includes(decisionMessages[i] as unknown as AutoRetrieveMessage)) {
+      lastClaimedIndex = i
+      break
+    }
+  }
+  if (lastClaimedIndex < 0) return [...decisionMessages, background]
+  return [
+    ...decisionMessages.slice(0, lastClaimedIndex + 1),
+    background,
+    ...decisionMessages.slice(lastClaimedIndex + 1),
+  ]
+}
+
+/** Minimal structural view of an agent the auto-retriever folds into. */
 interface AutoRetrieveAgent {
   readonly id: string
-  readonly ctx: Context
   inject(message: unknown): void
 }
 
 /** Minimal structural view of a claimed user message. */
 interface AutoRetrieveMessage {
   readonly content: ReadonlyArray<{ readonly type?: string; readonly text?: string }>
+  readonly source?: { readonly kind?: string; readonly plugin?: string }
 }
 
 /** Shortest user message worth probing the bases for (greetings/single tokens
@@ -741,6 +784,10 @@ const AUTO_RETRIEVE_CHUNK_MAX_CHARS = 300
 const AUTO_RETRIEVE_ABS_MIN_SCORE = 0.12
 /** Relevance floor for rerank-scored candidates (rerank scores are 0–1). */
 const AUTO_RETRIEVE_RERANK_MIN_SCORE = 0.3
+/** Rerank budget on the pre-step (latency-critical) path: a remote reranker
+ *  past this budget degrades to the BM25 order instead of delaying the model's
+ *  first token. Explicit knowledge_search keeps the full 60s budget. */
+const AUTO_RETRIEVE_RERANK_TIMEOUT_MS = 4000
 /** Default per-base seat cap (matches the old per-base vote with topK 3). */
 const AUTO_RETRIEVE_WEIGHT_DEFAULT = 3
 /** The top hit must lead the runner-up by at least this factor — a flat set of
@@ -768,19 +815,34 @@ const recentUserTexts = new Map<string, string[]>()
 /** Chunk ids already injected per agent id (dedup across turns). */
 const injectedChunkIds = new Map<string, Set<string>>()
 
-/** Search the bases for `text` and inject relevant chunks as agent background. */
-export async function autoRetrieveBackground(
+/** A folded auto-retrieve background message (user-role, plugin source). */
+export interface AutoRetrieveBackground {
+  readonly message: {
+    role: 'user'
+    content: ReadonlyArray<{ type: 'text'; text: string }>
+    source: { kind: 'plugin'; plugin: 'dsh-knowledge' }
+    id: string
+  }
+}
+
+/** Search the bases for `text` and build the background message to fold into
+ *  the triggering pre-step batch. Returns undefined when nothing clears the
+ *  gates (best-effort; never throws). Updates the throttle/dedup memory so a
+ *  folded background behaves exactly like an injected one on later turns. */
+export async function buildAutoRetrieveMessage(
   knowledge: KnowledgeService,
   agent: AutoRetrieveAgent,
   text: string,
-): Promise<void> {
+  signal?: AbortSignal,
+): Promise<AutoRetrieveBackground | undefined> {
   try {
-    if (!knowledge.isEnabled()) return
-    if (knowledge.listBases().length === 0) return
-    if (!knowledge.getConfig().autoRetrieve) return
+    if (signal?.aborted) return undefined
+    if (!knowledge.isEnabled()) return undefined
+    if (knowledge.listBases().length === 0) return undefined
+    if (!knowledge.getConfig().autoRetrieve) return undefined
     const now = Date.now()
     const query = cleanRetrieveQuery(text)
-    if (query.length < 2) return
+    if (query.length < 2) return undefined
     const keywords = retrieveKeywords(query)
     const throttled = now - (autoRetrieveInjectedAt.get(agent.id) ?? 0) < AUTO_RETRIEVE_MIN_INTERVAL_MS
     const prevKeywords = lastInjectedKeywords.get(agent.id) ?? []
@@ -798,13 +860,14 @@ export async function autoRetrieveBackground(
     // though its cross-boundary bigrams would pass the CJK-signal check above.
     const runs = query.match(/[\u4e00-\u9fff]+/g) ?? []
     const fillerOnly = runs.length > 0 && runs.every(run => isRepetitiveRun(run))
-    if (topicSignal.length === 0 || (!hasCjkSignal && !hasWordSignal) || fillerOnly) return
+    if (topicSignal.length === 0 || (!hasCjkSignal && !hasWordSignal) || fillerOnly) return undefined
     const sameTopic = prevKeywords.length > 0 && topicSignal.some(keyword => prevKeywords.includes(keyword))
     // Same-topic follow-up inside the window: its background was just injected,
     // skip (prevents context accumulation). A NEW topic always gets a chance.
-    if (throttled && sameTopic) return
+    if (throttled && sameTopic) return undefined
     const bases = knowledge.listBases()
-    if (bases.length === 0) return
+    if (bases.length === 0) return undefined
+    if (signal?.aborted) return undefined
     // An explicit library mention ("看看 atest 里的…") restricts the search to
     // that base — cross-base noise otherwise dilutes a clearly scoped request.
     const namedBase = bases.find(base => base.name !== '' && text.includes(base.name))
@@ -826,10 +889,14 @@ export async function autoRetrieveBackground(
     if (rerank !== undefined && !rerank.model.startsWith('local:') && scored.length > 1) {
       try {
         const { rerankCandidates } = await import('../knowledge/rerank.js')
+        // The pre-step path is latency-critical: a reranker past the short
+        // budget degrades to the BM25 order instead of delaying the first
+        // token (explicit knowledge_search keeps the full 60s budget).
         const scores = await rerankCandidates(
           rerank.baseUrl, rerank.model, rerank.apiKey, query,
           scored.map(hit => ({ id: hit.chunkId, text: hit.text })),
           AUTO_RETRIEVE_CANDIDATE_POOL,
+          AUTO_RETRIEVE_RERANK_TIMEOUT_MS,
         )
         const reranked = scored
           .filter(hit => scores.has(hit.chunkId))
@@ -849,7 +916,7 @@ export async function autoRetrieveBackground(
     const top1 = ranked[0]
     // Adaptive relevance: an absolute floor, then a clear lead over the
     // runner-up — a flat set of weak matches has no winner and injects nothing.
-    if (top1 === undefined || top1.score < relevanceFloor) return
+    if (top1 === undefined || top1.score < relevanceFloor) return undefined
     if (adaptive) {
       const runnerUp = ranked[1]
       // The lead gate suppresses FLAT WEAK sets: scores bunched just above
@@ -859,7 +926,7 @@ export async function autoRetrieveBackground(
       // topic, and the group floor + seat caps still bound what gets in. This
       // also matches the rerank path, which skips the lead gate entirely.
       const strongTop = top1.score >= AUTO_RETRIEVE_ABS_MIN_SCORE * AUTO_RETRIEVE_STRONG_MULT
-      if (runnerUp !== undefined && !strongTop && top1.score < runnerUp.score * AUTO_RETRIEVE_LEAD_RATIO) return
+      if (runnerUp !== undefined && !strongTop && top1.score < runnerUp.score * AUTO_RETRIEVE_LEAD_RATIO) return undefined
     }
     const groupFloor = adaptive ? top1.score * AUTO_RETRIEVE_GROUP_RATIO : relevanceFloor
     // Per-base seat cap (autoRetrieveWeight, 0–5; 0 excludes the base): each
@@ -881,32 +948,50 @@ export async function autoRetrieveBackground(
       chosen.push(hit)
       if (chosen.length >= AUTO_RETRIEVE_TOP_K) break
     }
-    if (chosen.length === 0) return
+    if (chosen.length === 0) return undefined
+    if (signal?.aborted) return undefined
     // Dedup across turns: chunks already injected for this agent are skipped.
     const injected = injectedChunkIds.get(agent.id) ?? new Set<string>()
     const fresh = chosen.filter(hit => !injected.has(hit.chunkId))
-    if (fresh.length === 0) return
+    if (fresh.length === 0) return undefined
     const clip = (chunk: string): string =>
       chunk.length > AUTO_RETRIEVE_CHUNK_MAX_CHARS ? `${chunk.slice(0, AUTO_RETRIEVE_CHUNK_MAX_CHARS)}…` : chunk
     const nameOf = (baseId: string): string => bases.find(base => base.id === baseId)?.name ?? baseId
     const background = 'Relevant background retrieved automatically from the user\'s imported knowledge (use and cite it when it answers the question):\n'
       + fresh.slice(0, AUTO_RETRIEVE_TOP_K).map(hit => `[${nameOf(hit.baseId)} / ${hit.documentTitle}${hit.heading !== undefined && hit.heading.length > 0 ? ` / ${hit.heading}` : ''}] ${clip(hit.text)}`).join('\n\n')
-    agent.inject({
-      role: 'user',
-      content: [{ type: 'text', text: background }],
-      source: { kind: 'plugin', plugin: 'dsh-knowledge' },
-      id: crypto.randomUUID(),
-    })
+    // Memory updates apply whether the caller folds (pre-step) or injects
+    // (autoRetrieveBackground), so a folded background throttles/dedups the
+    // same way an injected one does.
     autoRetrieveInjectedAt.set(agent.id, now)
     lastInjectedKeywords.set(agent.id, keywords)
     const nextInjected = new Set(injected)
     for (const hit of fresh) nextInjected.add(hit.chunkId)
     if (nextInjected.size > AUTO_RETRIEVE_MAX_MEMORY) nextInjected.clear()
     injectedChunkIds.set(agent.id, nextInjected)
+    return {
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: background }],
+        source: { kind: 'plugin', plugin: 'dsh-knowledge' },
+        id: crypto.randomUUID(),
+      },
+    }
   } catch (error) {
     // Best-effort: auto-retrieval must never break a turn.
     console.warn(`[dsh-knowledge] auto-retrieve failed: ${error instanceof Error ? error.message : String(error)}`)
+    return undefined
   }
+}
+
+/** Back-compat entry: build the background and inject it via the agent handle
+ *  (used by tests; production folds via agent/pre-step instead). */
+export async function autoRetrieveBackground(
+  knowledge: KnowledgeService,
+  agent: AutoRetrieveAgent,
+  text: string,
+): Promise<void> {
+  const background = await buildAutoRetrieveMessage(knowledge, agent, text)
+  if (background !== undefined) agent.inject(background.message)
 }
 
 /** Common conversational filler that carries no retrieval signal (English words,

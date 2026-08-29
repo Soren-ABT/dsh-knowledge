@@ -22,6 +22,9 @@ export interface RerankCandidate {
  *   or `local:Xenova/bge-reranker-base`).
  * @param topN - how many candidates the reranker should keep (Cherry asks for
  *   the final result count); defaults to all candidates.
+ * @param timeoutMs - per-request timeout (default 60000). Callers on a
+ *   latency-critical path (e.g. pre-step auto-retrieval) pass a short budget;
+ *   a timeout degrades to the BM25 order instead of blocking the request.
  * @returns id → relevance score clamped to [0, 1], containing only the kept
  *   (top-scoring) candidates — a caller that filters on this map implements
  *   Cherry's mergeRerankResults semantics (drop what the API did not return).
@@ -33,6 +36,7 @@ export async function rerankCandidates(
   query: string,
   candidates: readonly RerankCandidate[],
   topN?: number,
+  timeoutMs = 60000,
 ): Promise<Map<string, number>> {
   const keep = topN !== undefined
     ? Math.max(1, Math.min(Math.trunc(topN), candidates.length))
@@ -63,7 +67,7 @@ export async function rerankCandidates(
       documents: candidates.map(candidate => candidate.text),
       top_n: keep,
     }),
-    timeoutMs: 60000,
+    timeoutMs,
   })
   if (!response.ok) {
     // Carry the HTTP status so callers can distinguish a persistent

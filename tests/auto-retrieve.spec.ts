@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { autoRetrieveBackground } from '../src/tool-knowledge/index.js'
+import { autoRetrieveBackground, buildAutoRetrieveMessage, userTextOf, foldBackground } from '../src/tool-knowledge/index.js'
 import type { KnowledgeService } from '../src/knowledge/index.js'
 import type { SearchResult } from '../src/knowledge/types.js'
 
@@ -386,5 +386,62 @@ describe('autoRetrieveBackground', () => {
     })
     await autoRetrieveBackground(knowledge2 as never, other as never, '年假制度是什么？')
     expect(other.injected).toHaveLength(1)
+  })
+
+  it('buildAutoRetrieveMessage returns the message instead of injecting', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      search: async () => ({ query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('报销流程是提交发票后审批', 0.7, '手册')] }),
+    })
+    const background = await buildAutoRetrieveMessage(knowledge as never, agent as never, '报销流程是什么？')
+    expect(background).toBeDefined()
+    // The build path must NOT touch the agent handle — folding owns delivery.
+    expect(agent.injected).toHaveLength(0)
+    expect(background!.message.role).toBe('user')
+    expect(background!.message.source).toEqual({ kind: 'plugin', plugin: 'dsh-knowledge' })
+    expect(background!.message.content[0].type).toBe('text')
+    expect(background!.message.content[0].text).toContain('报销流程')
+    expect(typeof background!.message.id).toBe('string')
+  })
+
+  it('buildAutoRetrieveMessage returns undefined below the gate', async () => {
+    const agent = stubAgent()
+    const knowledge = stubKnowledge({
+      search: async () => ({ query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0, hits: [hit('unrelated noise', 0.05)] }),
+    })
+    const background = await buildAutoRetrieveMessage(knowledge as never, agent as never, 'hello there')
+    expect(background).toBeUndefined()
+    expect(agent.injected).toHaveLength(0)
+  })
+
+  it('userTextOf extracts only user-sourced messages from a pre-step batch', () => {
+    const batch = [
+      { content: [{ type: 'text', text: '报销流程是什么？' }], source: { kind: 'user' } },
+      // Our own folded background must never re-trigger a retrieval.
+      { content: [{ type: 'text', text: 'Relevant background retrieved automatically…' }], source: { kind: 'plugin', plugin: 'dsh-knowledge' } },
+      { content: [{ type: 'text', text: 'workspace context' }], source: { kind: 'plugin', plugin: 'agent-instructions' } },
+      { content: [{ type: 'text', text: '年假怎么申请？' }], source: { kind: 'user' } },
+    ] as never
+    expect(userTextOf(batch)).toBe('报销流程是什么？ 年假怎么申请？')
+  })
+
+  it('userTextOf returns empty when the batch has no user message', () => {
+    const batch = [
+      { content: [{ type: 'text', text: 'tool continuation' }], source: { kind: 'plugin', plugin: 'dsh-knowledge' } },
+    ] as never
+    expect(userTextOf(batch)).toBe('')
+  })
+
+  it('foldBackground inserts the background right after the claimed batch', () => {
+    const claimed = [{ id: 'c1' }, { id: 'c2' }]
+    const context = { id: 'ctx' }
+    const background = { id: 'bg' }
+    const entered = foldBackground([...claimed, context], claimed as never, background)
+    expect(entered.map(m => (m as { id: string }).id)).toEqual(['c1', 'c2', 'bg', 'ctx'])
+  })
+
+  it('foldBackground appends when the claimed batch is absent from the decision', () => {
+    const entered = foldBackground([{ id: 'only-context' }], [{ id: 'claimed-elsewhere' }] as never, { id: 'bg' })
+    expect(entered.map(m => (m as { id: string }).id)).toEqual(['only-context', 'bg'])
   })
 })
