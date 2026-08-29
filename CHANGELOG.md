@@ -15,6 +15,10 @@
 - **追问上下文**：拼接最近 2 轮用户消息做检索查询（指代消解）；库名定向（消息含库名则只搜该库）。
 - **压力测试**：`scripts/stress-auto-retrieve.mts` 真实 KnowledgeService + SQLite，30 项端到端检查（事实问答/追问/换话题/闲聊/数学/库名定向/跨库/去重/截断/弱匹配/10 连发/8 并发/weight-0 排除/weight-1 座位上限 + 默认权重对照）。
 
+### Dependencies
+
+- **安装下载面减半**：移除冗余的 `tesseract.js-core ^6.1.2` 直接依赖（tesseract.js@7 自带 core 7.0.0，旧版 43MB 白下载）；`onnxruntime-node` 从 `^1.27.0`（解析到 1.29.0，296MB）改为与 `@huggingface/transformers` 对齐的**精确 `1.21.0`**（218MB，transformers 官方 pin 并测试的版本）——原来两个版本并存 = 双份 ~514MB 原生库下载，现在依赖图单一版本，新装用户下载量约减半。
+
 ## 0.3.3 — local-model status fix (npm release, pending)
 
 ### Fixes
