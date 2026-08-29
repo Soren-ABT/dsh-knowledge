@@ -79,6 +79,16 @@ export interface Config {
    * how many of THIS base's chunks may enter one injection.
    */
   autoRetrieveWeight: number
+  /**
+   * Local-model worker idle timeout in ms (default 0 = never release). The
+   * embed worker is terminated after this much idle time to free its ~600MB
+   * model memory; the next request respawns it, which re-dlopen's onnxruntime's
+   * native binding and on Linux can fail with "Module did not self-register".
+   * Default 0 keeps the worker alive (model stays hot, no respawn risk) — the
+   * worker is only created lazily on the first local-model request, so this
+   * only concerns deployments that actually use a local model.
+   */
+  localWorkerIdleTimeoutMs: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -118,6 +128,7 @@ export const Config: Schema<Config> = Schema.object({
   resumeInterruptedOnStartup: Schema.boolean().default(true),
   autoRetrieve: Schema.boolean().default(true),
   autoRetrieveWeight: Schema.number().default(3),
+  localWorkerIdleTimeoutMs: Schema.number().default(0),
 })
 
 /** Resolve a full config from deployment defaults plus runtime overrides. */
@@ -169,6 +180,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     resumeInterruptedOnStartup: overrides.resumeInterruptedOnStartup ?? config.resumeInterruptedOnStartup,
     autoRetrieve: overrides.autoRetrieve ?? config.autoRetrieve,
     autoRetrieveWeight: clampInt(overrides.autoRetrieveWeight ?? config.autoRetrieveWeight, 0, 5, 3),
+    localWorkerIdleTimeoutMs: clampInt(overrides.localWorkerIdleTimeoutMs ?? config.localWorkerIdleTimeoutMs, 0, 24 * 3600 * 1000, 0),
     localModelCacheDir: overrides.localModelCacheDir ?? config.localModelCacheDir,
   }
 }

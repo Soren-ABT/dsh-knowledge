@@ -3,7 +3,7 @@ import { resolveConfig } from '../src/knowledge/config.js'
 import type { Config } from '../src/knowledge/config.js'
 import { LOCAL_MODELS } from '../src/knowledge/localModels.js'
 import { poolingFor } from '../src/knowledge/embed.js'
-import { MODEL_SUGGESTIONS } from '../src/knowledge/index.js'
+import { MODEL_SUGGESTIONS, localEmbeddingErrorText } from '../src/knowledge/index.js'
 
 const base: Config = {
   embeddingProvider: 'none',
@@ -42,6 +42,7 @@ const base: Config = {
   resumeInterruptedOnStartup: true,
   autoRetrieve: true,
   autoRetrieveWeight: 3,
+  localWorkerIdleTimeoutMs: 0,
 }
 
 describe('resolveConfig', () => {
@@ -61,6 +62,27 @@ describe('resolveConfig', () => {
     expect(resolveConfig(base, { chunkSize: 1 }).chunkSize).toBe(64)
     expect(resolveConfig(base, { topK: 10000 }).topK).toBe(50)
     expect(resolveConfig(base, { mmrDiversity: 5 }).mmrDiversity).toBe(1)
+  })
+
+  it('configures the local model worker idle timeout (default, zero, and clamp)', () => {
+    // Default 0 = never release the worker, so onnxruntime's binding is never
+    // reloaded (avoids the Linux 'Module did not self-register' respawn bug).
+    expect(resolveConfig(base, {}).localWorkerIdleTimeoutMs).toBe(0)
+    expect(resolveConfig(base, { localWorkerIdleTimeoutMs: 60000 }).localWorkerIdleTimeoutMs).toBe(60000)
+    expect(resolveConfig(base, { localWorkerIdleTimeoutMs: 24 * 3600 * 1000 }).localWorkerIdleTimeoutMs).toBe(24 * 3600 * 1000)
+    expect(resolveConfig(base, { localWorkerIdleTimeoutMs: 999999999 }).localWorkerIdleTimeoutMs).toBe(24 * 3600 * 1000)
+  })
+
+  it('classifies local embedding errors by whether the model files are on disk', () => {
+    // Model missing → the download hint (the old message).
+    const missing = localEmbeddingErrorText(false, 'cannot find onnx file')
+    expect(missing).toContain('is unavailable')
+    expect(missing).toContain('download it in Settings')
+    // Files present but the binding/worker reload failed → runtime hint, NOT download.
+    const runtime = localEmbeddingErrorText(true, 'Module did not self-register')
+    expect(runtime).toContain('failed to load')
+    expect(runtime).toContain('restart the service')
+    expect(runtime).not.toContain('download it in Settings')
   })
 })
 

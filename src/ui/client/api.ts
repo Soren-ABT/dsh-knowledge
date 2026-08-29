@@ -148,6 +148,9 @@ export interface KnowledgeConfig {
   resumeInterruptedOnStartup: boolean
   autoRetrieve: boolean
   autoRetrieveWeight: number
+  /** Local-model worker idle timeout in ms (0 = never release; keeps the
+   *  model hot and avoids an onnxruntime binding reload on respawn). */
+  localWorkerIdleTimeoutMs: number
 }
 
 export interface SearchHit {

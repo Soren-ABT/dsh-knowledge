@@ -54,6 +54,8 @@ export const baseConfigSchema = z.object({
   resumeInterruptedOnStartup: z.boolean().optional(),
   /** Proactive auto-retrieval on every user message. */
   autoRetrieve: z.boolean().optional(),
+  /** Local-model worker idle timeout in ms (0 = never release the worker). */
+  localWorkerIdleTimeoutMs: z.number().int().gte(0).optional(),
 })
 
 const baseSchema = z.object({
@@ -165,6 +167,7 @@ export interface ConfigOverrides {
   autoRetrieve?: boolean
   autoRetrieveWeight?: number
   localModelCacheDir?: string
+  localWorkerIdleTimeoutMs?: number
 }
 
 export const knowledgeDomainSpec = defineDomain({

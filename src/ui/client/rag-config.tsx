@@ -616,6 +616,16 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   onChange={(e) => patchNumber('autoRetrieveWeight', e.target.value)}
                 />
               </FieldRow>
+              <FieldRow label={t('localWorkerIdleTimeoutMs')} hint={t('localWorkerIdleTimeoutMsHint')}>
+                <input
+                  style={{ ...style.input, width: 100 }}
+                  type="number"
+                  min={0}
+                  step={60000}
+                  value={values.localWorkerIdleTimeoutMs}
+                  onChange={(e) => patchNumber('localWorkerIdleTimeoutMs', e.target.value)}
+                />
+              </FieldRow>
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
                 <input
                   style={{ ...style.input, width: 140 }}

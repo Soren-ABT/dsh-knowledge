@@ -154,13 +154,23 @@ interface WorkerResponse {
 
 // A single lazy worker owns every local model (Cherry: one worker per kind,
 // serialized requests, idle release, crash-then-respawn). `unref()` keeps the
-// worker from holding the host process open on shutdown.
-const LOCAL_WORKER_IDLE_TIMEOUT_MS = 60_000
+// worker from holding the host process open on shutdown. The idle timeout is
+// configurable (localWorkerIdleTimeoutMs, 0 = never release): respawning the
+// worker re-dlopen's onnxruntime's native binding, which on some platforms
+// (Linux) can fail with "Module did not self-register" — keeping the worker
+// alive avoids the respawn entirely at the cost of resident model memory.
+let localWorkerIdleTimeoutMs = 60_000
 const LOCAL_WORKER_REQUEST_TIMEOUT_MS = 30 * 60_000
 /** How long removeLocalModel waits for the worker's release ack before deleting. */
 const LOCAL_RELEASE_ACK_TIMEOUT_MS = 3000
 /** How long cancelLocalModel waits for the worker's cancel ack before deleting. */
 const LOCAL_CANCEL_ACK_TIMEOUT_MS = 3000
+
+/** Configure the local-model worker idle release timeout (0 = never release). */
+export function setLocalWorkerIdleTimeoutMs(ms: number): void {
+  localWorkerIdleTimeoutMs = Number.isFinite(ms) && ms >= 0 ? Math.trunc(ms) : 60_000
+  if (localWorkerIdleTimeoutMs <= 0) clearIdleTimer()
+}
 
 let localWorker: Worker | null = null
 let localWorkerIdleTimer: ReturnType<typeof setTimeout> | null = null
@@ -244,6 +254,7 @@ function ensureLocalWorker(): Worker {
 
 function armIdleTimer(): void {
   clearIdleTimer()
+  if (localWorkerIdleTimeoutMs <= 0) return
   localWorkerIdleTimer = setTimeout(() => {
     localWorkerIdleTimer = null
     // Never release while a request is in flight: the worker may be in the
@@ -258,7 +269,7 @@ function armIdleTimer(): void {
     localWorker = null
     failAllPending(new Error('local model worker released after idle'))
     void worker?.terminate()
-  }, LOCAL_WORKER_IDLE_TIMEOUT_MS)
+  }, localWorkerIdleTimeoutMs)
   localWorkerIdleTimer.unref?.()
 }
 

@@ -25,6 +25,7 @@ import {
   localModelCacheDir,
   setHfEndpoint,
   setLocalModelCacheDir,
+  setLocalWorkerIdleTimeoutMs,
 } from './embed.js'
 import type { LocalModelStatus } from './embed.js'
 import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, listLocalModels, LOCAL_MODELS } from './localModels.js'
@@ -86,6 +87,28 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     knowledge: KnowledgeService
   }
+}
+
+/** User-facing message for a local-model embedding failure. Classifies the
+ *  model-cache reality (checked from disk) so a broken binding/runtime error
+ *  is NOT misrouted to "download the model" — the files may be intact and the
+ *  fault is a worker/binding reload (e.g. "Module did not self-register"). */
+export function localEmbeddingErrorText(onDisk: boolean, detail: string): string {
+  if (onDisk) {
+    return `local embedding model failed to load (${detail}); ` 
+      + 'the model files are present but the runtime could not start — '
+      + 'restart the service or retry later. If it persists, check the local model runtime install.'
+  }
+  return `local embedding model is unavailable (${detail}); `
+    + 'download it in Settings → Local Models, or switch the embedding provider'
+}
+
+/** Build the classified local-model failure error for the given config. */
+async function localEmbeddingError(config: KnowledgeConfig, error: unknown): Promise<Error> {
+  const detail = error instanceof Error ? error.message : String(error)
+  const modelId = config.embeddingModel.trim() || DEFAULT_LOCAL_MODEL
+  const onDisk = await isLocalModelDownloaded(modelId).catch(() => false)
+  return new Error(localEmbeddingErrorText(onDisk, detail))
 }
 
 /** Curated model-id suggestions for the settings comboboxes (DSH exposes chat models, not embedding models). */
@@ -211,6 +234,7 @@ export class KnowledgeService extends Service {
     const resolved = this.getConfig()
     setHfEndpoint(resolved.hfEndpoint)
     setLocalModelCacheDir(resolved.localModelCacheDir)
+    setLocalWorkerIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
     this.ctx.effect(() => async () => { await store.close() }, 'knowledge: close store')
     // Terminate the local-model inference worker on teardown so a loaded
     // ~600MB model can never outlive the plugin (Cherry: lifecycle-managed worker).
@@ -385,10 +409,11 @@ export class KnowledgeService extends Service {
   async setConfig(overrides: ConfigOverrides): Promise<KnowledgeConfig> {
     await this.requireStore().setConfigOverrides(overrides)
     const resolved = this.getConfig()
-    // Reapply the mirror switch and model cache dir live, so the panel can
-    // change them without a restart (new downloads use the new location).
+    // Reapply the mirror switch, model cache dir, and worker idle timeout
+    // live, so the panel can change them without a restart.
     setHfEndpoint(resolved.hfEndpoint)
     setLocalModelCacheDir(resolved.localModelCacheDir)
+    setLocalWorkerIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
     return resolved
   }
 
@@ -2139,12 +2164,11 @@ export class KnowledgeService extends Service {
           // A configured local model that cannot load (weights deleted, download
           // failed) is a configuration problem, not a transient failure — surface
           // it instead of silently degrading to lexical (the user believes hybrid
-          // is on). Remote providers still degrade on transient failures.
+          // is on). A model whose files ARE on disk but whose binding/worker
+          // reload failed ("Module did not self-register") is a runtime error,
+          // not a missing download — say so instead of sending them to re-download.
           if (config.embeddingProvider === 'local') {
-            throw new Error(
-              `local embedding model is unavailable (${error instanceof Error ? error.message : String(error)}); `
-              + 'download it in Settings → Local Models, or switch the embedding provider',
-            )
+            throw await localEmbeddingError(config, error)
           }
           this.ctx.logger.warn(`knowledge: embedding failed, using lexical retrieval: ${error instanceof Error ? error.message : String(error)}`)
         }
@@ -2226,10 +2250,7 @@ export class KnowledgeService extends Service {
       } catch (error) {
         // See the lane path: a broken local model must not silently degrade.
         if (config.embeddingProvider === 'local') {
-          throw new Error(
-            `local embedding model is unavailable (${error instanceof Error ? error.message : String(error)}); `
-            + 'download it in Settings → Local Models, or switch the embedding provider',
-          )
+          throw await localEmbeddingError(config, error)
         }
         this.ctx.logger.warn(`knowledge: embedding failed, using lexical retrieval: ${error instanceof Error ? error.message : String(error)}`)
       }

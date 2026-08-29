@@ -27,6 +27,7 @@ vi.mock('../src/knowledge/embed.js', () => ({
   cancelLocalModel: vi.fn(async () => {}),
   setLocalModelCacheDir: vi.fn(),
   setHfEndpoint: vi.fn(),
+  setLocalWorkerIdleTimeoutMs: vi.fn(),
   applyGlobalProxy: vi.fn(),
 }))
 
@@ -71,6 +72,7 @@ const DEFAULT_CONFIG: Config = {
   resumeInterruptedOnStartup: true,
   autoRetrieve: true,
   autoRetrieveWeight: 3,
+  localWorkerIdleTimeoutMs: 0,
 }
 
 function fakeWebServer() {

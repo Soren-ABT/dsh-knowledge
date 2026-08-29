@@ -200,6 +200,8 @@ export interface KnowledgeConfig {
   readonly autoRetrieve: boolean
   /** Auto-retrieve seat cap per base (0–5, 0 = excluded; see BaseConfig). */
   readonly autoRetrieveWeight: number
+  /** Local-model worker idle timeout in ms (0 = never release; see Config). */
+  readonly localWorkerIdleTimeoutMs: number
 }
 
 /** One file of a batch import (content optional for the detect round). */
