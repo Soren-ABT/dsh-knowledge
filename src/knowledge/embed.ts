@@ -200,6 +200,10 @@ function failAllPending(error: Error): void {
 
 function ensureLocalWorker(): Worker {
   if (localWorker !== null) return localWorker
+  // Note: --expose-gc is NOT in Node's worker execArgv allowlist (workers
+  // cannot force a major GC), so model memory after pipeline.dispose() is
+  // reclaimed by V8's natural major GC (heap-pressure driven). The heap
+  // settles after a few unload/reload cycles (verified under stress).
   const worker = new Worker(localWorkerPath())
   worker.unref()
   worker.on('message', (message: WorkerResponse): void => {

@@ -255,7 +255,10 @@ function dropRunners(modelId: string): void {
 
 /** Dispose every loaded runner: pipeline.dispose() frees the ONNX sessions
  *  (onnxruntime native memory) immediately, and dropping the map lets the JS
- *  side be collected. The worker stays alive — never dlopen the binding again. */
+ *  side be collected. The worker stays alive — never dlopen the binding again.
+ *  (No forced GC: --expose-gc is not allowed in worker execArgv; V8's natural
+ *  heap-pressure major GC reclaims the JS-side model objects after a few
+ *  unload/reload cycles — verified under stress.) */
 async function disposeAllRunners(): Promise<void> {
   const pending = [...runners.values()]
   runners.clear()
