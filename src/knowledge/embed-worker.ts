@@ -33,8 +33,8 @@ interface TransformersModule {
     modelId: string,
     options?: Record<string, unknown>,
   ): Promise<
-    | ((text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>)
-    | ((query: string, texts: string[], options?: Record<string, unknown>) => Promise<Array<{ score: number }>>)
+    | (((text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>) & { dispose?(): Promise<void> })
+    | (((query: string, texts: string[], options?: Record<string, unknown>) => Promise<Array<{ score: number }>>) & { dispose?(): Promise<void> })
   >
   AutoModel: {
     from_pretrained(modelId: string, options?: Record<string, unknown>): Promise<{
@@ -69,6 +69,7 @@ interface EmbedRequest {
 type WorkerMessage = EmbedRequest
   | { type: 'cancel'; modelId: string }
   | { type: 'release'; modelId: string }
+  | { type: 'release-models' }
   | { type: 'shutdown' }
 
 type Pooling = 'last_token' | 'cls' | 'mean'
@@ -79,6 +80,11 @@ interface Runner {
   embed?: (texts: string[], pooling: Pooling) => Promise<number[][]>
   /** Cross-encoder relevance scoring (reranking tasks). */
   rerank?: (query: string, texts: string[]) => Promise<number[]>
+  /** Release the ONNX sessions this runner holds (frees ~600MB native memory
+   *  immediately). The worker itself stays alive, so the onnxruntime binding
+   *  is never dlopen'ed twice in one process — the Linux respawn failure
+   *  ("Module did not self-register") cannot happen. */
+  dispose?(): Promise<void>
 }
 
 let transformers: TransformersModule | null = null
@@ -206,17 +212,23 @@ async function createRunner(
         }
         return scores
       },
+      // Free the cross-encoder's ONNX sessions (onnxruntime native memory);
+      // the worker itself stays alive, so the binding is never reloaded.
+      dispose: async (): Promise<void> => { await model.dispose?.() },
     }
   }
   const pipeline = await tf.pipeline(task, join(cacheDir, modelId), { dtype: 'q8' }) as
-    | ((text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>)
-    | ((query: string, texts: string[], options?: Record<string, unknown>) => Promise<Array<{ score: number }>>)
+    | (((text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>) & { dispose?(): Promise<void> })
+    | (((query: string, texts: string[], options?: Record<string, unknown>) => Promise<Array<{ score: number }>>) & { dispose?(): Promise<void> })
   const embed = pipeline as (text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>
   return {
     embed: async (texts: string[], pooling: Pooling): Promise<number[][]> => {
       const output = await embed(texts, { pooling, normalize: true })
       return output.tolist() as number[][]
     },
+    // Free the pipeline's ONNX sessions (~600MB native memory) immediately;
+    // the worker stays alive, so a later request just reloads from disk.
+    dispose: async (): Promise<void> => { await pipeline.dispose?.() },
   }
 }
 
@@ -241,6 +253,39 @@ function dropRunners(modelId: string): void {
   runners.delete(`reranking:${modelId}`)
 }
 
+/** Dispose every loaded runner: pipeline.dispose() frees the ONNX sessions
+ *  (onnxruntime native memory) immediately, and dropping the map lets the JS
+ *  side be collected. The worker stays alive — never dlopen the binding again. */
+async function disposeAllRunners(): Promise<void> {
+  const pending = [...runners.values()]
+  runners.clear()
+  cancelledModels.clear()
+  for (const runner of pending) {
+    try {
+      await runner.then(r => r.dispose?.())
+    } catch {
+      // A failed dispose leaks memory but must never wedge the worker.
+    }
+  }
+}
+
+/** Dispose only the runners of one model (file-lock-safe deletion path). */
+async function disposeRunnersFor(modelId: string): Promise<void> {
+  const keys = [`feature-extraction:${modelId}`, `reranking:${modelId}`]
+  const pending = keys
+    .map(key => runners.get(key))
+    .filter((p): p is Promise<Runner> => p !== undefined)
+  for (const key of keys) runners.delete(key)
+  cancelledModels.delete(modelId)
+  for (const runner of pending) {
+    try {
+      await runner.then(r => r.dispose?.())
+    } catch {
+      // A failed dispose leaks memory but must never wedge the worker.
+    }
+  }
+}
+
 parentPort?.on('message', (message: WorkerMessage): void => {
   if (message.type === 'shutdown') {
     process.exit(0)
@@ -257,13 +302,20 @@ parentPort?.on('message', (message: WorkerMessage): void => {
     }, 30_000).unref?.()
     return
   }
+  if (message.type === 'release-models') {
+    // Idle release: unload the loaded MODELS (frees ~600MB), keep the worker
+    // alive. A respawn would re-dlopen onnxruntime's native binding, which on
+    // Linux fails with "Module did not self-register" — so the worker is
+    // never terminated on idle; the next request reloads from disk (~1s).
+    void disposeAllRunners().finally(() => post({ type: 'released', modelId: '' }))
+    return
+  }
   if (message.type === 'release') {
     // Drop the loaded runner so the ~600MB model can be garbage-collected,
     // then ack so the main process can delete the files without hitting a
     // file lock (onnxruntime may still hold handles until the runner is
     // released and collected).
-    dropRunners(message.modelId)
-    post({ type: 'released', modelId: message.modelId })
+    void disposeRunnersFor(message.modelId).finally(() => post({ type: 'released', modelId: message.modelId }))
     return
   }
   const { id, type, modelId, cacheDir, hfEndpoint } = message

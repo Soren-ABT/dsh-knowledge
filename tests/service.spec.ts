@@ -45,7 +45,7 @@ const DEFAULT_CONFIG: Config = {
   resumeInterruptedOnStartup: true,
   autoRetrieve: true,
   autoRetrieveWeight: 3,
-  localWorkerIdleTimeoutMs: 0,
+  localWorkerIdleTimeoutMs: 60000,
 }
 
 function fakeWebServer() {

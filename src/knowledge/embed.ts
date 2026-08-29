@@ -153,12 +153,13 @@ interface WorkerResponse {
 }
 
 // A single lazy worker owns every local model (Cherry: one worker per kind,
-// serialized requests, idle release, crash-then-respawn). `unref()` keeps the
-// worker from holding the host process open on shutdown. The idle timeout is
-// configurable (localWorkerIdleTimeoutMs, 0 = never release): respawning the
-// worker re-dlopen's onnxruntime's native binding, which on some platforms
-// (Linux) can fail with "Module did not self-register" — keeping the worker
-// alive avoids the respawn entirely at the cost of resident model memory.
+// serialized requests, idle model-release, crash-then-respawn). `unref()`
+// keeps the worker from holding the host process open on shutdown. The idle
+// timeout is configurable (localWorkerIdleTimeoutMs, 0 = keep models hot):
+// on idle the worker UNLOADS its models (pipeline.dispose frees the ONNX
+// sessions) but stays alive — terminating and respawning would re-dlopen
+// onnxruntime's native binding, which on Linux fails with "Module did not
+// self-register".
 let localWorkerIdleTimeoutMs = 60_000
 const LOCAL_WORKER_REQUEST_TIMEOUT_MS = 30 * 60_000
 /** How long removeLocalModel waits for the worker's release ack before deleting. */
@@ -259,16 +260,24 @@ function armIdleTimer(): void {
     localWorkerIdleTimer = null
     // Never release while a request is in flight: the worker may be in the
     // middle of a long download/load/inference (>60s). Only release when
-    // nothing is pending, mirroring Cherry's idle-release timer; the next
-    // request respawns the worker.
+    // nothing is pending, mirroring Cherry's idle-release timer.
     if (localPending.size > 0) {
       armIdleTimer()
       return
     }
     const worker = localWorker
-    localWorker = null
-    failAllPending(new Error('local model worker released after idle'))
-    void worker?.terminate()
+    if (worker === null) return
+    // Deep fix: idle release unloads the loaded MODELS (pipeline.dispose frees
+    // the ~600MB ONNX sessions) but KEEPS the worker alive. Terminating and
+    // respawning would re-dlopen onnxruntime's native binding in the same
+    // process, which fails on Linux ("Module did not self-register"). With the
+    // worker alive the binding is loaded exactly once; the next request simply
+    // reloads the model from disk (~1s).
+    try {
+      worker.postMessage({ type: 'release-models' })
+    } catch {
+      // The worker already went away (crash); the next request respawns it.
+    }
   }, localWorkerIdleTimeoutMs)
   localWorkerIdleTimer.unref?.()
 }

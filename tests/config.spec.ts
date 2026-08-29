@@ -42,7 +42,7 @@ const base: Config = {
   resumeInterruptedOnStartup: true,
   autoRetrieve: true,
   autoRetrieveWeight: 3,
-  localWorkerIdleTimeoutMs: 0,
+  localWorkerIdleTimeoutMs: 60000,
 }
 
 describe('resolveConfig', () => {
@@ -65,10 +65,11 @@ describe('resolveConfig', () => {
   })
 
   it('configures the local model worker idle timeout (default, zero, and clamp)', () => {
-    // Default 0 = never release the worker, so onnxruntime's binding is never
-    // reloaded (avoids the Linux 'Module did not self-register' respawn bug).
-    expect(resolveConfig(base, {}).localWorkerIdleTimeoutMs).toBe(0)
-    expect(resolveConfig(base, { localWorkerIdleTimeoutMs: 60000 }).localWorkerIdleTimeoutMs).toBe(60000)
+    // Default 60000 = idle release unloads the MODELS but keeps the worker
+    // alive, so onnxruntime's binding is never reloaded (avoids the Linux
+    // 'Module did not self-register' respawn bug).
+    expect(resolveConfig(base, {}).localWorkerIdleTimeoutMs).toBe(60000)
+    expect(resolveConfig(base, { localWorkerIdleTimeoutMs: 0 }).localWorkerIdleTimeoutMs).toBe(0)
     expect(resolveConfig(base, { localWorkerIdleTimeoutMs: 24 * 3600 * 1000 }).localWorkerIdleTimeoutMs).toBe(24 * 3600 * 1000)
     expect(resolveConfig(base, { localWorkerIdleTimeoutMs: 999999999 }).localWorkerIdleTimeoutMs).toBe(24 * 3600 * 1000)
   })

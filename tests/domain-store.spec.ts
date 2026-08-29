@@ -49,7 +49,7 @@ const TEST_CONFIG: Config = {
   resumeInterruptedOnStartup: true,
   autoRetrieve: true,
   autoRetrieveWeight: 3,
-  localWorkerIdleTimeoutMs: 0,
+  localWorkerIdleTimeoutMs: 60000,
 }
 
 /** Minimal in-memory KvTable matching the storage-domain runtime contract. */
