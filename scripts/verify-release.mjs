@@ -2,7 +2,7 @@
 
 import { readFile } from 'node:fs/promises'
 
-const EXPECTED_VERSION = '0.3.6'
+const EXPECTED_VERSION = '0.3.7'
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'))

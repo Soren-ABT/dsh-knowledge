@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.7 — 2026-08-30
+
+### Local reranking (cross-encoder) hardening
+
+- **独立 rerank 进程**：本地交叉编码器（bge-reranker-base 等）从 embed worker 迁出为 `fork` 的专用进程（`rerank-process.mjs`），host 不再 import——每次启动是全新进程空间，从架构上消除「同进程重复加载 onnxruntime 绑定」类问题；进程协议版本化（`rerank-protocol`），Runner 支持模型热切换、批量推理与 dispose。
+- **冒烟自测**：`scripts/smoke-local-rerank.mjs` 对真实模型跑判别性自测（`scores[0] > scores[1]`），覆盖初始启动与进程恢复两轮；CI 新增手动触发的 `local-rerank-smoke` job（Ubuntu + 模型缓存 + Node 22.19/24），补上 Linux 真实模型验证路径。
+
+### UI
+
+- **完整 chunk 预览**：文档阅读面板可展开完整 chunk 内容（不再截断到检索片段），便于核验检索命中上下文。
+
+### CI & release tooling
+
+- **打包冒烟生命周期**：`smoke-packed-lifecycle`（安装 → 启动 → 卸载全流程监督）+ 卸载超时分类（部分卸载 vs 完整失败）；原生集成超时放宽。
+- 发布预检链（release:check）保持不变，含构建策略、审计、测试、基准、打包验证。
+
+### 测试
+
+- 全量单元测试、检索基准（Hit@1 ≥ 95%）、发布预检在发布前全部通过。
+
 ## 0.3.6 — 2026-08-30
 
 ### Retrieval and safety
