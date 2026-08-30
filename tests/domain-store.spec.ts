@@ -708,6 +708,8 @@ describe('DomainStore wiring', () => {
     }
   })
 
+  // FTS population plus VACUUM is intentionally I/O-heavy and can exceed the
+  // 5 s unit-test budget on a contended Windows runner.
   it('reclaims space after a large delete and keeps FTS search working', async () => {
     const dir = await tempDir()
     try {
@@ -760,7 +762,7 @@ describe('DomainStore wiring', () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 })
 
 describe('KnowledgeService restart', () => {

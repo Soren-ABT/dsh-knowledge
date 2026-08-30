@@ -120,6 +120,8 @@ describe('local OCR fallback', () => {
 })
 
 describe('pdfjs scanned-raster decode (real pipeline)', () => {
+  // Native pdfjs startup can exceed Vitest's 5 s unit-test budget on a cold,
+  // contended Windows runner; keep the wider budget local to this real pipeline.
   it('decodes an 8-bit grayscale page and normalizes it to grayscale RGBA', async () => {
     const images = await extractPdfImages(makeScannedPdf(8, 30, 20))
     expect(images).toHaveLength(1)
@@ -136,7 +138,7 @@ describe('pdfjs scanned-raster decode (real pipeline)', () => {
       expect(rgba[i * 4 + 1]).toBe(rgba[i * 4 + 2])
       expect(rgba[i * 4 + 3]).toBe(255)
     }
-  })
+  }, 30_000)
 
   it('decodes a 1-bit (JBIG2/CCITT-style) page as bit-packed rows into pure black/white RGBA', async () => {
     // A larger raster (100x80) decodes as bit-packed 1bpp (~1000 bytes); small
