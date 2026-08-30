@@ -4,9 +4,12 @@ import { spawn, spawnSync } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { runSupervised, verifyUninstallOutcome } from './smoke-packed-lifecycle.mjs'
 
 const STARTUP_TIMEOUT_MS = 120_000
 const SHUTDOWN_TIMEOUT_MS = 15_000
+const UNINSTALL_TIMEOUT_MS = 120_000
 
 function command(name) {
   return process.platform === 'win32' ? `${name}.cmd` : name
@@ -137,19 +140,15 @@ async function main() {
     await waitForKnowledge(port, () => output)
     console.log(`packed DSH smoke passed at http://127.0.0.1:${port}/knowledge/bases`)
     await stopProcess(child)
-    run(dsh, [...dshPrefix, 'plugin', '--profile', 'web', 'remove', 'dsh-knowledge'], {
+    const uninstall = await runSupervised(dsh, [...dshPrefix, 'plugin', '--profile', 'web', 'remove', 'dsh-knowledge'], {
       env,
       stdio: 'inherit',
-      timeout: 10 * 60_000,
+      timeoutMs: Number(process.env.DSH_SMOKE_UNINSTALL_TIMEOUT_MS ?? UNINSTALL_TIMEOUT_MS),
     })
     const profilePackagePath = join(profiles, 'web', 'package.json')
     const profilePackage = JSON.parse(await readFile(profilePackagePath, 'utf8'))
-    if (profilePackage.dependencies?.['dsh-knowledge'] !== undefined) {
-      throw new Error('official DSH remove left dsh-knowledge in the profile package')
-    }
-    if (profilePackage.dsh?.profile?.bundles?.includes('dsh-knowledge')) {
-      throw new Error('official DSH remove left dsh-knowledge in the profile bundle stack')
-    }
+    const uninstallWarning = verifyUninstallOutcome(uninstall, profilePackage)
+    if (uninstallWarning !== undefined) console.warn(uninstallWarning)
     console.log('official DSH remove round-trip passed')
   } catch (error) {
     if (output !== '') console.error(`\n--- captured DSH output ---\n${output}`)
@@ -162,7 +161,10 @@ async function main() {
   }
 }
 
-main().catch(error => {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exitCode = 1
-})
+const isMain = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])
+if (isMain) {
+  main().catch(error => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
+}
