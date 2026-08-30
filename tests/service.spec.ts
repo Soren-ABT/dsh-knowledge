@@ -7,6 +7,7 @@ import { basename, join, resolve } from 'node:path'
 import { KnowledgeService } from '../src/knowledge/index.js'
 import type { Config } from '../src/knowledge/config.js'
 import type { KnowledgeService as KnowledgeServiceType } from '../src/knowledge/index.js'
+import type { SearchResult } from '../src/knowledge/types.js'
 
 const DEFAULT_CONFIG: Config = {
   embeddingProvider: 'none',
@@ -640,12 +641,25 @@ describe('KnowledgeService', () => {
     const b = await service.createBase({ name: 'b' })
     await service.setEnabledBaseIds([a.id, b.id])
     expect([...(service.enabledScope() ?? [])].sort()).toEqual([a.id, b.id].sort())
+    expect(service.enabledBases().map(base => base.id).sort()).toEqual([a.id, b.id].sort())
 
     // A deleted base id is dropped from the scope instead of silently narrowing search.
     await service.setEnabledBaseIds([a.id, 'ghost-id'])
     expect(service.enabledScope()).toEqual([a.id])
     await service.deleteBase(a.id)
-    expect(service.enabledScope()).toBeUndefined()
+    // A non-empty saved selection that becomes entirely stale fails closed;
+    // it must never broaden back to every remaining base.
+    expect(service.enabledScope()).toEqual([])
+    expect(service.enabledBases()).toEqual([])
+  })
+
+  it('treats an explicit empty baseIds search scope as no bases', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'scope-empty' })
+    await service.addTextDocument({ baseId: base.id, title: 'private', content: 'strict scope secret content' })
+    const result = await service.search({ query: 'strict scope secret', baseIds: [] })
+    expect(result.hits).toEqual([])
+    expect(result.total).toBe(0)
   })
 
   it('restores a base into a fresh copy with the same documents', async () => {
@@ -856,7 +870,7 @@ describe('KnowledgeService', () => {
     }
   })
 
-  it('merges multi-query variants by chunk id keeping the best score', async () => {
+  it('merges multi-query variants by chunk id with rank fusion', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'multi-query' })
     await service.addTextDocument({ baseId: base.id, title: '排队论讲义', content: '排队论研究顾客到达与服务台服务的随机过程，Little 定律描述平均队长与等待时间的关系。' })
@@ -872,6 +886,52 @@ describe('KnowledgeService', () => {
     const texts = result.hits.map(hit => hit.text).join(' ')
     expect(texts).toContain('排队论')
     expect(texts).toContain('EOQ')
+    expect(result.total).toBe(service.stats(base.id).chunkCount)
+  })
+
+  it('deduplicates and caps extra query variants at three', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'multi-query-cap' })
+    await service.addTextDocument({ baseId: base.id, title: 'doc', content: 'alpha beta gamma delta epsilon retrieval content' })
+    const runtime = service as unknown as { searchSingle: (...args: unknown[]) => Promise<SearchResult> }
+    const passes = vi.spyOn(runtime, 'searchSingle')
+    await service.search({
+      query: 'alpha',
+      baseId: base.id,
+      queries: [' ALPHA ', 'beta', 'BETA', 'gamma', 'delta', 'epsilon'],
+      topK: 5,
+    })
+    // primary + beta + gamma + delta; duplicate/case variants do not consume seats.
+    expect(passes).toHaveBeenCalledTimes(4)
+    passes.mockRestore()
+  })
+
+  it('reranks a multi-query fusion only once', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'multi-query-rerank' })
+    await service.addTextDocument({ baseId: base.id, title: 'one', content: 'alpha reimbursement process and approval' })
+    await service.addTextDocument({ baseId: base.id, title: 'two', content: 'beta reimbursement invoice workflow' })
+    await service.setConfig({ rerankModel: 'test-reranker', rerankBaseUrl: 'https://rerank.invalid' })
+    let requests = 0
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requests += 1
+      const body = JSON.parse(String(init?.body)) as { documents: string[] }
+      return new Response(JSON.stringify({
+        results: body.documents.map((_document, index) => ({ index, relevance_score: 0.9 - index * 0.1 })),
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    try {
+      const result = await service.search({
+        query: 'alpha reimbursement',
+        baseId: base.id,
+        queries: ['beta invoice', 'reimbursement workflow'],
+        topK: 2,
+      })
+      expect(requests).toBe(1)
+      expect(result.reranked).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('migrates local models to a new cache directory and switches the config', async () => {

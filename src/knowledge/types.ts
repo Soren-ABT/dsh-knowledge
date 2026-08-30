@@ -45,12 +45,16 @@ export interface BaseConfig {
   readonly imageCaptionModel?: string
   readonly imageCaptionBaseUrl?: string
   readonly imageCaptionApiKey?: string
+  /** Whether this base participates in proactive retrieval. */
+  readonly autoRetrieve?: boolean
   /**
    * Auto-retrieve weight (0–5, default 3): how many chunks of THIS base may
    * enter a proactive-retrieval injection. 0 excludes the base entirely;
    * the per-base seat cap keeps one library from monopolizing the context.
    */
   readonly autoRetrieveWeight?: number
+  /** Whether interrupted imports in this base resume when the service starts. */
+  readonly resumeInterruptedOnStartup?: boolean
 }
 
 /** One knowledge base (a namespace of documents). */
@@ -402,11 +406,13 @@ export interface SearchRequest {
   readonly query: string
   /** Additional query phrasings searched alongside `query` (multi-query
    *  retrieval): each variant retrieves independently and the hits are
-   *  merged by chunk id keeping the best score, so paraphrased/translated
-   *  rephrasings widen recall without a dedicated expansion model. */
+   *  fused by reciprocal rank after normalization/deduplication, so
+   *  paraphrased/translated rephrasings widen recall without comparing
+   *  incompatible raw score scales. */
   readonly queries?: readonly string[]
   readonly baseId?: string
-  /** Search only these bases (omitted baseId + empty/absent baseIds = every base). */
+  /** Search only these bases. Omitted baseId + absent baseIds = every base;
+   *  an explicitly empty baseIds array searches no bases. */
   readonly baseIds?: readonly string[]
   readonly topK?: number
   readonly mode?: SearchMode

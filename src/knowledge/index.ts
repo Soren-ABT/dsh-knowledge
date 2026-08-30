@@ -386,6 +386,11 @@ export class KnowledgeService extends Service {
     return this.getConfig()
   }
 
+  /** Emit a structured warning on behalf of model-facing retrieval helpers. */
+  warn(message: string): void {
+    this.ctx.logger.warn(`knowledge: ${message}`)
+  }
+
   /**
    * Rerank settings for proactive (cross-base) retrieval, which has no single
    * base config: the global rerank model wins; otherwise the first enabled
@@ -396,9 +401,9 @@ export class KnowledgeService extends Service {
     if (global.rerankModel.trim() !== '') {
       return { model: global.rerankModel, baseUrl: global.rerankBaseUrl, apiKey: global.rerankApiKey }
     }
-    const store = this.requireStore()
-    for (const base of store.listBases()) {
+    for (const base of this.enabledBases()) {
       const config = this.getConfigFor(base.id)
+      if (!config.autoRetrieve || config.autoRetrieveWeight === 0) continue
       if (config.rerankModel.trim() !== '') {
         return { model: config.rerankModel, baseUrl: config.rerankBaseUrl, apiKey: config.rerankApiKey }
       }
@@ -436,8 +441,9 @@ export class KnowledgeService extends Service {
   }
 
   /**
-   * Resolve the effective search scope for a model call: the enabled base ids,
-   * or `undefined` when none are pinned (meaning "every base", Cherry's no-binding case).
+   * Resolve the effective search scope for a model call. `undefined` means no
+   * ids were configured (every base); an empty array means a non-empty saved
+   * selection has gone entirely stale and must fail closed.
    */
   enabledScope(): string[] | undefined {
     const store = this.requireStore()
@@ -445,7 +451,16 @@ export class KnowledgeService extends Service {
     if (ids.length === 0) return undefined
     const existing = new Set(store.listBases().map(base => base.id))
     const valid = ids.filter(id => existing.has(id))
-    return valid.length > 0 ? valid : undefined
+    return valid
+  }
+
+  /** Existing bases inside the strict model-invocation scope. */
+  enabledBases(): BaseSummary[] {
+    const bases = this.listBases()
+    const scope = this.enabledScope()
+    if (scope === undefined) return bases
+    const allowed = new Set(scope)
+    return bases.filter(base => allowed.has(base.id))
   }
 
   // ── bases ─────────────────────────────────────────────────────────────────
@@ -535,10 +550,8 @@ export class KnowledgeService extends Service {
     // A whole-base delete frees a large chunk of pages; hand them back to the
     // OS (threshold-gated, so a small base never pays for a VACUUM).
     this.reclaimAfterDelete()
-    // Keep the invocation scope clean: a deleted base id must not silently
-    // narrow future searches to a base that no longer exists.
-    const enabled = store.getEnabledBaseIds()
-    if (enabled.includes(id)) await store.setEnabledBaseIds(enabled.filter(x => x !== id))
+    // Keep a selected id as a stale marker. If it was the last selected base,
+    // enabledScope() must resolve to [] (fail closed), never broaden to all.
   }
 
   async renameBase(id: string, request: UpdateBaseRequest): Promise<KnowledgeBase> {
@@ -2092,41 +2105,43 @@ export class KnowledgeService extends Service {
 
   async search(request: SearchRequest): Promise<SearchResult> {
     const startedAt = Date.now()
+    const query = request.query.trim()
+    if (query.length === 0) return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] }
+    if (query.length > 2000) throw new Error('search query must not exceed 2000 characters')
+
+    const variants = normalizeQueryVariants(query, request.queries)
+    if (variants.length === 1) {
+      return this.searchSingle({ ...request, query, queries: undefined }, true, startedAt)
+    }
+
+    const config = this.getConfigFor(request.baseId)
+    const requestedMode = request.mode ?? config.searchMode
+    const topK = clampInt(request.topK ?? config.topK, 1, 50, 6)
+    const subTopK = Math.min(50, Math.max(topK * 2, 12))
+    const results = await Promise.all(variants.map(variant => this.searchSingle({
+      ...request,
+      query: variant,
+      queries: undefined,
+      topK: subTopK,
+    }, false, startedAt)))
+    return this.finishMultiQuerySearch(config, query, requestedMode, results, topK, request.threshold, startedAt)
+  }
+
+  /** One retrieval pass. Multi-query orchestration lives in search() so each
+   * variant cannot independently invoke an expensive reranker. */
+  private async searchSingle(
+    request: SearchRequest,
+    allowRerank: boolean,
+    startedAt: number,
+  ): Promise<SearchResult> {
     const store = this.requireStore()
     const config = this.getConfigFor(request.baseId)
     const query = request.query.trim()
     if (query.length === 0) return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] }
     const requestedMode = request.mode ?? config.searchMode
     const topK = clampInt(request.topK ?? config.topK, 1, 50, 6)
-    // Multi-query retrieval: each phrasing (including the primary query)
-    // searches independently; hits merge by chunk id keeping the best score.
-    // This widens recall for paraphrased/translated queries without a
-    // dedicated expansion model.
-    if (request.queries !== undefined && request.queries.length > 0) {
-      const variants = [query, ...request.queries.map(variant => variant.trim()).filter(variant => variant.length > 0)]
-      // Each variant retrieves with a wider topK so a variant whose own top-K
-      // is full of its own hits can still contribute its secondary matches to
-      // the merged result before the final topK cut.
-      const subTopK = Math.min(50, topK * 2)
-      const results = await Promise.all(variants.map(variant => this.search({ ...request, query: variant, queries: undefined, topK: subTopK })))
-      const byId = new Map<string, SearchHit>()
-      let total = 0
-      for (const result of results) {
-        total += result.total
-        for (const hit of result.hits) {
-          const prev = byId.get(hit.chunkId)
-          if (prev === undefined || hit.score > prev.score) byId.set(hit.chunkId, hit)
-        }
-      }
-      const hits = [...byId.values()].sort((a, b) => b.score - a.score).slice(0, topK)
-      return {
-        query,
-        mode: requestedMode,
-        total,
-        reranked: results.some(result => result.reranked),
-        elapsedMs: Date.now() - startedAt,
-        hits,
-      }
+    if (request.baseId === undefined && request.baseIds !== undefined && request.baseIds.length === 0) {
+      return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: Date.now() - startedAt, hits: [] }
     }
     // A stale base id (e.g. a base deleted without sweeping child records)
     // must not surface orphaned content.
@@ -2218,7 +2233,7 @@ export class KnowledgeService extends Service {
           ranked = maximalMarginalRelevance(ranked, byId, queryVector, config.mmrDiversity, Math.max(topK * 3, 12))
         }
       }
-      return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, total, startedAt)
+      return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, total, startedAt, allowRerank)
     }
 
     const chunks = (request.baseId !== undefined
@@ -2267,7 +2282,76 @@ export class KnowledgeService extends Service {
       mmrLambda: config.mmrDiversity,
       queryVector,
     })
-    return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, chunks.length, startedAt)
+    return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, chunks.length, startedAt, allowRerank)
+  }
+
+  /** Merge independent query rankings with RRF, then optionally rerank once. */
+  private async finishMultiQuerySearch(
+    config: KnowledgeConfig,
+    query: string,
+    requestedMode: SearchMode,
+    results: readonly SearchResult[],
+    topK: number,
+    requestedThreshold: number | undefined,
+    startedAt: number,
+  ): Promise<SearchResult> {
+    const orders = results.map(result => result.hits.map(hit => hit.chunkId))
+    const fused = reciprocalRankFusion(orders)
+    const maxFused = results.length / (RRF_K + 1)
+    const byId = new Map<string, SearchHit>()
+    for (const result of results) {
+      for (const hit of result.hits) if (!byId.has(hit.chunkId)) byId.set(hit.chunkId, hit)
+    }
+    let hits = [...byId.values()]
+      .map(hit => ({ ...hit, score: (fused.get(hit.chunkId) ?? 0) / maxFused }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.min(50, Math.max(topK * 4, 20)))
+    let reranked = false
+    if (config.rerankModel.trim() !== '' && hits.length > 1) {
+      try {
+        const scores = await rerankCandidates(
+          config.rerankBaseUrl,
+          config.rerankModel,
+          config.rerankApiKey,
+          query,
+          hits.map(hit => ({
+            id: hit.chunkId,
+            text: [hit.documentTitle, hit.heading, hit.text, hit.siblingContext]
+              .filter((part): part is string => part !== undefined && part.length > 0)
+              .join('\n'),
+          })),
+          topK,
+        )
+        const rescored = hits
+          .filter(hit => scores.has(hit.chunkId))
+          .map(hit => ({ ...hit, score: scores.get(hit.chunkId)! }))
+          .sort((a, b) => b.score - a.score)
+        if (rescored.length > 0) {
+          hits = rescored
+          reranked = true
+        }
+      } catch (error) {
+        const status = (error as { status?: number }).status
+        const level = status === 401 || status === 403 || status === 404 ? 'error' : 'warn'
+        this.ctx.logger[level](`knowledge: multi-query rerank failed, keeping fused order: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+
+    const threshold = requestedThreshold ?? config.similarityThreshold
+    if (reranked) hits = hits.filter(hit => hit.score >= threshold)
+    const mode = results.some(result => result.mode === 'hybrid')
+      ? 'hybrid'
+      : results.some(result => result.mode === 'vector')
+        ? 'vector'
+        : requestedMode === 'lexical' ? 'lexical' : results[0]?.mode ?? 'lexical'
+    return {
+      query,
+      mode,
+      total: results.reduce((max, result) => Math.max(max, result.total), 0),
+      reranked,
+      elapsedMs: Date.now() - startedAt,
+      hits: hits.slice(0, topK),
+    }
   }
 
   /** Shared tail: rerank (optional), threshold + top-K cut, and hit mapping. */
@@ -2282,10 +2366,11 @@ export class KnowledgeService extends Service {
     threshold: number,
     total: number,
     startedAt: number,
+    allowRerank = true,
   ): Promise<SearchResult> {
     let ranked = initial
     let reranked = false
-    if (config.rerankModel.trim() !== '' && ranked.length > 1) {
+    if (allowRerank && config.rerankModel.trim() !== '' && ranked.length > 1) {
       try {
         const pool = ranked.map(hit => ({ id: hit.id, text: chunkSearchText(byId.get(hit.id)!)}))
         // Cherry's mergeRerankResults: only the candidates the rerank model
@@ -2801,6 +2886,24 @@ function siblingContextOf(store: Store, chunk: KnowledgeChunk, radius: number): 
 function clampInt(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback
   return Math.min(max, Math.max(min, Math.trunc(value)))
+}
+
+/** Trim, validate, normalize, and cap multi-query variants. */
+function normalizeQueryVariants(primary: string, queries?: readonly string[]): string[] {
+  const variants = [primary]
+  const seen = new Set([primary.toLowerCase()])
+  for (const raw of (queries ?? []) as readonly unknown[]) {
+    if (typeof raw !== 'string') continue
+    const query = raw.trim()
+    if (query.length === 0) continue
+    if (query.length > 2000) throw new Error('extra search query must not exceed 2000 characters')
+    const key = query.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    variants.push(query)
+    if (variants.length >= 4) break
+  }
+  return variants
 }
 
 /** Drop empty-string config fields so a base only stores real overrides. */

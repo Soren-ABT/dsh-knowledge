@@ -227,6 +227,8 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     imageCaptionModel: baseConfig.imageCaptionModel ?? resolved.imageCaptionModel,
     imageCaptionBaseUrl: baseConfig.imageCaptionBaseUrl ?? resolved.imageCaptionBaseUrl,
     imageCaptionApiKey: baseConfig.imageCaptionApiKey ?? resolved.imageCaptionApiKey,
+    resumeInterruptedOnStartup: baseConfig.resumeInterruptedOnStartup ?? resolved.resumeInterruptedOnStartup,
+    autoRetrieve: baseConfig.autoRetrieve ?? resolved.autoRetrieve,
     autoRetrieveWeight: clampInt(baseConfig.autoRetrieveWeight ?? resolved.autoRetrieveWeight, 0, 5, 3),
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveConfig } from '../src/knowledge/config.js'
+import { resolveConfig, resolveConfigFor } from '../src/knowledge/config.js'
 import type { Config } from '../src/knowledge/config.js'
 import { LOCAL_MODELS } from '../src/knowledge/localModels.js'
 import { poolingFor } from '../src/knowledge/embed.js'
@@ -90,6 +90,29 @@ describe('resolveConfig', () => {
   it('stores the worker idle timeout only as a global runtime override', () => {
     expect(configOverridesSchema.parse({ localWorkerIdleTimeoutMs: 0 })).toEqual({ localWorkerIdleTimeoutMs: 0 })
     expect(baseConfigSchema.parse({ localWorkerIdleTimeoutMs: 0 })).toEqual({})
+  })
+
+  it('persists global auto-retrieve controls through the runtime schema', () => {
+    expect(configOverridesSchema.parse({
+      autoRetrieve: false,
+      autoRetrieveWeight: 1,
+      resumeInterruptedOnStartup: false,
+    })).toEqual({
+      autoRetrieve: false,
+      autoRetrieveWeight: 1,
+      resumeInterruptedOnStartup: false,
+    })
+  })
+
+  it('applies per-base auto-retrieve controls over global defaults', () => {
+    const resolved = resolveConfigFor(base, { autoRetrieve: true, autoRetrieveWeight: 3 }, {
+      autoRetrieve: false,
+      autoRetrieveWeight: 1,
+      resumeInterruptedOnStartup: false,
+    })
+    expect(resolved.autoRetrieve).toBe(false)
+    expect(resolved.autoRetrieveWeight).toBe(1)
+    expect(resolved.resumeInterruptedOnStartup).toBe(false)
   })
 })
 

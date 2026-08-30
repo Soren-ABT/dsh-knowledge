@@ -36,7 +36,9 @@ export interface BaseConfig {
   imageCaptionModel?: string
   imageCaptionBaseUrl?: string
   imageCaptionApiKey?: string
+  autoRetrieve?: boolean
   autoRetrieveWeight?: number
+  resumeInterruptedOnStartup?: boolean
 }
 
 export interface BaseSummary {

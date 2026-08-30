@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — knowledge retrieval hardening
+
+### Retrieval and safety
+
+- **Strict enabled-base boundary**: automatic retrieval and every model tool now share the same fail-closed scope. An explicit empty or all-stale selection exposes no bases instead of silently widening to all bases; per-base `autoRetrieve` and weight overrides are persisted and enforced.
+- **Safer proactive context**: only the current user turn controls topic gating and base-name routing, while recent turns are used solely to enrich the query. Injected chunks are clearly framed as untrusted evidence, carry stable base/document/chunk identifiers, and sanitize source metadata onto one bounded line.
+- **Multi-query rank fusion**: the primary query plus at most three normalized, deduplicated variants are fused with Reciprocal Rank Fusion, then reranked at most once. Reported totals are no longer multiplied by the number of variants.
+- **Tool guardrails and output completeness**: permanent base/document deletion requires host approval; search enum/range validation is strict; document reads are paged and report continuation/truncation state; native search output emits each excerpt once while preserving canonical structured citations.
+
+### Tests
+
+- Added regression coverage for stale/empty scope, per-base automatic retrieval controls, context-topic separation, source framing, RRF normalization and rerank count, destructive approval classification, and paged native rendering.
+
 ## 0.3.5 — Linux local-worker lifecycle fix
 
 ### Fixes

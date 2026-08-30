@@ -125,6 +125,9 @@ export const configOverridesSchema = z.object({
   imageCaptionModel: z.string().optional(),
   imageCaptionBaseUrl: z.string().optional(),
   imageCaptionApiKey: z.string().optional(),
+  resumeInterruptedOnStartup: z.boolean().optional(),
+  autoRetrieve: z.boolean().optional(),
+  autoRetrieveWeight: z.number().int().gte(0).lte(5).optional(),
   localModelCacheDir: z.string().optional(),
   localWorkerIdleTimeoutMs: z.number().int().gte(0).optional(),
 })
