@@ -120,7 +120,10 @@ export function apply(ctx: Context): void {
           const excerpt = hit.siblingContext !== undefined && hit.siblingContext.length > 0
             ? `${hit.siblingContext}\n>>> ${hit.text}`
             : hit.text
-          return `[${i + 1}] (score ${hit.score.toFixed(3)}) ${hit.documentTitle}: ${excerpt}`
+          // Expose the docId so the model can follow up with
+          // knowledge_read_document — without it the model loops trying to
+          // find an id that search never returns.
+          return `[${i + 1}] (score ${hit.score.toFixed(3)}) [docId=${hit.docId}] ${hit.documentTitle}: ${excerpt}`
         })
         const citations = value.citations !== undefined && value.citations.length > 0
           ? `\n\nCitations to quote in your answer:\n${value.citations.map((citation, i) => `[${i + 1}] ${citation}`).join('\n')}`
@@ -337,11 +340,13 @@ export function apply(ctx: Context): void {
           },
         },
       },
-      render: (_args, value: { documents: Array<{ title: string; chunkCount: number }> }) => {
+      render: (_args, value: { documents: Array<{ id: string; title: string; chunkCount: number }> }) => {
         if (value.documents.length === 0) return [{ type: 'text', text: 'no documents in this base' }]
+        // Expose the docId (knowledge_read_document needs it; without it the
+        // model loops between search and list trying to find an id).
         return [{
           type: 'text',
-          text: value.documents.map(d => `- ${d.title} (${d.chunkCount} chunks)`).join('\n'),
+          text: value.documents.map(d => `- ${d.title} (${d.chunkCount} chunks) [id=${d.id}]`).join('\n'),
         }]
       },
     },
