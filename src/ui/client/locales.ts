@@ -75,6 +75,10 @@ export type KnowledgeKey =
   | 'urlRefreshed'
   | 'urlUnchanged'
   | 'chunks'
+  | 'chunkExpand'
+  | 'chunkCollapse'
+  | 'chunksExpandAll'
+  | 'chunksCollapseAll'
   | 'preview'
   | 'rawText'
   | 'close'
@@ -568,6 +572,10 @@ export const zh: Record<KnowledgeKey, string> = {
   rebuildHint: '嵌入模型已更改，现有向量与新模型不匹配，请重建知识库以重新生成向量。',
   previewTruncated: '内容过大，仅显示前 {count} 字符。',
   chunksTruncated: '仅加载前 {loaded} 个分块（共 {total} 个）。',
+  chunkExpand: '展开此分块',
+  chunkCollapse: '收起此分块',
+  chunksExpandAll: '全部展开',
+  chunksCollapseAll: '全部收起',
   firstUploadTitle: '上传第一个数据源',
   emptyFolder: '该文件夹为空',
   statusProcessing: '嵌入中',
@@ -862,6 +870,10 @@ export const en: Record<KnowledgeKey, string> = {
   rebuildHint: 'The embedding model has changed; existing vectors no longer match. Rebuild the base to regenerate vectors.',
   previewTruncated: 'Content too large; showing the first {count} characters.',
   chunksTruncated: 'Showing the first {loaded} of {total} chunks.',
+  chunkExpand: 'Expand chunk',
+  chunkCollapse: 'Collapse chunk',
+  chunksExpandAll: 'Expand all',
+  chunksCollapseAll: 'Collapse all',
   firstUploadTitle: 'Upload your first data source',
   emptyFolder: 'This folder is empty',
   statusProcessing: 'Embedding',

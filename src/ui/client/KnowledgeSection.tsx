@@ -24,6 +24,14 @@ import type {
 } from './api.js'
 import { C, PANEL_CSS, avatarColor, formatRelativeTime, formatSize, style } from './theme.js'
 import {
+  chunkPreviewBodyId,
+  collapseAllChunks,
+  collapsedChunkExpansion,
+  expandAllChunks,
+  isChunkExpanded,
+  toggleChunkExpansion,
+} from './chunk-expansion.js'
+import {
   IconBook,
   IconCheck,
   IconEye,
@@ -2125,6 +2133,9 @@ function DocumentDetailPanel(props: {
 }): JSX.Element {
   const { doc, t } = props
   const [mode, setMode] = useState<'preview' | 'chunks'>(props.initialMode)
+  const [chunkExpansion, setChunkExpansion] = useState(collapsedChunkExpansion)
+  const chunkIds = useMemo(() => props.chunks.map(chunk => chunk.id), [props.chunks])
+  const anyChunkExpanded = chunkExpansion.allExpanded || chunkExpansion.expandedChunkIds.size > 0
   const visual = doc.sourceType === 'url'
     ? { color: '#10b981', icon: fileVisual('page').icon }
     : fileVisual(doc.fileName ?? 'text.txt')
@@ -2240,25 +2251,64 @@ function DocumentDetailPanel(props: {
                 {t('chunksTruncated').replace('{loaded}', String(props.chunks.length)).replace('{total}', String(doc.chunkCount))}
               </div>
             )}
+            {props.chunks.length > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginBottom: 8 }}>
+                <button
+                  type="button"
+                  className="kb-row"
+                  style={{ ...style.button, padding: '4px 8px', fontSize: 11, ...(chunkExpansion.allExpanded ? { opacity: 0.5, cursor: 'default' } : {}) }}
+                  disabled={chunkExpansion.allExpanded}
+                  onClick={() => setChunkExpansion(expandAllChunks())}
+                >
+                  {t('chunksExpandAll')}
+                </button>
+                <button
+                  type="button"
+                  className="kb-row"
+                  style={{ ...style.button, padding: '4px 8px', fontSize: 11, ...(!anyChunkExpanded ? { opacity: 0.5, cursor: 'default' } : {}) }}
+                  disabled={!anyChunkExpanded}
+                  onClick={() => setChunkExpansion(collapseAllChunks())}
+                >
+                  {t('chunksCollapseAll')}
+                </button>
+              </div>
+            )}
             {props.chunks.length === 0 ? (
               <div style={style.empty}>{t('lexicalOnly')}</div>
             ) : (
-              props.chunks.map(chunk => (
-                <div key={chunk.id} style={{ border: `1px solid ${C.border}`, borderRadius: 8, marginBottom: 8, background: C.surface }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: `1px solid ${C.border}` }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 20, height: 20, padding: '0 6px', borderRadius: 5, background: C.accent, color: '#fff', fontSize: 11, fontWeight: 600 }}>{chunk.index + 1}</span>
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {chunk.heading !== undefined ? chunk.heading : ''}
-                    </span>
-                    <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>{estimateTokens(chunk.text)} tokens</span>
+              props.chunks.map(chunk => {
+                const expanded = isChunkExpanded(chunkExpansion, chunk.id)
+                const bodyId = chunkPreviewBodyId(doc.id, chunk.id)
+                const toggleLabel = t(expanded ? 'chunkCollapse' : 'chunkExpand')
+                return (
+                  <div key={chunk.id} style={{ border: `1px solid ${C.border}`, borderRadius: 8, marginBottom: 8, background: C.surface }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: `1px solid ${C.border}` }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 20, height: 20, padding: '0 6px', borderRadius: 5, background: C.accent, color: '#fff', fontSize: 11, fontWeight: 600 }}>{chunk.index + 1}</span>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {chunk.heading !== undefined ? chunk.heading : ''}
+                      </span>
+                      <span style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>{estimateTokens(chunk.text)} tokens</span>
+                      <button
+                        type="button"
+                        className="kb-iconbtn"
+                        style={{ ...style.iconOnlyButton, width: 22, height: 22, flexShrink: 0 }}
+                        aria-label={toggleLabel}
+                        title={toggleLabel}
+                        aria-expanded={expanded}
+                        aria-controls={bodyId}
+                        onClick={() => setChunkExpansion(current => toggleChunkExpansion(current, chunkIds, chunk.id))}
+                      >
+                        {expanded ? '▴' : '▾'}
+                      </button>
+                    </div>
+                    <p id={bodyId} style={{
+                      margin: 0, padding: '8px 10px', fontSize: 13, color: C.muted, lineHeight: 1.6,
+                      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                      ...(expanded ? {} : { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }),
+                    }}>{chunk.text}</p>
                   </div>
-                  <p style={{
-                    margin: 0, padding: '8px 10px', fontSize: 13, color: C.muted, lineHeight: 1.6,
-                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                  }}>{chunk.text}</p>
-                </div>
-              ))
+                )
+              })
             )}
             {chunksTruncated && props.chunks.length > 0 && (
               <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 0 10px' }}>
