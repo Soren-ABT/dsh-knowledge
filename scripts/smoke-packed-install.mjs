@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runSupervised, verifyUninstallOutcome } from './smoke-packed-lifecycle.mjs'
+import { formatUninstallWarning, runSupervised, verifyUninstallOutcome } from './smoke-packed-lifecycle.mjs'
 
 const STARTUP_TIMEOUT_MS = 120_000
 const SHUTDOWN_TIMEOUT_MS = 15_000
@@ -147,8 +147,14 @@ async function main() {
     })
     const profilePackagePath = join(profiles, 'web', 'package.json')
     const profilePackage = JSON.parse(await readFile(profilePackagePath, 'utf8'))
-    const uninstallWarning = verifyUninstallOutcome(uninstall, profilePackage)
-    if (uninstallWarning !== undefined) console.warn(uninstallWarning)
+    const uninstallWarning = verifyUninstallOutcome(uninstall, profilePackage, {
+      strictBundleCleanup: process.env.DSH_SMOKE_STRICT_UNINSTALL === '1',
+    })
+    if (uninstallWarning !== undefined) {
+      console.warn(formatUninstallWarning(uninstallWarning, {
+        githubActions: process.env.GITHUB_ACTIONS === 'true',
+      }))
+    }
     console.log('official DSH remove round-trip passed')
   } catch (error) {
     if (output !== '') console.error(`\n--- captured DSH output ---\n${output}`)

@@ -1,6 +1,10 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { runSupervised, verifyUninstallOutcome } from '../scripts/smoke-packed-lifecycle.mjs'
+import {
+  formatUninstallWarning,
+  runSupervised,
+  verifyUninstallOutcome,
+} from '../scripts/smoke-packed-lifecycle.mjs'
 
 class FakeChild extends EventEmitter {
   pid = 4321
@@ -66,10 +70,52 @@ describe('packed smoke process lifecycle', () => {
     }
   })
 
-  it.each([
-    [{ dependencies: { 'dsh-knowledge': 'file:plugin.tgz' }, dsh: { profile: { bundles: [] } } }, 'profile package'],
-    [{ dependencies: {}, dsh: { profile: { bundles: ['dsh-knowledge'] } } }, 'bundle stack'],
-  ])('rejects a timeout when uninstall state remains (%s)', (manifest, message) => {
-    expect(() => verifyUninstallOutcome({ kind: 'timed_out' }, manifest)).toThrow(message)
+  it('rejects a timeout when the package dependency remains', () => {
+    const manifest = {
+      dependencies: { 'dsh-knowledge': 'file:plugin.tgz' },
+      dsh: { profile: { bundles: [] } },
+    }
+    expect(() => verifyUninstallOutcome({ kind: 'timed_out' }, manifest)).toThrow('profile package')
+  })
+
+  it('warns by default when a timeout leaves only the upstream bundle reconciliation pending', () => {
+    const manifest = {
+      dependencies: {},
+      dsh: { profile: { bundles: ['dsh-knowledge'] } },
+    }
+    expect(verifyUninstallOutcome({ kind: 'timed_out' }, manifest)).toContain('known upstream DSH CLI cleanup issue')
+  })
+
+  it('rejects a partial timeout in strict uninstall mode', () => {
+    const manifest = {
+      dependencies: {},
+      dsh: { profile: { bundles: ['dsh-knowledge'] } },
+    }
+    expect(() => verifyUninstallOutcome(
+      { kind: 'timed_out' },
+      manifest,
+      { strictBundleCleanup: true },
+    )).toThrow('bundle stack')
+  })
+
+  it('rejects a zero exit that leaves the bundle stack inconsistent', () => {
+    const manifest = {
+      dependencies: {},
+      dsh: { profile: { bundles: ['dsh-knowledge'] } },
+    }
+    expect(() => verifyUninstallOutcome({ kind: 'exited', code: 0, signal: null }, manifest))
+      .toThrow('bundle stack')
+  })
+
+  it('formats a sanitized native warning for GitHub Actions', () => {
+    expect(formatUninstallWarning('cleanup stalled\nprofile is temporary', { githubActions: true }))
+      .toBe('::warning title=DSH uninstall reconciliation::cleanup stalled profile is temporary')
+    expect(formatUninstallWarning('progress: 50%', { githubActions: true }))
+      .toContain('50%25')
+  })
+
+  it('keeps local warnings concise without workflow command syntax', () => {
+    expect(formatUninstallWarning('cleanup stalled\r\nprofile is temporary'))
+      .toBe('cleanup stalled profile is temporary')
   })
 })
