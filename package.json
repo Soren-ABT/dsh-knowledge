@@ -1,7 +1,8 @@
 {
   "name": "dsh-knowledge",
   "description": "Cherry Studio-style knowledge base system for DeepSeek Harness (DSH): bases, documents, chunking, embeddings (OpenAI-compatible / Ollama / local / lexical fallback), retrieval, model-facing tools, and a browser management panel",
-  "version": "0.3.5",
+  "version": "0.3.6",
+  "packageManager": "pnpm@11.7.0",
   "license": "AGPL-3.0",
   "repository": {
     "type": "git",
@@ -59,12 +60,23 @@
     "README.en.md",
     "CHANGELOG.md",
     "LICENSE",
+    "docs/releases",
+    "benchmarks",
     "scripts"
   ],
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "audit:prod": "node scripts/audit-production.mjs",
+    "audit:prod:self-test": "node scripts/audit-production.mjs --self-test",
+    "benchmark": "npm run build --silent && node scripts/benchmark-retrieval.mjs",
+    "benchmark:json": "npm run build --silent && node scripts/benchmark-retrieval.mjs --json",
+    "benchmark:update-baseline": "npm run build --silent && node scripts/benchmark-retrieval.mjs --update",
+    "verify:package": "node scripts/verify-package.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
+    "smoke:packed": "node scripts/smoke-packed-install.mjs",
+    "release:check": "node scripts/release-check.mjs",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build",
     "prepack": "node build.mjs",
     "prepare": "node build.mjs"

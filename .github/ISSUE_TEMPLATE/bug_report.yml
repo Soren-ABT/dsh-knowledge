@@ -1,0 +1,81 @@
+name: Bug report
+description: Report reproducible incorrect behavior in dsh-knowledge
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please remove credentials and private document content from every field and log.
+  - type: input
+    id: version
+    attributes:
+      label: dsh-knowledge version
+      placeholder: 0.3.6
+    validations:
+      required: true
+  - type: input
+    id: dsh
+    attributes:
+      label: DSH version or commit
+      placeholder: 0.1.1-rc.2 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+      placeholder: Ubuntu 24.04 x64
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: 24.18.0
+    validations:
+      required: true
+  - type: dropdown
+    id: embedding
+    attributes:
+      label: Embedding mode
+      options:
+        - Lexical only
+        - Local Transformers model
+        - Ollama
+        - OpenAI-compatible remote API
+        - Not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Include the smallest deterministic sequence that triggers the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed API keys, credentials, personal data, and private document content.
+          required: true
+        - label: I searched existing issues for the same problem.
+          required: true

@@ -1,0 +1,28 @@
+{
+  "documents": [
+    { "base": "中文制度", "file": "zh-expense.md", "title": "星河计划差旅报销办法" },
+    { "base": "中文制度", "file": "zh-leave.md", "title": "青岚团队年假制度" },
+    { "base": "中文制度", "file": "zh-procurement.md", "title": "松果采购审批规范" },
+    { "base": "中文制度", "file": "zh-security.md", "title": "赤霄账号安全手册" },
+    { "base": "中文制度", "file": "zh-onboarding.md", "title": "白鹭新员工入职清单" },
+    { "base": "中文制度", "file": "zh-retention.md", "title": "云杉客户资料保留政策" },
+    { "base": "中文工程", "file": "zh-incident.md", "title": "天衡生产事故响应" },
+    { "base": "中文工程", "file": "zh-backup.md", "title": "玄武数据库备份方案" },
+    { "base": "中文工程", "file": "zh-release.md", "title": "飞廉灰度发布流程" },
+    { "base": "中文工程", "file": "zh-api.md", "title": "翠竹接口追踪规范" },
+    { "base": "中文工程", "file": "zh-hardware.md", "title": "黄鹂推理服务器运维" },
+    { "base": "中文工程", "file": "zh-support.md", "title": "银沙技术支持等级" },
+    { "base": "English Policies", "file": "en-expense.md", "title": "Orion Travel Reimbursement Policy" },
+    { "base": "English Policies", "file": "en-leave.md", "title": "Harbor Annual Leave Guide" },
+    { "base": "English Policies", "file": "en-procurement.md", "title": "Juniper Procurement Standard" },
+    { "base": "English Policies", "file": "en-security.md", "title": "Kestrel Account Security Manual" },
+    { "base": "English Policies", "file": "en-onboarding.md", "title": "Lighthouse Employee Onboarding" },
+    { "base": "English Policies", "file": "en-retention.md", "title": "Maple Customer Record Retention" },
+    { "base": "English Engineering", "file": "en-incident.md", "title": "Nimbus Production Incident Response" },
+    { "base": "English Engineering", "file": "en-backup.md", "title": "Otter Database Backup Plan" },
+    { "base": "English Engineering", "file": "en-release.md", "title": "Peregrine Canary Release Procedure" },
+    { "base": "English Engineering", "file": "en-api.md", "title": "Quartz API Tracing Convention" },
+    { "base": "English Engineering", "file": "en-hardware.md", "title": "Raven Inference Server Operations" },
+    { "base": "English Engineering", "file": "en-support.md", "title": "Silverline Technical Support Tiers" }
+  ]
+}

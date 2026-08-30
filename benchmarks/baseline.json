@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "thresholds": {
+    "primary": {
+      "hitAt1": 0.95,
+      "hitAt3": 0.975,
+      "recallAt3": 0.975,
+      "mrr": 0.95,
+      "contextRecall": 0.975
+    },
+    "multiQuery": {
+      "hitAt1": 0.95,
+      "hitAt3": 0.975,
+      "recallAt3": 0.975,
+      "mrr": 0.95,
+      "contextRecall": 0.975
+    }
+  },
+  "observed": {
+    "primary": {
+      "hitAt1": 1,
+      "hitAt3": 1,
+      "recallAt3": 1,
+      "mrr": 1,
+      "contextRecall": 1
+    },
+    "multiQuery": {
+      "hitAt1": 1,
+      "hitAt3": 1,
+      "recallAt3": 1,
+      "mrr": 1,
+      "contextRecall": 1
+    }
+  }
+}

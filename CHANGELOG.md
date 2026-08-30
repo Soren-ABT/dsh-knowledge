@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — knowledge retrieval hardening
+## 0.3.6 — 2026-08-30
 
 ### Retrieval and safety
 
@@ -12,6 +12,13 @@
 ### Tests
 
 - Added regression coverage for stale/empty scope, per-base automatic retrieval controls, context-topic separation, source framing, RRF normalization and rerank count, destructive approval classification, and paged native rendering.
+
+### Release engineering
+
+- **Cross-platform CI**: Node 22.19/24 quality lanes, Windows/Linux/macOS native lanes, and packed-tarball installation/boot smoke tests against a pinned DSH compatibility anchor.
+- **Production audit policy**: the one current transitive `sharp` advisory is explicitly documented, reachability-scoped, expiry-bound, and machine-checked; any new high/critical advisory fails CI.
+- **Reproducible retrieval benchmark**: a committed bilingual synthetic corpus and question set gate Hit@1/3, Recall@3, MRR, and context recall without network access or model downloads; latency and RSS remain informational.
+- **Release and contributor hygiene**: package verification, a no-publish release preflight, SECURITY/CONTRIBUTING guidance, structured issue templates, a PR checklist, release notes, and a copy-ready issue #5 response.
 
 ## 0.3.5 — Linux local-worker lifecycle fix
 

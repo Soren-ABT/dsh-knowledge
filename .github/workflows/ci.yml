@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DSH_COMMIT: b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  quality:
+    name: Quality (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22.19.0, 24.x]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Check out the pinned DSH compatibility anchor
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness "$GITHUB_WORKSPACE/../dsh"
+          git -C "$GITHUB_WORKSPACE/../dsh" checkout "$DSH_COMMIT"
+      - name: Build DSH library types
+        working-directory: ../dsh
+        run: pnpm install --frozen-lockfile && pnpm run build:lib
+      - name: Install plugin dependencies
+        run: pnpm install --frozen-lockfile
+      - run: npm run audit:prod:self-test
+      - run: npm run audit:prod
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run benchmark
+      - run: npm run build
+      - run: npm run verify:package
+
+  native-platform:
+    name: Native (${{ matrix.os }}, Node 24)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: pnpm
+      - name: Check out the pinned DSH compatibility anchor
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness "$GITHUB_WORKSPACE/../dsh"
+          git -C "$GITHUB_WORKSPACE/../dsh" checkout "$DSH_COMMIT"
+      - name: Build DSH library types
+        working-directory: ../dsh
+        run: pnpm install --frozen-lockfile && pnpm run build:lib
+      - run: pnpm install --frozen-lockfile
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  packed-dsh-smoke:
+    name: Packed DSH smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: pnpm
+      - name: Check out the pinned DSH compatibility anchor
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness "$GITHUB_WORKSPACE/../dsh"
+          git -C "$GITHUB_WORKSPACE/../dsh" checkout "$DSH_COMMIT"
+      - name: Build DSH library types
+        working-directory: ../dsh
+        run: pnpm install --frozen-lockfile && pnpm run build:lib
+      - run: pnpm install --frozen-lockfile
+      - run: npm run build
+      - name: Install pinned public DSH CLI
+        run: npm install --global @deepseek-ai/dsh@0.1.1-rc.2
+      - name: Install tarball and boot DSH
+        run: npm run smoke:packed
