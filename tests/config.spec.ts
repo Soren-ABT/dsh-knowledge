@@ -4,6 +4,7 @@ import type { Config } from '../src/knowledge/config.js'
 import { LOCAL_MODELS } from '../src/knowledge/localModels.js'
 import { poolingFor } from '../src/knowledge/embed.js'
 import { MODEL_SUGGESTIONS, localEmbeddingErrorText } from '../src/knowledge/index.js'
+import { baseConfigSchema, configOverridesSchema } from '../src/knowledge/domain.js'
 
 const base: Config = {
   embeddingProvider: 'none',
@@ -84,6 +85,11 @@ describe('resolveConfig', () => {
     expect(runtime).toContain('failed to load')
     expect(runtime).toContain('restart the service')
     expect(runtime).not.toContain('download it in Settings')
+  })
+
+  it('stores the worker idle timeout only as a global runtime override', () => {
+    expect(configOverridesSchema.parse({ localWorkerIdleTimeoutMs: 0 })).toEqual({ localWorkerIdleTimeoutMs: 0 })
+    expect(baseConfigSchema.parse({ localWorkerIdleTimeoutMs: 0 })).toEqual({})
   })
 })
 

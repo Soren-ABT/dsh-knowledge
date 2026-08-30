@@ -33,6 +33,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const [mirror, setMirror] = useState('')
   const [mirrorLoaded, setMirrorLoaded] = useState(false)
   const [cacheDir, setCacheDir] = useState('')
+  const [workerIdleTimeoutMs, setWorkerIdleTimeoutMs] = useState(60_000)
   const [ocrStatus, setOcrStatus] = useState<{ status: string; progress: number; message: string }>({ status: 'idle', progress: 0, message: '' })
   const [ocrBusy, setOcrBusy] = useState(false)
   // Ollama: base URL + model picker + pull progress.
@@ -70,6 +71,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     void api.getConfig().then(config => {
       setMirror(config.hfEndpoint)
       setCacheDir(config.localModelCacheDir)
+      setWorkerIdleTimeoutMs(config.localWorkerIdleTimeoutMs)
       setMirrorLoaded(true)
     }).catch(() => { setMirrorLoaded(true) })
   }, [api])
@@ -107,6 +109,16 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       setError(err instanceof Error ? err.message : String(err))
     }
   }, [api, cacheDir, t])
+
+  const saveWorkerIdleTimeout = useCallback(async (): Promise<void> => {
+    setError(null)
+    try {
+      const config = await api.setConfig({ localWorkerIdleTimeoutMs: workerIdleTimeoutMs })
+      setWorkerIdleTimeoutMs(config.localWorkerIdleTimeoutMs)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [api, workerIdleTimeoutMs])
 
   const browseCacheDir = useCallback(async (): Promise<void> => {
     setError(null)
@@ -368,6 +380,28 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             <button className="kb-btn" style={style.button} onClick={() => void openCacheDir()}><IconFolderOpen size={13} /> {t('cacheDirOpen')}</button>
           </div>
           <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('cacheDirHint')}</p>
+        </div>
+      )}
+
+      {mirrorLoaded && (
+        <div style={{ marginBottom: 14, padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t('localWorkerIdleTimeoutMs')}</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              style={{ ...style.input, flex: 1 }}
+              type="number"
+              min={0}
+              max={86_400_000}
+              step={60_000}
+              value={workerIdleTimeoutMs}
+              onChange={(e) => {
+                const next = Number(e.target.value)
+                if (Number.isFinite(next)) setWorkerIdleTimeoutMs(next)
+              }}
+            />
+            <button className="kb-btn" style={style.button} onClick={() => void saveWorkerIdleTimeout()}>{t('hfMirrorSave')}</button>
+          </div>
+          <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('localWorkerIdleTimeoutMsHint')}</p>
         </div>
       )}
 

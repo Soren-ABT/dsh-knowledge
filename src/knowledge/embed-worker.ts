@@ -91,7 +91,16 @@ let transformers: TransformersModule | null = null
 /** Task-qualified runners: `${task}:${modelId}` → promise. */
 const runners = new Map<string, Promise<Runner>>()
 const cancelledModels = new Set<string>()
-let inferenceChain: Promise<unknown> = Promise.resolve()
+let operationChain: Promise<unknown> = Promise.resolve()
+
+/** Serialize model loads, inference, and disposal. In particular, a request
+ *  posted immediately after `release-models` must not create a new runner
+ *  while the old runner's asynchronous `dispose()` is still in flight. */
+function enqueueOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const run = operationChain.then(operation)
+  operationChain = run.then(() => undefined, () => undefined)
+  return run
+}
 
 function post(message: unknown): void {
   parentPort?.postMessage(message)
@@ -247,12 +256,6 @@ function getRunner(task: ModelTask, modelId: string, cacheDir: string, hfEndpoin
   return pending
 }
 
-function dropRunners(modelId: string): void {
-  cancelledModels.delete(modelId)
-  runners.delete(`feature-extraction:${modelId}`)
-  runners.delete(`reranking:${modelId}`)
-}
-
 /** Dispose every loaded runner: pipeline.dispose() frees the ONNX sessions
  *  (onnxruntime native memory) immediately, and dropping the map lets the JS
  *  side be collected. The worker stays alive — never dlopen the binding again.
@@ -310,7 +313,8 @@ parentPort?.on('message', (message: WorkerMessage): void => {
     // alive. A respawn would re-dlopen onnxruntime's native binding, which on
     // Linux fails with "Module did not self-register" — so the worker is
     // never terminated on idle; the next request reloads from disk (~1s).
-    void disposeAllRunners().finally(() => post({ type: 'released', modelId: '' }))
+    void enqueueOperation(disposeAllRunners)
+      .finally(() => post({ type: 'released', modelId: '' }))
     return
   }
   if (message.type === 'release') {
@@ -318,27 +322,23 @@ parentPort?.on('message', (message: WorkerMessage): void => {
     // then ack so the main process can delete the files without hitting a
     // file lock (onnxruntime may still hold handles until the runner is
     // released and collected).
-    void disposeRunnersFor(message.modelId).finally(() => post({ type: 'released', modelId: message.modelId }))
+    void enqueueOperation(() => disposeRunnersFor(message.modelId))
+      .finally(() => post({ type: 'released', modelId: message.modelId }))
     return
   }
   const { id, type, modelId, cacheDir, hfEndpoint } = message
   const task = message.task ?? 'feature-extraction'
-  void getRunner(task, modelId, cacheDir, hfEndpoint)
-    .then(async (runner) => {
-      if (type === 'load') {
-        post({ id, ok: true })
-        return
-      }
-      if (type === 'rerank') {
-        const run = inferenceChain.then(() => runner.rerank!(message.query ?? '', message.texts ?? []))
-        inferenceChain = run.then(() => undefined, () => undefined)
-        post({ id, ok: true, scores: await run })
-        return
-      }
-      const run = inferenceChain.then(() => runner.embed!(message.texts ?? [], message.pooling ?? 'mean'))
-      inferenceChain = run.then(() => undefined, () => undefined)
-      post({ id, ok: true, vectors: await run })
-    })
+  void enqueueOperation(async () => {
+    const runner = await getRunner(task, modelId, cacheDir, hfEndpoint)
+    if (type === 'load') {
+      return { id, ok: true }
+    }
+    if (type === 'rerank') {
+      return { id, ok: true, scores: await runner.rerank!(message.query ?? '', message.texts ?? []) }
+    }
+    return { id, ok: true, vectors: await runner.embed!(message.texts ?? [], message.pooling ?? 'mean') }
+  })
+    .then(post)
     .catch((error: unknown) => {
       post({ id, ok: false, error: error instanceof Error ? error.message : String(error) })
     })

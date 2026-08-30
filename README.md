@@ -67,7 +67,7 @@
 dsh plugin --profile <name> add dsh-knowledge
 
 # 从发布 tarball（GitHub Releases 或 npm pack 产物）
-dsh plugin --profile <name> add ./dsh-knowledge-0.3.4.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.3.5.tgz
 
 # 从本地源码目录（需先构建，见下方「开发」）
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -150,15 +150,16 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 | `mineruApiKey` | `''` | MinerU API Key（`mineru` 模式需要；全局或每库覆盖） |
 | `mineruApiHost` | `''` | MinerU 服务地址；留空 = 官方 `https://mineru.net` |
 | `localModelCacheDir` | `''` | 本地模型缓存根目录；留空 = `<DSH_HOME>/cache/dsh-knowledge/local-models`（`DSH_HOME` 未设则为 `~/.dsh`） |
+| `localWorkerIdleTimeoutMs` | `60000` | 本地嵌入模型空闲卸载时间（毫秒）；worker 保持存活以避免 Linux 原生绑定重载，`0` = 模型常驻 |
 | `chunkStorePath` | `''` | 分块 SQLite 文件；留空 = `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
 
 分块数据不放在存储域 KV 里，而是独立 SQLite 文件：`web` profile 的 JSON 后端每次写记录都会重写整个单元文件，数据增长后删除/导入会变慢到秒级甚至分钟级；SQLite 让每次写入/删除都是单条语句，并提供 FTS5 三元组全文检索（BM25）与查询时向量扫描、有界读取——常驻内存不随语料增长。升级后首次启动会自动把旧 JSON 单元里的分块迁入 SQLite（幂等，中断产生的重复行自动去重）。
 
-> 以上所有字段均可在**每个知识库的设置面板**中单独覆盖（留空继承全局）；API Key 以明文保存在本地存储。
+> 检索、分块与模型选择字段可在**每个知识库的设置面板**中单独覆盖（留空继承全局）；`localModelCacheDir`、`localWorkerIdleTimeoutMs` 和 `chunkStorePath` 属于进程级全局设置。API Key 以明文保存在本地存储。
 
 ### 本地模型（进程内 embedding 与 OCR）
 
-选择 `embeddingProvider: local` 时，插件在**独立 worker 线程**里用 `@huggingface/transformers`（+ onnxruntime）跑 embedding，**无需任何外部服务**。默认模型 `onnx-community/Qwen3-Embedding-0.6B-ONNX`（1024 维），`embeddingModel` 可换成任意 Hugging Face 上的 ONNX embedding 仓库 id。首次使用会从 Hugging Face Hub 下载模型权重（默认缓存到 `$DSH_HOME/cache/dsh-knowledge/local-models`）；下载完成后后续导入与检索全程本地。**在设置 →「本地模型」页面可提前下载 / 取消 / 删除 / 重试**，并实时查看下载进度；知识库设置面板也会显示模型下载进度（下载中 % / 就绪 / 失败）。
+选择 `embeddingProvider: local` 时，插件在**独立 worker 线程**里用 `@huggingface/transformers`（+ onnxruntime）跑 embedding，**无需任何外部服务**。默认模型 `onnx-community/Qwen3-Embedding-0.6B-ONNX`（1024 维），`embeddingModel` 可换成任意 Hugging Face 上的 ONNX embedding 仓库 id。首次使用会从 Hugging Face Hub 下载模型权重（默认缓存到 `$DSH_HOME/cache/dsh-knowledge/local-models`）；空闲后只卸载模型 session，worker 保持存活，下一次请求从磁盘重载，避免 Linux 上重复注册 onnxruntime 原生绑定。**在设置 →「本地模型」页面可提前下载 / 取消 / 删除 / 重试并调整空闲超时**，并实时查看下载进度；知识库设置面板也会显示模型下载进度（下载中 % / 就绪 / 失败）。
 
 **OCR（扫描件识别）**：下载 OCR 模型后，扫描版 / 矢量无文本层 / 文本层损坏的 PDF 在导入时自动**渲染整页**（mupdf WASM）并识别（PaddleOCR PP-OCRv5 优先，失败回退 Tesseract，全部在 `ocr-worker` 线程内）。模型约 21MB，默认从 hf-mirror.com 下载；海外用户可在同一 `hfEndpoint` 字段填 `https://huggingface.co`。
 

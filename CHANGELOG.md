@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.5 — Linux local-worker lifecycle fix
+
+### Fixes
+
+- **Linux 本地嵌入重载修复**：空闲超时不再终止并重建 embedding worker；worker 仅调用 `pipeline.dispose()` / `model.dispose()` 卸载 ONNX session 后继续存活，避免 `onnxruntime-node` 在同一进程的第二个 worker isolate 中报 `Module did not self-register`。模型释放与后续加载串行执行，下一次请求从磁盘在同一 worker 内重载。
+- **全局空闲超时设置**：`localWorkerIdleTimeoutMs`（默认 60000，0=模型常驻）改为真正的全局持久化设置，并移至「设置 → 本地模型」；修改正数值会立即重置现有计时器。
+- **准确的故障提示**：模型文件在盘但本地运行时启动失败时，提示重启服务或检查运行时，不再误导用户重新下载完好的模型。
+
 ## 0.3.4 — Auto-retrieve (NexusRAG-style) (npm release, pending)
 
 ### Auto-retrieve

@@ -58,7 +58,7 @@ The package declares `dsh.bundle.patch`, so `dsh plugin add` registers it automa
 ```bash
 dsh plugin --profile <name> add dsh-knowledge          # from npm
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
-dsh plugin --profile <name> add ./dsh-knowledge-0.3.4.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.3.5.tgz
 ```
 
 > **pnpm 10+ build allowlist (required)**: the plugin's dependencies `onnxruntime-node`, `sharp`, `protobufjs`, and `tesseract.js` ship postinstall scripts that pnpm refuses to run by default and exits non-zero — `dsh plugin add` then **stops before registering the bundle, so the plugin never activates**. Add this to the profile's `pnpm-workspace.yaml` **before** installing, then run the add:
@@ -138,15 +138,16 @@ Deployment defaults live in the `knowledge` row of `cordis.patch.yml`; the panel
 | `mineruApiKey`                                   | `''`    | MinerU API Key (needed in `mineru` mode; global or per-base)  |
 | `mineruApiHost`                                  | `''`    | MinerU service host; empty = official `https://mineru.net`    |
 | `localModelCacheDir`                             | `''`    | local-model cache root; empty = `<DSH_HOME>/cache/dsh-knowledge/local-models` (`~/.dsh` when `DSH_HOME` is unset) |
+| `localWorkerIdleTimeoutMs`                       | `60000` | unload local embedding models after this many idle milliseconds while keeping the worker alive to avoid the Linux native-binding reload; `0` keeps models hot |
 | `chunkStorePath`                                 | `''`    | chunk SQLite file; empty = `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
 
 Chunk data is stored in a dedicated SQLite file rather than the domain KV store: on the `web` profile's JSON backend every record write rewrites the whole unit file, which made deletion and import cost seconds-to-minutes as data grew. The SQLite store makes each put/delete a single statement, FTS5 trigram full-text search (BM25) plus a brute-force vector scan at query time, and bounded reads — resident memory does not grow with the corpus. A one-time migration on first start after an upgrade moves chunks out of a legacy JSON unit into the SQLite store (idempotent; duplicate rows from interrupted migrations are dropped).
 
-> Every field can be overridden per base in the panel's Settings view (empty = inherit global); API keys are stored in plain text on the local machine.
+> Retrieval, chunking, and model-selection fields can be overridden per base in the panel's Settings view (empty = inherit global). `localModelCacheDir`, `localWorkerIdleTimeoutMs`, and `chunkStorePath` are process-wide settings. API keys are stored in plain text on the local machine.
 
 ### Local (in-process) embeddings and OCR
 
-With `embeddingProvider: local`, the host runs embeddings in a **dedicated worker thread** via `@huggingface/transformers` (+ onnxruntime) — no external service needed. The default model is `onnx-community/Qwen3-Embedding-0.6B-ONNX` (1024 dims); set `embeddingModel` to any ONNX embedding repo id on Hugging Face. The first use downloads the weights from the Hub (cached under `$DSH_HOME/cache/dsh-knowledge/local-models`); later imports and searches run fully locally. Download / cancel / remove / retry in Settings → "Local Models", which shows live progress.
+With `embeddingProvider: local`, the host runs embeddings in a **dedicated worker thread** via `@huggingface/transformers` (+ onnxruntime) — no external service needed. The default model is `onnx-community/Qwen3-Embedding-0.6B-ONNX` (1024 dims); set `embeddingModel` to any ONNX embedding repo id on Hugging Face. The first use downloads the weights from the Hub (cached under `$DSH_HOME/cache/dsh-knowledge/local-models`). Idle release disposes model sessions but keeps the worker alive, so the next request reloads from disk without registering the onnxruntime binding in a second Linux worker isolate. Download / cancel / remove / retry and configure the idle timeout in Settings → "Local Models", which shows live progress.
 
 **OCR (scan recognition)**: after downloading the OCR model, scanned / vector-without-text-layer / corrupt-text-layer PDFs are rendered page-by-page (mupdf WASM) and recognized automatically on import (PaddleOCR PP-OCRv5 first, Tesseract fallback, all inside the `ocr-worker` thread). The models are ≈21MB and download from hf-mirror.com by default; users outside China can set the same `hfEndpoint` field to `https://huggingface.co`.
 

@@ -144,6 +144,7 @@ interface WorkerResponse {
   id?: number
   ok?: boolean
   vectors?: number[][]
+  scores?: number[]
   error?: string
   type?: 'progress' | 'released' | 'cancelled'
   modelId?: string
@@ -170,7 +171,8 @@ const LOCAL_CANCEL_ACK_TIMEOUT_MS = 3000
 /** Configure the local-model worker idle release timeout (0 = never release). */
 export function setLocalWorkerIdleTimeoutMs(ms: number): void {
   localWorkerIdleTimeoutMs = Number.isFinite(ms) && ms >= 0 ? Math.trunc(ms) : 60_000
-  if (localWorkerIdleTimeoutMs <= 0) clearIdleTimer()
+  clearIdleTimer()
+  if (localWorkerIdleTimeoutMs > 0 && localWorker !== null) armIdleTimer()
 }
 
 let localWorker: Worker | null = null
@@ -241,7 +243,7 @@ function ensureLocalWorker(): Worker {
     const pending = localPending.get(message.id)
     if (pending === undefined) return
     localPending.delete(message.id)
-    if (message.ok === true) pending.resolve(message.vectors ?? null)
+    if (message.ok === true) pending.resolve(message.scores ?? message.vectors ?? null)
     else pending.reject(new Error(message.error ?? 'local model worker failed'))
   })
   const onWorkerFailure = (error: Error): void => {
