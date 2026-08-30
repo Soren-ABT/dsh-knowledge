@@ -20,6 +20,7 @@ const TEST_CONFIG: Config = {
   rerankModel: '',
   rerankBaseUrl: '',
   rerankApiKey: '',
+  localRerankTimeoutMs: 60000,
   smartChunk: true,
   chunkSeparator: '\n\n',
   chunkSize: 800,

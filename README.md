@@ -125,6 +125,7 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 | `embeddingModel` | `''` | 如 `text-embedding-3-small`；`local` 时为 Hugging Face 仓库 id（默认 `onnx-community/Qwen3-Embedding-0.6B-ONNX`） |
 | `embeddingApiKey` | `''` | 可选；也可用环境变量 `KNOWLEDGE_API_KEY` |
 | `rerankModel` / `rerankBaseUrl` / `rerankApiKey` | `''` | 重排模型（留空=不启用），Jina / SiliconFlow / Cohere v2 风格接口 |
+| `localRerankTimeoutMs` | `60000` | 本地重排总超时（10,000–300,000 毫秒，包含排队）；超时后保留原始检索顺序 |
 | `smartChunk` | `true` | 智能分段（标题/段落感知）；关闭后仅按 `chunkSeparator` 切分 |
 | `chunkSeparator` | `\n\n` | 智能分段关闭时的段落边界（可写 `\n`） |
 | `chunkSize` | `800` | 分块 Token 预算（按文档实测字符/Token 比换算字符窗口；对齐 Cherry Studio） |
@@ -157,9 +158,11 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 
 > 检索、分块与模型选择字段可在**每个知识库的设置面板**中单独覆盖（留空继承全局）；`localModelCacheDir`、`localWorkerIdleTimeoutMs` 和 `chunkStorePath` 属于进程级全局设置。API Key 以明文保存在本地存储。
 
-### 本地模型（进程内 embedding 与 OCR）
+### 本地模型（embedding、rerank 与 OCR）
 
 选择 `embeddingProvider: local` 时，插件在**独立 worker 线程**里用 `@huggingface/transformers`（+ onnxruntime）跑 embedding，**无需任何外部服务**。默认模型 `onnx-community/Qwen3-Embedding-0.6B-ONNX`（1024 维），`embeddingModel` 可换成任意 Hugging Face 上的 ONNX embedding 仓库 id。首次使用会从 Hugging Face Hub 下载模型权重（默认缓存到 `$DSH_HOME/cache/dsh-knowledge/local-models`）；空闲后只卸载模型 session，worker 保持存活，下一次请求从磁盘重载，避免 Linux 上重复注册 onnxruntime 原生绑定。**在设置 →「本地模型」页面可提前下载 / 取消 / 删除 / 重试并调整空闲超时**，并实时查看下载进度；知识库设置面板也会显示模型下载进度（下载中 % / 就绪 / 失败）。
+
+`rerankModel: local:Xenova/bge-reranker-base` 使用独立子进程运行 cross-encoder，与 embedding worker 隔离。搜索不会隐式下载模型：请先在「设置 → 本地模型」下载并通过自动健康检查。超时、进程崩溃、输出数量/数值异常时检索会保留原始排序，并在召回测试和 `knowledge_search` 结果中返回结构化降级原因。高级区域可登记自定义 Hugging Face ONNX reranker；自定义模型属于实验性支持，必须通过单-logit能力校验和正负样例自检。
 
 **OCR（扫描件识别）**：下载 OCR 模型后，扫描版 / 矢量无文本层 / 文本层损坏的 PDF 在导入时自动**渲染整页**（mupdf WASM）并识别（PaddleOCR PP-OCRv5 优先，失败回退 Tesseract，全部在 `ocr-worker` 线程内）。模型约 21MB，默认从 hf-mirror.com 下载；海外用户可在同一 `hfEndpoint` 字段填 `https://huggingface.co`。
 

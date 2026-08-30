@@ -78,6 +78,7 @@
     "verify:package": "node scripts/verify-package.mjs",
     "verify:release": "node scripts/verify-release.mjs",
     "smoke:packed": "node scripts/smoke-packed-install.mjs",
+    "smoke:local-rerank": "npm run build --silent && node scripts/smoke-local-rerank.mjs",
     "release:check": "node scripts/release-check.mjs",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build",
     "prepack": "node build.mjs",

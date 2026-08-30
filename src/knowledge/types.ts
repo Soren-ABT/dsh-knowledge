@@ -20,6 +20,8 @@ export interface BaseConfig {
   readonly rerankModel?: string
   readonly rerankBaseUrl?: string
   readonly rerankApiKey?: string
+  /** Total local rerank budget, including queue wait (10–300 seconds). */
+  readonly localRerankTimeoutMs?: number
   readonly smartChunk?: boolean
   readonly chunkSeparator?: string
   readonly chunkSize?: number
@@ -155,6 +157,8 @@ export interface KnowledgeConfig {
   readonly rerankModel: string
   readonly rerankBaseUrl: string
   readonly rerankApiKey: string
+  /** Total local rerank budget, including queue wait (10–300 seconds). */
+  readonly localRerankTimeoutMs: number
   /** Heading-aware chunking (Cherry Studio's 智能分段); off = delimiter-only. */
   readonly smartChunk: boolean
   /** Chunk boundary separator when smartChunk is off. */
@@ -428,6 +432,40 @@ export interface SearchResult {
   readonly mode: SearchMode
   readonly total: number
   readonly reranked: boolean
+  /** Structured diagnostics for a configured reranker. Omitted when disabled. */
+  readonly rerank?: RerankStatus
   readonly elapsedMs: number
   readonly hits: SearchHit[]
+}
+
+export type RerankErrorCode =
+  | 'model_not_downloaded'
+  | 'model_checking'
+  | 'model_unhealthy'
+  | 'unsupported_model'
+  | 'timeout'
+  | 'invalid_response'
+  | 'runtime_error'
+  | 'process_crash'
+  | 'circuit_open'
+  | 'busy'
+  | 'provider_error'
+
+export interface RerankErrorDetail {
+  readonly code: RerankErrorCode
+  readonly message: string
+  readonly retryable: boolean
+  readonly action?: 'download_model' | 'run_self_test' | 'check_config' | 'retry_later'
+}
+
+export interface RerankStatus {
+  readonly configured: true
+  readonly provider: 'local' | 'remote'
+  readonly model: string
+  readonly status: 'applied' | 'not_needed' | 'degraded'
+  readonly attempted: boolean
+  readonly applied: boolean
+  readonly candidateCount: number
+  readonly elapsedMs?: number
+  readonly error?: RerankErrorDetail
 }

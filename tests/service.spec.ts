@@ -17,6 +17,7 @@ const DEFAULT_CONFIG: Config = {
   rerankModel: '',
   rerankBaseUrl: '',
   rerankApiKey: '',
+  localRerankTimeoutMs: 60000,
   smartChunk: true,
   chunkSeparator: '\n\n',
   chunkSize: 800,
@@ -929,9 +930,55 @@ describe('KnowledgeService', () => {
       })
       expect(requests).toBe(1)
       expect(result.reranked).toBe(true)
+      expect(result.rerank).toMatchObject({
+        configured: true,
+        provider: 'remote',
+        status: 'applied',
+        attempted: true,
+        applied: true,
+      })
+      expect(result.reranked).toBe(result.rerank?.applied)
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+
+  it('keeps retrieval order and reports structured degradation for an empty rerank response', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'rerank-fallback' })
+    await service.addTextDocument({ baseId: base.id, title: 'one', content: 'alpha reimbursement approval workflow' })
+    await service.addTextDocument({ baseId: base.id, title: 'two', content: 'alpha invoice submission policy' })
+    await service.waitForIdle()
+    const baseline = await service.search({ query: 'alpha reimbursement', baseId: base.id, topK: 2 })
+    await service.setConfig({ rerankModel: 'remote-reranker', rerankBaseUrl: 'https://rerank.invalid' })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ results: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })))
+    try {
+      const result = await service.search({ query: 'alpha reimbursement', baseId: base.id, topK: 2 })
+      expect(result.hits.map(hit => hit.chunkId)).toEqual(baseline.hits.map(hit => hit.chunkId))
+      expect(result.reranked).toBe(false)
+      expect(result.rerank).toMatchObject({
+        status: 'degraded',
+        attempted: true,
+        applied: false,
+        error: { code: 'invalid_response', retryable: false },
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('reports a configured reranker as not needed for one candidate', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'rerank-not-needed' })
+    await service.addTextDocument({ baseId: base.id, title: 'one', content: 'only candidate text' })
+    await service.waitForIdle()
+    await service.setConfig({ rerankModel: 'remote-reranker', rerankBaseUrl: 'https://rerank.invalid' })
+    const result = await service.search({ query: 'candidate', baseId: base.id, topK: 1 })
+    expect(result.rerank).toMatchObject({ status: 'not_needed', attempted: false, applied: false, candidateCount: 1 })
+    expect(result.reranked).toBe(false)
   })
 
   it('migrates local models to a new cache directory and switches the config', async () => {

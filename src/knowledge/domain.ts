@@ -23,6 +23,7 @@ export const baseConfigSchema = z.object({
   rerankModel: z.string().optional(),
   rerankBaseUrl: z.string().optional(),
   rerankApiKey: z.string().optional(),
+  localRerankTimeoutMs: z.number().int().gte(10_000).lte(300_000).optional(),
   smartChunk: z.boolean().optional(),
   chunkSeparator: z.string().optional(),
   chunkSize: z.number().int().gt(0).optional(),
@@ -101,6 +102,7 @@ export const configOverridesSchema = z.object({
   rerankModel: z.string().optional(),
   rerankBaseUrl: z.string().optional(),
   rerankApiKey: z.string().optional(),
+  localRerankTimeoutMs: z.number().int().gte(10_000).lte(300_000).optional(),
   smartChunk: z.boolean().optional(),
   chunkSeparator: z.string().optional(),
   chunkSize: z.number().int().gt(0).optional(),
@@ -141,6 +143,7 @@ export interface ConfigOverrides {
   rerankModel?: string
   rerankBaseUrl?: string
   rerankApiKey?: string
+  localRerankTimeoutMs?: number
   smartChunk?: boolean
   chunkSeparator?: string
   chunkSize?: number

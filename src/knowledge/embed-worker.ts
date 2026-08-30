@@ -209,14 +209,23 @@ async function createRunner(
         const BATCH = 16
         for (let i = 0; i < texts.length; i += BATCH) {
           const batch = texts.slice(i, i + BATCH)
-          const inputs = await tokenizer(batch.map(doc => [query, doc]), { padding: true, truncation: true })
+          const inputs = await tokenizer(batch.map(() => query), {
+            text_pair: batch,
+            padding: true,
+            truncation: true,
+          })
           const outputs = await model(inputs)
           const logits = outputs.logits
           if (logits === undefined || logits.data === undefined) {
             throw new Error('rerank model returned no logits')
           }
+          if (logits.data.length !== batch.length || (logits.dims !== undefined && logits.dims.at(-1) !== 1)) {
+            throw new Error(`rerank model must return one logit per pair (expected ${batch.length}, received ${logits.data.length})`)
+          }
           for (let j = 0; j < batch.length; j += 1) {
-            scores.push(sigmoid(logits.data[j] ?? 0))
+            const logit = Number(logits.data[j])
+            if (!Number.isFinite(logit)) throw new Error('rerank model returned a non-finite logit')
+            scores.push(sigmoid(logit))
           }
         }
         return scores

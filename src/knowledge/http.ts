@@ -164,6 +164,12 @@ async function route(
   // /local-models (list) and /local-models/download|remove|cancel?model=...
   if (segments[0] === 'local-models') {
     if (method === 'GET') return service.listLocalModels()
+    if (segments[1] === 'custom' && method === 'POST') {
+      return service.registerCustomLocalReranker(typeof body.id === 'string' ? body.id : '')
+    }
+    if (segments[1] === 'self-test' && method === 'POST') {
+      return service.selfTestLocalModel(typeof body.id === 'string' ? body.id : '')
+    }
     if (segments[1] === 'download' && method === 'POST') {
       return service.downloadLocalModel(query.get('model') ?? '')
     }

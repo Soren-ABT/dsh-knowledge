@@ -20,6 +20,7 @@ const REQUIRED_FILES = [
   'scripts/verify-build-policy.mjs',
   'lib/index.js',
   'lib/knowledge/index.js',
+  'lib/knowledge/rerank-process.mjs',
   'lib/tool-knowledge/index.js',
   'lib/client.js',
 ]

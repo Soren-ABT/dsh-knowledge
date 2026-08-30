@@ -139,15 +139,18 @@ Deployment defaults live in the `knowledge` row of `cordis.patch.yml`; the panel
 | `mineruApiHost`                                  | `''`    | MinerU service host; empty = official `https://mineru.net`    |
 | `localModelCacheDir`                             | `''`    | local-model cache root; empty = `<DSH_HOME>/cache/dsh-knowledge/local-models` (`~/.dsh` when `DSH_HOME` is unset) |
 | `localWorkerIdleTimeoutMs`                       | `60000` | unload local embedding models after this many idle milliseconds while keeping the worker alive to avoid the Linux native-binding reload; `0` keeps models hot |
+| `localRerankTimeoutMs`                           | `60000` | total local rerank deadline (10,000–300,000 ms, including queue wait); timeout preserves retrieval order |
 | `chunkStorePath`                                 | `''`    | chunk SQLite file; empty = `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
 
 Chunk data is stored in a dedicated SQLite file rather than the domain KV store: on the `web` profile's JSON backend every record write rewrites the whole unit file, which made deletion and import cost seconds-to-minutes as data grew. The SQLite store makes each put/delete a single statement, FTS5 trigram full-text search (BM25) plus a brute-force vector scan at query time, and bounded reads — resident memory does not grow with the corpus. A one-time migration on first start after an upgrade moves chunks out of a legacy JSON unit into the SQLite store (idempotent; duplicate rows from interrupted migrations are dropped).
 
 > Retrieval, chunking, and model-selection fields can be overridden per base in the panel's Settings view (empty = inherit global). `localModelCacheDir`, `localWorkerIdleTimeoutMs`, and `chunkStorePath` are process-wide settings. API keys are stored in plain text on the local machine.
 
-### Local (in-process) embeddings and OCR
+### Local embeddings, reranking, and OCR
 
 With `embeddingProvider: local`, the host runs embeddings in a **dedicated worker thread** via `@huggingface/transformers` (+ onnxruntime) — no external service needed. The default model is `onnx-community/Qwen3-Embedding-0.6B-ONNX` (1024 dims); set `embeddingModel` to any ONNX embedding repo id on Hugging Face. The first use downloads the weights from the Hub (cached under `$DSH_HOME/cache/dsh-knowledge/local-models`). Idle release disposes model sessions but keeps the worker alive, so the next request reloads from disk without registering the onnxruntime binding in a second Linux worker isolate. Download / cancel / remove / retry and configure the idle timeout in Settings → "Local Models", which shows live progress.
+
+`rerankModel: local:Xenova/bge-reranker-base` runs its cross-encoder in a dedicated child process, isolated from the embedding worker. Searches never download a model implicitly: download it in Settings → Local Models and let the automatic health check pass first. Timeouts, process crashes, and invalid score shapes or values preserve retrieval order and return structured degradation details in Recall Test and `knowledge_search`. The advanced model form can register custom Hugging Face ONNX rerankers; custom models are experimental and must pass single-logit capability validation plus a positive/negative self-test.
 
 **OCR (scan recognition)**: after downloading the OCR model, scanned / vector-without-text-layer / corrupt-text-layer PDFs are rendered page-by-page (mupdf WASM) and recognized automatically on import (PaddleOCR PP-OCRv5 first, Tesseract fallback, all inside the `ocr-worker` thread). The models are ≈21MB and download from hf-mirror.com by default; users outside China can set the same `hfEndpoint` field to `https://huggingface.co`.
 

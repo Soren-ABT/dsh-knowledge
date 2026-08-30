@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { resolveConfig, resolveConfigFor } from '../src/knowledge/config.js'
 import type { Config } from '../src/knowledge/config.js'
-import { LOCAL_MODELS } from '../src/knowledge/localModels.js'
+import { LOCAL_MODELS, validateHuggingFaceRepoId } from '../src/knowledge/localModels.js'
 import { poolingFor } from '../src/knowledge/embed.js'
 import { MODEL_SUGGESTIONS, localEmbeddingErrorText } from '../src/knowledge/index.js'
 import { baseConfigSchema, configOverridesSchema } from '../src/knowledge/domain.js'
@@ -14,6 +14,7 @@ const base: Config = {
   rerankModel: '',
   rerankBaseUrl: '',
   rerankApiKey: '',
+  localRerankTimeoutMs: 60000,
   smartChunk: true,
   chunkSeparator: '\n\n',
   chunkSize: 800,
@@ -87,6 +88,15 @@ describe('resolveConfig', () => {
     expect(runtime).not.toContain('download it in Settings')
   })
 
+  it('clamps the local rerank deadline globally and per base', () => {
+    expect(resolveConfig(base, {}).localRerankTimeoutMs).toBe(60_000)
+    expect(resolveConfig(base, { localRerankTimeoutMs: 1 }).localRerankTimeoutMs).toBe(10_000)
+    expect(resolveConfig(base, { localRerankTimeoutMs: 999_999 }).localRerankTimeoutMs).toBe(300_000)
+    expect(resolveConfigFor(base, {}, { localRerankTimeoutMs: 45_000 }).localRerankTimeoutMs).toBe(45_000)
+    expect(configOverridesSchema.parse({ localRerankTimeoutMs: 45_000 })).toEqual({ localRerankTimeoutMs: 45_000 })
+    expect(baseConfigSchema.parse({ localRerankTimeoutMs: 45_000 })).toEqual({ localRerankTimeoutMs: 45_000 })
+  })
+
   it('stores the worker idle timeout only as a global runtime override', () => {
     expect(configOverridesSchema.parse({ localWorkerIdleTimeoutMs: 0 })).toEqual({ localWorkerIdleTimeoutMs: 0 })
     expect(baseConfigSchema.parse({ localWorkerIdleTimeoutMs: 0 })).toEqual({})
@@ -128,7 +138,7 @@ describe('local model registry', () => {
         expect(model.maxTokens).toBeGreaterThan(0)
       }
     }
-    expect(MODEL_SUGGESTIONS.local).toEqual(LOCAL_MODELS.map(model => model.id))
+    expect(MODEL_SUGGESTIONS.local).toEqual(LOCAL_MODELS.filter(model => model.kind === 'embedding').map(model => model.id))
     // The default local model stays the flagship Chinese-capable one.
     expect(LOCAL_MODELS[0].id).toBe('onnx-community/Qwen3-Embedding-0.6B-ONNX')
     // The registry also ships a local cross-encoder for reranking.
@@ -143,5 +153,13 @@ describe('local model registry', () => {
     expect(poolingFor('Xenova/multilingual-e5-small')).toBe('mean')
     // Unknown ids fall back to the safest general choice.
     expect(poolingFor('some/unknown-model')).toBe('mean')
+  })
+
+  it('accepts safe custom Hugging Face ids and rejects filesystem paths', () => {
+    expect(validateHuggingFaceRepoId('owner/model-name')).toBe('owner/model-name')
+    expect(validateHuggingFaceRepoId(' model_name ')).toBe('model_name')
+    for (const value of ['../model', 'owner/../model', '/tmp/model', 'C:\\model', 'owner/model/extra']) {
+      expect(() => validateHuggingFaceRepoId(value)).toThrow('invalid Hugging Face')
+    }
   })
 })

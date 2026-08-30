@@ -224,6 +224,16 @@ export type KnowledgeKey =
   | 'localModelRetry'
   | 'localModelRemove'
   | 'localModelCancel'
+  | 'customRerankTitle'
+  | 'customRerankHint'
+  | 'customRerankAccept'
+  | 'customRerankAdd'
+  | 'officialSupport'
+  | 'experimentalSupport'
+  | 'rerankRevalidate'
+  | 'rerankValidating'
+  | 'localRerankTimeoutMs'
+  | 'localRerankTimeoutHint'
   | 'hfMirror'
   | 'hfMirrorHint'
   | 'hfMirrorSave'
@@ -500,11 +510,21 @@ export const zh: Record<KnowledgeKey, string> = {
   localModelError: '模型加载失败',
   localModelsNav: '本地模型',
   localModelsTitle: '本地模型',
-  localModelsDesc: '下载并管理进程内运行的本地嵌入模型；下载后，在知识库设置里把「嵌入模型」设为「本地模型」即可选用。',
+  localModelsDesc: '下载、验证并管理本地嵌入和重排模型；只有通过健康检查的重排模型才会出现在知识库设置中。',
   localModelDownload: '下载',
   localModelRetry: '重试',
   localModelRemove: '删除',
   localModelCancel: '取消',
+  customRerankTitle: '高级：添加自定义本地 reranker',
+  customRerankHint: '实验性功能：仅支持无需远程自定义代码、并能返回单 logit 的 Hugging Face ONNX sequence-classification 模型。',
+  customRerankAccept: '我了解自定义模型属于实验性支持，并同意下载后执行本地兼容性自检',
+  customRerankAdd: '添加并验证',
+  officialSupport: '官方支持',
+  experimentalSupport: '实验性',
+  rerankRevalidate: '重新验证',
+  rerankValidating: '正在验证兼容性',
+  localRerankTimeoutMs: '本地重排超时（毫秒）',
+  localRerankTimeoutHint: '包含排队等待；超时后保留原始检索顺序，并自动隔离卡住的重排进程。',
   hfMirror: 'Hugging Face 镜像站',
   hfMirrorHint: '无法直连 huggingface.co 时填镜像地址（如 https://hf-mirror.com），立即生效；留空使用官方源或 HF_ENDPOINT 环境变量。',
   hfMirrorSave: '保存',
@@ -784,11 +804,21 @@ export const en: Record<KnowledgeKey, string> = {
   localModelError: 'Model load failed',
   localModelsNav: 'Local Models',
   localModelsTitle: 'Local Models',
-  localModelsDesc: 'Download and manage in-process local embedding models; once downloaded, choose Local model as the embedding provider in a base\u2019s settings.',
+  localModelsDesc: 'Download, validate, and manage local embedding and rerank models. Only healthy rerankers appear in base settings.',
   localModelDownload: 'Download',
   localModelRetry: 'Retry',
   localModelRemove: 'Remove',
   localModelCancel: 'Cancel',
+  customRerankTitle: 'Advanced: add a custom local reranker',
+  customRerankHint: 'Experimental: only Hugging Face ONNX sequence-classification models that need no remote custom code and return one logit are supported.',
+  customRerankAccept: 'I understand custom models are experimental and agree to run a local compatibility check after download',
+  customRerankAdd: 'Add and validate',
+  officialSupport: 'Official support',
+  experimentalSupport: 'Experimental',
+  rerankRevalidate: 'Revalidate',
+  rerankValidating: 'Validating compatibility',
+  localRerankTimeoutMs: 'Local rerank timeout (ms)',
+  localRerankTimeoutHint: 'Includes queue wait. On timeout, retrieval order is preserved and the stuck rerank process is isolated.',
   hfMirror: 'Hugging Face mirror',
   hfMirrorHint: 'When huggingface.co is unreachable, set a mirror (e.g. https://hf-mirror.com); takes effect immediately. Empty = official hub or the HF_ENDPOINT env var.',
   hfMirrorSave: 'Save',

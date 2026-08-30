@@ -30,6 +30,8 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const [models, setModels] = useState<LocalModelSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [customRerankerId, setCustomRerankerId] = useState('')
+  const [customRerankerAccepted, setCustomRerankerAccepted] = useState(false)
   const [mirror, setMirror] = useState('')
   const [mirrorLoaded, setMirrorLoaded] = useState(false)
   const [cacheDir, setCacheDir] = useState('')
@@ -311,6 +313,36 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     }
   }, [api, refresh])
 
+  const registerCustomReranker = useCallback(async (): Promise<void> => {
+    const id = customRerankerId.trim()
+    if (id === '') return
+    setBusyId(id)
+    setError(null)
+    try {
+      await api.registerCustomLocalReranker(id)
+      setCustomRerankerId('')
+      setCustomRerankerAccepted(false)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyId(null)
+    }
+  }, [api, customRerankerId, refresh])
+
+  const selfTest = useCallback(async (id: string): Promise<void> => {
+    setBusyId(id)
+    setError(null)
+    try {
+      await api.selfTestLocalModel(id)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyId(null)
+    }
+  }, [api, refresh])
+
   const downloadOcr = useCallback(async (): Promise<void> => {
     setOcrBusy(true)
     setError(null)
@@ -407,6 +439,26 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
 
       {error !== null && <div style={{ ...style.error, marginBottom: 12 }}>{error}</div>}
 
+      <div style={{ marginBottom: 14, padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t('customRerankTitle')}</label>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            style={{ ...style.input, flex: 1 }}
+            placeholder="owner/onnx-reranker-model"
+            value={customRerankerId}
+            onChange={(event) => setCustomRerankerId(event.target.value)}
+          />
+          <button className="kb-btn" style={style.button} disabled={customRerankerId.trim() === '' || !customRerankerAccepted || busyId !== null} onClick={() => void registerCustomReranker()}>
+            <IconDownload size={13} /> {t('customRerankAdd')}
+          </button>
+        </div>
+        <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('customRerankHint')}</p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 11, color: C.muted }}>
+          <input type="checkbox" checked={customRerankerAccepted} onChange={(event) => setCustomRerankerAccepted(event.target.checked)} />
+          {t('customRerankAccept')}
+        </label>
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
         {(models ?? []).map(model => (
           <ModelCard
@@ -417,6 +469,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             onDownload={() => void download(model.id)}
             onCancel={() => void cancel(model.id)}
             onRemove={() => void remove(model.id)}
+            onSelfTest={() => void selfTest(model.id)}
           />
         ))}
         {models !== null && models.length === 0 && (
@@ -630,11 +683,13 @@ function ModelCard(props: {
   onDownload: () => void
   onCancel: () => void
   onRemove: () => void
+  onSelfTest: () => void
 }): JSX.Element {
-  const { model, t, busy, onDownload, onCancel, onRemove } = props
+  const { model, t, busy, onDownload, onCancel, onRemove, onSelfTest } = props
   const ready = model.status === 'ready'
   const downloading = model.status === 'downloading'
-  const failed = model.status === 'error'
+  const inProgress = downloading || model.status === 'validating'
+  const failed = model.status === 'error' || model.status === 'unhealthy'
 
   return (
     <div style={{ ...cardStyle, ...(ready ? {} : {}) }}>
@@ -657,23 +712,19 @@ function ModelCard(props: {
             {ready && (
               <span style={readyBadge}>{t('ready')}</span>
             )}
+            {model.support !== undefined && <span style={readyBadge}>{t(model.support === 'official' ? 'officialSupport' : 'experimentalSupport')}</span>}
           </div>
           <p style={{ marginTop: 2, fontSize: 12, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {model.subtitle}
           </p>
+          {model.kind === 'reranking' && model.lastCheckedAt !== undefined && (
+            <p style={{ marginTop: 3, fontSize: 11, color: C.muted }}>最近验证：{new Date(model.lastCheckedAt).toLocaleString()} · {model.latencyMs ?? 0}ms</p>
+          )}
         </div>
-        {ready && (
-          <button
-            className="kb-dangerbtn"
-            style={style.iconOnlyButton}
-            title={t('localModelRemove')}
-            aria-label={t('localModelRemove')}
-            disabled={busy}
-            onClick={onRemove}
-          >
-            <IconTrash size={14} />
-          </button>
-        )}
+        {ready && <div style={{ display: 'flex', gap: 4 }}>
+          {model.kind === 'reranking' && <button className="kb-btn" style={style.iconOnlyButton} title={t('rerankRevalidate')} aria-label={t('rerankRevalidate')} disabled={busy} onClick={onSelfTest}><IconRefresh size={14} /></button>}
+          <button className="kb-dangerbtn" style={style.iconOnlyButton} title={t('localModelRemove')} aria-label={t('localModelRemove')} disabled={busy} onClick={onRemove}><IconTrash size={14} /></button>
+        </div>}
       </div>
 
       {failed && (
@@ -682,16 +733,16 @@ function ModelCard(props: {
         </p>
       )}
 
-      {downloading && (
+      {inProgress && (
         <div style={{ marginTop: 12 }}>
           <div style={{ height: 6, width: '100%', borderRadius: 999, background: C.surface2, overflow: 'hidden' }}>
             <div style={{ height: '100%', width: `${model.progress}%`, borderRadius: 999, background: C.accent, transition: 'width 0.2s' }} />
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12, color: C.muted }}>
-            <span>{t('localModelDownloading')}</span>
+            <span>{model.status === 'validating' ? t('rerankValidating') : t('localModelDownloading')}</span>
             <span>{Math.floor(model.progress)}%</span>
           </div>
-          <div style={{ marginTop: 10, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+          {downloading && <div style={{ marginTop: 10, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
             <button
               className="kb-btn"
               style={{ ...style.button, width: '100%', justifyContent: 'center' }}
@@ -700,20 +751,20 @@ function ModelCard(props: {
             >
               <IconX size={13} />{t('localModelCancel')}
             </button>
-          </div>
+          </div>}
         </div>
       )}
 
-      {!ready && !downloading && (
+      {!ready && !inProgress && (
         <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
           <button
             className="kb-btn"
             style={{ ...style.button, width: '100%', justifyContent: 'center' }}
             disabled={busy}
-            onClick={onDownload}
+            onClick={model.kind === 'reranking' && model.status === 'unhealthy' ? onSelfTest : onDownload}
           >
             {failed ? <IconRefresh size={13} /> : <IconDownload size={13} />}
-            {failed ? t('localModelRetry') : t('localModelDownload')}
+            {model.kind === 'reranking' && model.status === 'unhealthy' ? t('rerankRevalidate') : failed ? t('localModelRetry') : t('localModelDownload')}
           </button>
         </div>
       )}

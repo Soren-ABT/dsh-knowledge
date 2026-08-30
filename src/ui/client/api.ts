@@ -16,6 +16,7 @@ export interface BaseConfig {
   rerankModel?: string
   rerankBaseUrl?: string
   rerankApiKey?: string
+  localRerankTimeoutMs?: number
   smartChunk?: boolean
   chunkSeparator?: string
   chunkSize?: number
@@ -97,11 +98,15 @@ export interface ModelSuggestions {
 export interface LocalModelSummary {
   id: string
   name: string
-  kind: 'embedding'
+  kind: 'embedding' | 'reranking'
+  support?: 'official' | 'experimental'
   subtitle: string
-  status: 'ready' | 'not_downloaded' | 'downloading' | 'error'
+  status: 'ready' | 'not_downloaded' | 'downloading' | 'validating' | 'unhealthy' | 'error'
+  health: 'unchecked' | 'checking' | 'healthy' | 'unhealthy'
   progress: number
   message: string
+  lastCheckedAt?: number
+  latencyMs?: number
 }
 
 export interface ChunkView {
@@ -122,6 +127,7 @@ export interface KnowledgeConfig {
   rerankModel: string
   rerankBaseUrl: string
   rerankApiKey: string
+  localRerankTimeoutMs: number
   smartChunk: boolean
   chunkSeparator: string
   chunkSize: number
@@ -174,8 +180,26 @@ export interface SearchResult {
   mode: SearchMode
   total: number
   reranked: boolean
+  rerank?: RerankStatus
   elapsedMs: number
   hits: SearchHit[]
+}
+
+export interface RerankStatus {
+  configured: true
+  provider: 'local' | 'remote'
+  model: string
+  status: 'applied' | 'not_needed' | 'degraded'
+  attempted: boolean
+  applied: boolean
+  candidateCount: number
+  elapsedMs?: number
+  error?: {
+    code: 'model_not_downloaded' | 'model_checking' | 'model_unhealthy' | 'unsupported_model' | 'timeout' | 'invalid_response' | 'runtime_error' | 'process_crash' | 'circuit_open' | 'busy' | 'provider_error'
+    message: string
+    retryable: boolean
+    action?: 'download_model' | 'run_self_test' | 'check_config' | 'retry_later'
+  }
 }
 
 export interface BaseStats {
@@ -265,6 +289,14 @@ export class KnowledgeApi {
 
   downloadLocalModel(id: string): Promise<LocalModelSummary> {
     return this.call('POST', `/local-models/download?model=${encodeURIComponent(id)}`)
+  }
+
+  registerCustomLocalReranker(id: string): Promise<LocalModelSummary> {
+    return this.call('POST', '/local-models/custom', { id })
+  }
+
+  selfTestLocalModel(id: string): Promise<LocalModelSummary> {
+    return this.call('POST', '/local-models/self-test', { id })
   }
 
   cancelLocalModel(id: string): Promise<LocalModelSummary> {

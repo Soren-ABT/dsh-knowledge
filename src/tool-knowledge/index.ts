@@ -159,6 +159,30 @@ export function apply(ctx: Context): void {
           mode: { type: 'string', required: true },
           total: { type: 'number', required: true },
           reranked: { type: 'boolean', required: true },
+          rerank: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              configured: { type: 'boolean', required: true },
+              provider: { type: 'string', enum: ['local', 'remote'], required: true },
+              model: { type: 'string', required: true },
+              status: { type: 'string', enum: ['applied', 'not_needed', 'degraded'], required: true },
+              attempted: { type: 'boolean', required: true },
+              applied: { type: 'boolean', required: true },
+              candidateCount: { type: 'number', required: true },
+              elapsedMs: { type: 'number' },
+              error: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  code: { type: 'string', required: true },
+                  message: { type: 'string', required: true },
+                  retryable: { type: 'boolean', required: true },
+                  action: { type: 'string' },
+                },
+              },
+            },
+          },
           elapsedMs: { type: 'number', required: true },
           hits: {
             type: 'array',
@@ -189,7 +213,10 @@ export function apply(ctx: Context): void {
         },
       },
       render: (_args, value: SearchResult & { citations?: string[] }) => {
-        if (value.hits.length === 0) return [{ type: 'text', text: `no matches for "${value.query}"` }]
+        const warning = value.rerank?.status === 'degraded'
+          ? `\nRerank degraded (${value.rerank.error?.code ?? 'unknown'}): ${value.rerank.error?.message ?? 'using retrieval order'}\n`
+          : ''
+        if (value.hits.length === 0) return [{ type: 'text', text: `${warning}no matches for "${value.query}"` }]
         const lines = value.hits.map((hit, i) => {
           const excerpt = hit.siblingContext !== undefined && hit.siblingContext.length > 0
             ? `${hit.siblingContext}\n>>> ${hit.text}`
@@ -200,7 +227,7 @@ export function apply(ctx: Context): void {
           const baseName = knowledge.listBases().find(base => base.id === hit.baseId)?.name
           return `[${i + 1}] (score ${hit.score.toFixed(3)}) ${sourceLabel(hit, baseName)}\n${excerpt}`
         })
-        return [{ type: 'text', text: `${value.hits.length} result(s) for "${value.query}" (${value.mode}):\n${lines.join('\n\n')}` }]
+        return [{ type: 'text', text: `${warning}${value.hits.length} result(s) for "${value.query}" (${value.mode}):\n${lines.join('\n\n')}` }]
       },
     },
     async execute(args) {

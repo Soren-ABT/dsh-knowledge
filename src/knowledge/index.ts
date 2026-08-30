@@ -28,8 +28,9 @@ import {
   setLocalWorkerIdleTimeoutMs,
 } from './embed.js'
 import type { LocalModelStatus } from './embed.js'
-import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, listLocalModels, LOCAL_MODELS } from './localModels.js'
+import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, hasActiveLocalRerankDownload, listLocalModels, LOCAL_MODELS, registerCustomLocalReranker, selfTestLocalModel } from './localModels.js'
 import type { LocalModelSummary } from './localModels.js'
+import { disposeLocalRerankProcess, setLocalRerankIdleTimeoutMs } from './local-rerank.js'
 import { downloadOcrModels, disposeOcrWorker, getOcrModelStatus, removeOcrModels, type OcrModelStatus } from './ocr.js'
 import { httpFetch } from './net.js'
 import { knowledgeRoute } from './http.js'
@@ -37,7 +38,7 @@ import { SUPPORTED_DOCUMENT_EXTENSIONS, extractHtmlDocument, extractFromHtml, ex
 import { rank } from './retrieval.js'
 import { maximalMarginalRelevance, reciprocalRankFusion, RRF_K } from './retrieval.js'
 import type { RankedHit } from './retrieval.js'
-import { rerankCandidates } from './rerank.js'
+import { rerankCandidates, rerankErrorDetail, rerankTechnicalMessage } from './rerank.js'
 import { hashEmbeddingText } from './chunkdb.js'
 import { openStore } from './store.js'
 import type { StorageDomainFacility, Store } from './store.js'
@@ -73,6 +74,8 @@ import type {
   SearchMode,
   SearchRequest,
   SearchResult,
+  RerankErrorDetail,
+  RerankStatus,
   UpdateBaseRequest,
 } from './types.js'
 
@@ -126,7 +129,7 @@ export const MODEL_SUGGESTIONS = {
   ],
   // Local models mirror the shipped registry (localModels.ts) — every entry is
   // a real, downloadable transformers.js ONNX repo with a known pooling rule.
-  local: LOCAL_MODELS.map(model => model.id),
+  local: LOCAL_MODELS.filter(model => model.kind === 'embedding').map(model => model.id),
   rerank: [
     'jina-reranker-v2-base-multilingual',
     'BAAI/bge-reranker-v2-m3',
@@ -212,6 +215,8 @@ export class KnowledgeService extends Service {
   // Per-base write chain guarding dedup-check + first persist (read-then-write),
   // so two concurrent imports of identical content cannot both pass the check.
   private readonly baseWriteChains = new Map<string, Promise<unknown>>()
+  /** Last rerank failure code per model; only state transitions are logged. */
+  private readonly rerankLogState = new Map<string, string>()
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'knowledge')
@@ -235,10 +240,27 @@ export class KnowledgeService extends Service {
     setHfEndpoint(resolved.hfEndpoint)
     setLocalModelCacheDir(resolved.localModelCacheDir)
     setLocalWorkerIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
+    setLocalRerankIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
+    // One-time compatibility path for caches created before readiness markers:
+    // validate only rerankers that are actually configured, in the background.
+    const configuredLocalRerankers = new Set<string>()
+    for (const effective of [resolved, ...store.listBases().map(base => resolveConfigFor(this.baseConfig, store.getConfigOverrides(), base.config))]) {
+      if (effective.rerankModel.startsWith('local:')) {
+        const modelId = effective.rerankModel.slice('local:'.length).trim()
+        if (modelId !== '') configuredLocalRerankers.add(modelId)
+      }
+    }
+    void listLocalModels().then(models => {
+      for (const modelId of configuredLocalRerankers) {
+        const model = models.find(entry => entry.id === modelId)
+        if (model?.status === 'unhealthy' && model.health === 'unchecked') void selfTestLocalModel(modelId)
+      }
+    }).catch(() => {})
     this.ctx.effect(() => async () => { await store.close() }, 'knowledge: close store')
     // Terminate the local-model inference worker on teardown so a loaded
     // ~600MB model can never outlive the plugin (Cherry: lifecycle-managed worker).
     this.ctx.effect(() => () => { void disposeLocalModelWorker() }, 'knowledge: dispose local model worker')
+    this.ctx.effect(() => () => { void disposeLocalRerankProcess() }, 'knowledge: dispose local rerank process')
     this.ctx.effect(() => () => { void disposeOcrWorker() }, 'knowledge: dispose OCR worker')
     // Resume documents a previous process left mid-embedding: their chunks are
     // partially persisted, so re-running the embed with hash reuse completes
@@ -419,6 +441,7 @@ export class KnowledgeService extends Service {
     setHfEndpoint(resolved.hfEndpoint)
     setLocalModelCacheDir(resolved.localModelCacheDir)
     setLocalWorkerIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
+    setLocalRerankIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
     return resolved
   }
 
@@ -1809,6 +1832,14 @@ export class KnowledgeService extends Service {
     return downloadLocalModel(id)
   }
 
+  registerCustomLocalReranker(id: string): Promise<LocalModelSummary> {
+    return registerCustomLocalReranker(id)
+  }
+
+  selfTestLocalModel(id: string): Promise<LocalModelSummary> {
+    return selfTestLocalModel(id)
+  }
+
   cancelLocalModel(id: string): Promise<LocalModelSummary> {
     return cancelLocalModelDownload(id)
   }
@@ -1881,7 +1912,7 @@ export class KnowledgeService extends Service {
     // A download in flight writes into the current cache directory; moving
     // its half-written files out from under the worker would corrupt the
     // model. Refuse instead of silently breaking the download.
-    if (hasActiveLocalModelDownload()) {
+    if (hasActiveLocalModelDownload() || hasActiveLocalRerankDownload()) {
       throw new Error('模型正在下载，请先等待下载完成或取消后再迁移')
     }
     // Release loaded models (up to ~600MB each) and the OCR worker BEFORE
@@ -1889,10 +1920,14 @@ export class KnowledgeService extends Service {
     // onnxruntime keeps model files mmap'd, and a Windows file lock makes
     // both the rename and the copy+delete fallback fail.
     await disposeLocalModelWorker()
+    await disposeLocalRerankProcess()
     await disposeOcrWorker()
     const entries = await readdir(from).catch(() => [] as string[])
     let moved = 0
     await mkdir(target, { recursive: true })
+    // Custom reranker registrations live beside the model directories. Keep
+    // this hidden registry during migration without counting it as a model.
+    await cp(join(from, '.dsh-rerank-models.json'), join(target, '.dsh-rerank-models.json'), { force: true }).catch(() => {})
     for (const entry of entries) {
       // Hidden entries (dot-prefixed) are never models: when the configured
       // cache dir is a parent of the target (e.g. from=/data/models,
@@ -2307,7 +2342,13 @@ export class KnowledgeService extends Service {
       .sort((a, b) => b.score - a.score)
       .slice(0, Math.min(50, Math.max(topK * 4, 20)))
     let reranked = false
-    if (config.rerankModel.trim() !== '' && hits.length > 1) {
+    let rerank: RerankStatus | undefined
+    const rerankModel = config.rerankModel.trim()
+    if (rerankModel !== '' && hits.length <= 1) {
+      rerank = this.notNeededRerankStatus(rerankModel, hits.length)
+    } else if (rerankModel !== '' && hits.length > 1) {
+      const candidateCount = hits.length
+      const rerankStartedAt = Date.now()
       try {
         const scores = await rerankCandidates(
           config.rerankBaseUrl,
@@ -2321,6 +2362,7 @@ export class KnowledgeService extends Service {
               .join('\n'),
           })),
           topK,
+          rerankModel.startsWith('local:') ? config.localRerankTimeoutMs : 60_000,
         )
         const rescored = hits
           .filter(hit => scores.has(hit.chunkId))
@@ -2329,11 +2371,13 @@ export class KnowledgeService extends Service {
         if (rescored.length > 0) {
           hits = rescored
           reranked = true
+          rerank = this.appliedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt)
+          this.rerankLogState.delete(rerankModel)
         }
       } catch (error) {
-        const status = (error as { status?: number }).status
-        const level = status === 401 || status === 403 || status === 404 ? 'error' : 'warn'
-        this.ctx.logger[level](`knowledge: multi-query rerank failed, keeping fused order: ${error instanceof Error ? error.message : String(error)}`)
+        const detail = rerankErrorDetail(error)
+        rerank = this.degradedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt, detail)
+        this.logRerankFailure(rerankModel, detail.code, candidateCount, rerank.elapsedMs ?? 0, rerankTechnicalMessage(error))
       }
     }
 
@@ -2349,6 +2393,7 @@ export class KnowledgeService extends Service {
       mode,
       total: results.reduce((max, result) => Math.max(max, result.total), 0),
       reranked,
+      ...(rerank !== undefined ? { rerank } : {}),
       elapsedMs: Date.now() - startedAt,
       hits: hits.slice(0, topK),
     }
@@ -2370,7 +2415,13 @@ export class KnowledgeService extends Service {
   ): Promise<SearchResult> {
     let ranked = initial
     let reranked = false
-    if (allowRerank && config.rerankModel.trim() !== '' && ranked.length > 1) {
+    let rerank: RerankStatus | undefined
+    const rerankModel = allowRerank ? config.rerankModel.trim() : ''
+    if (rerankModel !== '' && ranked.length <= 1) {
+      rerank = this.notNeededRerankStatus(rerankModel, ranked.length)
+    } else if (rerankModel !== '' && ranked.length > 1) {
+      const candidateCount = ranked.length
+      const rerankStartedAt = Date.now()
       try {
         const pool = ranked.map(hit => ({ id: hit.id, text: chunkSearchText(byId.get(hit.id)!)}))
         // Cherry's mergeRerankResults: only the candidates the rerank model
@@ -2384,6 +2435,7 @@ export class KnowledgeService extends Service {
           query,
           pool,
           topK,
+          rerankModel.startsWith('local:') ? config.localRerankTimeoutMs : 60_000,
         )
         const rescored = ranked
           .filter(hit => scores.has(hit.id))
@@ -2393,11 +2445,13 @@ export class KnowledgeService extends Service {
         if (rescored.length > 0) {
           ranked = rescored.sort((a, b) => b.score - a.score)
           reranked = true
+          rerank = this.appliedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt)
+          this.rerankLogState.delete(rerankModel)
         }
       } catch (error) {
-        const status = (error as { status?: number }).status
-        const level = status === 401 || status === 403 || status === 404 ? 'error' : 'warn'
-        this.ctx.logger[level](`knowledge: rerank failed, keeping retrieval order: ${error instanceof Error ? error.message : String(error)}`)
+        const detail = rerankErrorDetail(error)
+        rerank = this.degradedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt, detail)
+        this.logRerankFailure(rerankModel, detail.code, candidateCount, rerank.elapsedMs ?? 0, rerankTechnicalMessage(error))
       }
     }
 
@@ -2433,9 +2487,60 @@ export class KnowledgeService extends Service {
       mode: effectiveMode(requestedMode, ranked),
       total,
       reranked,
+      ...(rerank !== undefined ? { rerank } : {}),
       elapsedMs: Date.now() - startedAt,
       hits,
     }
+  }
+
+  private rerankProvider(model: string): 'local' | 'remote' {
+    return model.startsWith('local:') ? 'local' : 'remote'
+  }
+
+  private notNeededRerankStatus(model: string, candidateCount: number): RerankStatus {
+    return {
+      configured: true,
+      provider: this.rerankProvider(model),
+      model,
+      status: 'not_needed',
+      attempted: false,
+      applied: false,
+      candidateCount,
+    }
+  }
+
+  private appliedRerankStatus(model: string, candidateCount: number, elapsedMs: number): RerankStatus {
+    return {
+      configured: true,
+      provider: this.rerankProvider(model),
+      model,
+      status: 'applied',
+      attempted: true,
+      applied: true,
+      candidateCount,
+      elapsedMs,
+    }
+  }
+
+  private degradedRerankStatus(model: string, candidateCount: number, elapsedMs: number, error: RerankErrorDetail): RerankStatus {
+    const skipped = ['model_not_downloaded', 'model_checking', 'model_unhealthy', 'unsupported_model', 'circuit_open', 'busy'].includes(error.code)
+    return {
+      configured: true,
+      provider: this.rerankProvider(model),
+      model,
+      status: 'degraded',
+      attempted: !skipped,
+      applied: false,
+      candidateCount,
+      elapsedMs,
+      error,
+    }
+  }
+
+  private logRerankFailure(model: string, code: string, candidateCount: number, elapsedMs: number, technicalMessage: string): void {
+    if (this.rerankLogState.get(model) === code) return
+    this.rerankLogState.set(model, code)
+    this.ctx.logger.warn(`knowledge: rerank degraded model=${JSON.stringify(model)} code=${code} candidates=${candidateCount} elapsedMs=${elapsedMs} detail=${JSON.stringify(technicalMessage)}`)
   }
 
   // ── internal ──────────────────────────────────────────────────────────────

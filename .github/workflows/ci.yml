@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      local_rerank_smoke:
+        description: Run the real Xenova/bge-reranker-base smoke matrix
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -114,3 +120,35 @@ jobs:
         run: npm install --global @deepseek-ai/dsh@0.1.1-rc.2
       - name: Install tarball and boot DSH
         run: npm run smoke:packed
+
+  local-rerank-smoke:
+    name: Local rerank smoke (Ubuntu, Node ${{ matrix.node }})
+    if: github.event_name == 'workflow_dispatch' && inputs.local_rerank_smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22.19.0, 24.x]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Cache local rerank model
+        uses: actions/cache@v4
+        with:
+          path: ~/.dsh/cache/dsh-knowledge/local-models/Xenova/bge-reranker-base
+          key: local-rerank-${{ runner.os }}-${{ matrix.node }}-bge-base-v1
+      - name: Check out the pinned DSH compatibility anchor
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness "$GITHUB_WORKSPACE/../dsh"
+          git -C "$GITHUB_WORKSPACE/../dsh" checkout "$DSH_COMMIT"
+      - name: Build DSH library types
+        working-directory: ../dsh
+        run: pnpm install --frozen-lockfile && pnpm run build:lib
+      - run: pnpm install --frozen-lockfile
+      - run: npm run smoke:local-rerank

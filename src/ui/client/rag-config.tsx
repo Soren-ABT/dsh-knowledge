@@ -492,6 +492,21 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
               onChange={(e) => patch({ rerankApiKey: e.target.value })}
             />
           </div>
+          {values.rerankModel.startsWith('local:') && (
+            <div style={{ marginTop: 10 }}>
+              <label style={style.label}>{t('localRerankTimeoutMs')}</label>
+              <input
+                style={style.input}
+                type="number"
+                min={10_000}
+                max={300_000}
+                step={5_000}
+                value={values.localRerankTimeoutMs}
+                onChange={(e) => patchNumber('localRerankTimeoutMs', e.target.value)}
+              />
+              <div style={style.hint}>{t('localRerankTimeoutHint')}</div>
+            </div>
+          )}
         </Section>
 
         {/* Top K + 阈值 */}
