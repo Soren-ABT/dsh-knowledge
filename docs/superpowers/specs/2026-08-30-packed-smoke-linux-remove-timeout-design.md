@@ -1,4 +1,4 @@
-# Linux Packed-Smoke Uninstall Timeout Design
+# Packed-Smoke Uninstall Lifecycle Design
 
 ## Problem
 
@@ -10,15 +10,22 @@ Linux until the smoke's ten-minute `spawnSync` timeout expires. This turns a
 successful plugin smoke into a failed CI run and hides the already-proven
 installation and runtime result behind a process-lifecycle failure.
 
-The smoke must continue to detect an uninstall that did not change the profile.
-It must not treat a timeout alone as proof that uninstall failed.
+The smoke must continue to detect an uninstall that did not remove the package
+dependency. It must not treat a timeout alone as proof that the plugin failed.
+
+A later Ubuntu run exposed a second lifecycle state in the pinned public DSH
+CLI. `pnpm remove` can remove `dependencies.dsh-knowledge`, after which the DSH
+process hangs before its post-command reconciliation removes `dsh-knowledge`
+from `dsh.profile.bundles`. This is a partial upstream cleanup, not an install,
+boot, route, or package-removal failure in this plugin.
 
 ## Scope
 
-This change is limited to `scripts/smoke-packed-install.mjs` and its automated
-tests. It does not change production plugin behavior, DSH itself, package
-versions, tags, or npm publishing. Issue #6 and the uncommitted
-`src/knowledge/chunk.ts` experiment remain outside this change.
+This change is limited to `scripts/smoke-packed-install.mjs`,
+`scripts/smoke-packed-lifecycle.mjs`, and their automated tests. It does not
+change production plugin behavior, DSH itself, package versions, tags, or npm
+publishing. Issue #6 and the reverted `src/knowledge/chunk.ts` experiment remain
+outside this change.
 
 ## Design
 
@@ -47,16 +54,31 @@ After the uninstall process exits or is forcibly reclaimed, the smoke reads the
 profile manifest and applies the authoritative verdict:
 
 - fail if `dependencies.dsh-knowledge` still exists;
-- fail if `dsh.profile.bundles` still contains `dsh-knowledge`;
 - fail immediately on a spawn error because no uninstall attempt was proven;
 - fail on a non-zero normal exit, even if partial mutations occurred;
+- fail if a zero exit leaves `dsh.profile.bundles` inconsistent, because the CLI
+  claimed success without completing its contract;
 - pass on exit code zero when both manifest checks are clean;
-- pass with a clear warning on timeout only when both manifest checks are clean.
+- pass with a clear warning on timeout only when both manifest checks are clean;
+- in the default plugin smoke, pass with a distinct warning when a timeout
+  removed the package dependency but left only the bundle-stack entry;
+- in strict uninstall mode, fail that same partial-reconciliation state.
 
-The timeout warning names the command-lifecycle anomaly and states that the
-on-disk uninstall result was verified. This prevents a false green when pnpm or
-DSH never removed the plugin while keeping an already-correct removal from
-failing the plugin's CI solely because the parent CLI did not terminate.
+The default mode deliberately treats the package dependency as the plugin-owned
+uninstall boundary. The stale bundle entry is still surfaced, never silently
+accepted: GitHub Actions receives a native warning annotation and local runs
+receive the same concise warning on stderr. The temporary smoke profile is
+deleted in `finally`, so the known upstream state cannot contaminate a real
+profile or later job.
+
+Strict mode is enabled with `DSH_SMOKE_STRICT_UNINSTALL=1`. It preserves the
+original requirement that dependency and bundle-stack cleanup must both finish,
+and is intended for manual compatibility validation and future DSH releases.
+No other value enables strict mode, keeping the CI contract deterministic.
+
+This policy does not manually rewrite the manifest after a timeout. Doing so
+would hide the exact DSH state under test and would make the smoke validate its
+own repair rather than the public CLI.
 
 ### Test seam
 
@@ -71,7 +93,11 @@ Automated tests cover:
 - non-zero exit;
 - spawn failure;
 - timeout with dependency and bundle removed (warning/pass);
-- timeout with either manifest entry retained (failure);
+- timeout with the dependency retained (failure in every mode);
+- timeout with only the bundle entry retained (warning in default mode, failure
+  in strict mode);
+- zero exit with the bundle entry retained (failure in every mode);
+- warning formatting for GitHub Actions without leaking multiline output;
 - process-tree termination is requested once and the grace deadline is bounded;
 - the normal packed install and HTTP readiness path remains unchanged.
 
@@ -82,6 +108,15 @@ audit, workspace-policy verification, and package verification. The existing
 Windows packed smoke remains a platform check; the next GitHub push is the
 authoritative Ubuntu validation.
 
-The fix is committed separately from Issue #6. It may be pushed after local
-quality gates pass. npm publishing remains blocked until the corrected regular
-CI and the manually triggered Ubuntu local-rerank smoke both pass.
+The fix is committed separately from Issues #6 and #7. It may be pushed after
+local quality gates pass. npm publishing remains blocked until the corrected
+regular CI and the manually triggered Ubuntu local-rerank smoke both pass.
+
+## Alternatives considered
+
+Making uninstall non-blocking as a separate CI job would separate ownership
+visually, but adds workflow complexity and weakens local parity. Removing the
+bundle check entirely would be simpler, but would conceal a useful upstream
+compatibility signal. The selected state classifier keeps one portable smoke,
+retains strict mode, and changes only the known timeout-plus-partial-reconcile
+case from an error to a visible warning.
