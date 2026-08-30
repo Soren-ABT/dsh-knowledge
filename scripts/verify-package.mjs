@@ -17,6 +17,7 @@ const REQUIRED_FILES = [
   'benchmarks/baseline.json',
   'benchmarks/questions.json',
   'benchmarks/corpus/manifest.json',
+  'scripts/verify-build-policy.mjs',
   'lib/index.js',
   'lib/knowledge/index.js',
   'lib/tool-knowledge/index.js',

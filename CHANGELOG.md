@@ -16,6 +16,7 @@
 ### Release engineering
 
 - **Cross-platform CI**: Node 22.19/24 quality lanes, Windows/Linux/macOS native lanes, and packed-tarball installation/boot smoke tests against a pinned DSH compatibility anchor.
+- **Clean-install build policy**: explicitly approved esbuild's required install script and added a dependency-free pre-install validator so local caches cannot conceal unresolved native build decisions.
 - **Production audit policy**: the one current transitive `sharp` advisory is explicitly documented, reachability-scoped, expiry-bound, and machine-checked; any new high/critical advisory fails CI.
 - **Reproducible retrieval benchmark**: a committed bilingual synthetic corpus and question set gate Hit@1/3, Recall@3, MRR, and context recall without network access or model downloads; latency and RSS remain informational.
 - **Release and contributor hygiene**: package verification, a no-publish release preflight, SECURITY/CONTRIBUTING guidance, structured issue templates, a PR checklist, release notes, and a copy-ready issue #5 response.

@@ -70,6 +70,8 @@
     "test": "vitest run",
     "audit:prod": "node scripts/audit-production.mjs",
     "audit:prod:self-test": "node scripts/audit-production.mjs --self-test",
+    "verify:workspace": "node scripts/verify-build-policy.mjs",
+    "verify:workspace:self-test": "node scripts/verify-build-policy.mjs --self-test",
     "benchmark": "npm run build --silent && node scripts/benchmark-retrieval.mjs",
     "benchmark:json": "npm run build --silent && node scripts/benchmark-retrieval.mjs --json",
     "benchmark:update-baseline": "npm run build --silent && node scripts/benchmark-retrieval.mjs --update",

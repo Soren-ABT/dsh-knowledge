@@ -20,6 +20,8 @@ function run(command, args) {
 }
 
 try {
+  run('node', ['scripts/verify-build-policy.mjs', '--self-test'])
+  run('node', ['scripts/verify-build-policy.mjs'])
   run('node', ['scripts/verify-release.mjs'])
   run('node', ['scripts/audit-production.mjs', '--self-test'])
   run('node', ['scripts/audit-production.mjs'])

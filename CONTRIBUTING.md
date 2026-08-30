@@ -34,6 +34,7 @@ pnpm install --frozen-lockfile
 Run the checks relevant to your change before opening a pull request:
 
 ```bash
+npm run verify:workspace
 npm run typecheck
 npm test
 npm run build
@@ -41,6 +42,9 @@ npm run benchmark
 npm run audit:prod
 npm run verify:package
 ```
+
+The workspace check is dependency-free and should run before `pnpm install` in
+clean environments. It rejects missing or non-boolean native build decisions.
 
 `npm run release:check` is the maintainer's final, non-publishing release gate.
 It expects a clean Git working tree and never creates a tag, pushes, or
