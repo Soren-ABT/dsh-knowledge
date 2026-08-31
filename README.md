@@ -27,13 +27,40 @@
 - **扫描件 OCR（本地引擎）**：扫描版 PDF、**矢量绘制的无文本层 PDF** 与图片自动走**整页渲染 + PaddleOCR PP-OCRv5**（约 21MB 模型，含 1.8 万字符中文词典，设置 → 本地模型一键下载；页面用 mupdf WASM 渲染），识别失败自动回退 Tesseract；**1-bit 位图（JBIG2/CCITT 传真式扫描件）也能正确识别**；文本层损坏或逐字符排版的 PDF 会自动切换识别路径；识别文本照常分块、向量化、可检索。
 - **每库独立配置**：每个知识库可单独指定 embedding 提供方/模型（含**本地模型**）、**重排模型**（远程 API 或 **本地 bge-reranker**）、分块大小与 topK、**语义分块**、冲突策略、URL 自动刷新等，未设置字段自动继承全局配置；改配置后一键重建索引（全库或单条资料）。
 - **可选 MinerU 远程文档处理**：PDF 可交给 [MinerU](https://github.com/opendatalab/MinerU) 服务解析（公式、表格、版式还原成 Markdown），知识库设置里填入 MinerU API Key（全局或每库覆盖）即可；未配置时自动走本地解析链路。
-- **向量化与检索**：可插拔 embedding 提供方 —— 任意 OpenAI 兼容 `/embeddings` 端点（OpenAI、DeepSeek、SiliconFlow、本地网关…）、Ollama，或 **进程内本地模型（transformers.js，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX，无需联网服务）**；**混合检索**（BM25 + 向量 + Reciprocal Rank Fusion）、**重排模型（rerank，Jina/SiliconFlow/Cohere v2 风格 API 或本地跨编码器）**、**MMR 结果去重**、检索模式（auto/hybrid/vector/lexical）与相似度阈值、**多查询检索**（主查询 + 最多 3 个去重变体经 RRF 融合，最多重排一次）；未配置时自动退化关键词（CJK 二元组 + 拉丁词 BM25），零配置即可用；召回测试显示命中来源、相关度、双分数、**耗时**，**复制引用（Markdown 引用块 + 来源行）**，并保留**检索历史**可一键重放。
+- **向量化与检索**：可插拔 embedding 提供方 —— 任意 OpenAI 兼容 `/embeddings` 端点（OpenAI、DeepSeek、SiliconFlow、本地网关…）、Ollama，或 **进程内本地模型（transformers.js，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX，无需联网服务）**；**混合检索**（BM25 + 向量 + Reciprocal Rank Fusion）、**重排模型（rerank，Jina/SiliconFlow/Cohere v2 风格 API 或本地跨编码器）**、**MMR 结果去重**、检索模式（auto/hybrid/vector/lexical）与相似度阈值、**多查询检索**（主查询 + 最多 3 个去重变体经 RRF 融合，最多重排一次）；每个命中附带按 `before → anchor → after` 排列、受 Token 预算约束的 `ContextWindow`，上下文在查询时动态生成，不把桥接文本重复写入索引；未配置时自动退化关键词（CJK 二元组 + 拉丁词 BM25），零配置即可用；召回测试显示命中来源、相关度、双分数、**耗时**，**复制引用（Markdown 引用块 + 来源行）**，并保留**检索历史**可一键重放。
 - **智能分块**：标题感知分块（保留 Markdown 标题路径，**代码围栏保护**），并将「文档标题 + 标题路径」作为上下文注入 embedding 与检索；分块大小/重叠为 **Token 预算**（按文档实测字符/Token 比换算，与 Cherry Studio 一致），长块按 **Cherry 断点评分模型**切分（标题 100 → 代码边界 80 → 分隔线 60 → 段落 20 → 句读 8 → 列表 5 → 裸换行 1，窗口内距离衰减），CJK/拉丁语混排窗口大小一致；**语义分块**（段落嵌入 + 相邻相似段合并，零额外嵌入开销）与 **Token 上限细化**（超限在句号/逗号/空格边界继续切分）可选开启。
 - **索引管理**：按当前配置**重建索引**（改分块大小 / 换 embedding 后一键重切 + 重向量化）、批量 embedding、统计（文档/分块/字符/Token 数、是否已向量化）。
-- **模型工具**：`knowledge_search`（含 citations 引用数组）、`knowledge_list_bases`、`knowledge_create_base`、`knowledge_delete_base`、`knowledge_add_document`、`knowledge_list_documents`、`knowledge_delete_document`、`knowledge_import_url`、`knowledge_refresh_url`、`knowledge_stats`、`knowledge_get_document`、`knowledge_read_document`（按字符区间分段阅读 / 正则定位）、`knowledge_reindex_document`、`knowledge_reindex_base`（共 14 个）。所有读写工具与自动检索共用严格的“已启用知识库”边界；空/失效选择不会扩大到全库，永久删除需经宿主批准，长文档读取会返回分页续读位置。
+- **模型工具**：`knowledge_search`（含 citations、`chunkIndex` 与有序 `ContextWindow`）、`knowledge_list_bases`、`knowledge_create_base`、`knowledge_delete_base`、`knowledge_add_document`、`knowledge_list_documents`、`knowledge_delete_document`、`knowledge_import_url`、`knowledge_refresh_url`、`knowledge_stats`、`knowledge_get_document`（普通分页或围绕 `anchorChunkId` / `anchorIndex` 续读）、`knowledge_read_document`（按字符区间分段阅读 / 正则定位并返回字符偏移）、`knowledge_reindex_document`、`knowledge_reindex_base`（共 14 个）。所有读写工具与自动检索共用严格的“已启用知识库”边界；空/失效选择不会扩大到全库，永久删除需经宿主批准。
 - **管理面板**：**不在设置内** —— 侧边栏底部（设置旁）的「知识库」入口打开工作区整页浮层，布局：左侧搜索框 + **分组折叠导航** + 彩色头像知识库卡片（右键菜单：重命名/移动到分组/新建分组/删除），右侧统计芯片、**「更新于」时间**、添加文档弹窗、**表格化资料列表（勾选列 + 名称/类型/状态/更新时间 + 多选批量重建/批量删除）**、分块/原文预览、重建索引、检索测试（命中高亮 + 向量/关键词双分数 + 历史 + 复制引用）、全局与每库设置弹窗（文档处理 / 图表描述 / 嵌入模型 / 重排模型 / TopK / 高级设置）、Toast 通知、空状态与悬停动效。
 - **本地模型管理（设置内）**：设置 →「本地模型」页面（`settings.section` 插槽），**嵌入、重排与 OCR 模型卡片**：模型名称/说明、**就绪徽标**、**下载 / 重试 / 删除** 按钮、**实时下载进度条**；**模型缓存目录可配置**（原生文件夹选择器 + 打开目录 + **一键迁移**已下载模型到新位置，迁移自动跳过隐藏目录、不会把目标目录复制进自身，不再盲目占满 C 盘）；**Ollama 管理**（拉取/取消/删除、**已装模型卡片列表（含大小）**、下载进度卡片、嵌入与视觉模型推荐）。
 - **持久化**：业务状态（知识库/文档/运行时配置）经 DSH 官方 `storageDomain` seam 落盘（`json` 后端，默认随 `web` profile 提供）；**分块数据存于独立 SQLite 文件**（`<DSH_HOME>/storages/knowledge-chunks.sqlite`，可用 `chunkStorePath` 配置）——每分块一行、每次写入/删除为单条语句，不随数据量恶化；词法检索走 FTS5 三元组全文索引、向量检索使用**常驻内存缓存**（Float32Array，精确失效），启动不再全量载入内存。升级后首次启动自动完成旧数据迁移（幂等、去重）；无存储后端时自动降级为内存模式。
+
+---
+
+## 0.3.8 检索证据链
+
+`knowledge_search` 仍保留完整的 `SearchHit.text` 作为规范锚点，同时新增可选、加法兼容的 `contextWindow`：
+
+```ts
+interface ContextWindow {
+  anchorChunkId: string
+  anchorIndex: number
+  before: ContextChunkExcerpt[]
+  anchor: ContextChunkExcerpt
+  after: ContextChunkExcerpt[]
+  estimatedTokens: number
+  hasMoreBefore: boolean
+  hasMoreAfter: boolean
+}
+```
+
+- 上下文严格按文档顺序生成，默认不跨标题路径；超长锚点围绕查询命中裁剪，相邻块重叠文本会去重，锚点证据优先保留。
+- `ContextChunkExcerpt.textStart/textEnd` 是相对该 chunk 正文的 UTF-16 偏移，不是原始文件坐标。旧 `siblingContext` 在整个 0.3.x 继续返回，但已弃用；新代码应优先读取 `contextWindow`。
+- `knowledge_get_document` 不传锚点时保持原有 `chunkOffset/chunkLimit` 分页；传入且只传一个 `anchorChunkId` 或 `anchorIndex` 时进入上下文模式，可设置 `before`、`after`（0–10）、`maxTokens`（128–4096，默认 1600）、`focus`（最多 500 字符）与 `crossHeading`。分页参数和锚点参数不能混用。
+- 自动检索先执行不含 service rerank 的词法召回，本地 reranker 不参与首 Token 前路径；远程 rerank 最多一次并共享 4 秒总预算。provider 超时或故障会保留原始召回顺序，外部取消则立即退出且不注入背景、不更新节流或去重状态。
+- `docIds: undefined` 表示不限制；显式空数组表示匹配零文档。关闭自动检索或权重为 0 的命名知识库不会被替换成其他库搜索。
+
+0.3.7 的数据库、分块和 embedding 可直接使用：本次升级不迁移数据库、不重建索引、不产生额外 embedding，也不把桥接文本持久化到 chunk。普通分页调用和 `SearchHit.text` 保持兼容。
 
 ---
 
@@ -67,7 +94,7 @@
 dsh plugin --profile <name> add dsh-knowledge
 
 # 从发布 tarball（GitHub Releases 或 npm pack 产物）
-dsh plugin --profile <name> add ./dsh-knowledge-0.3.7.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.3.8.tgz
 
 # 从本地源码目录（需先构建，见下方「开发」）
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -136,7 +163,7 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 | `mmrDiversity` | `0` | MMR 结果多样性（0–1，0=关闭） |
 | `rrfVectorWeight` | `1` | RRF 混合时向量路的相对权重（0.1–5，1=均衡） |
 | `embeddingBatchSize` | `32` | 每次 embedding 请求的文本条数 |
-| `siblingChunks` | `1` | 检索命中附带的上下文块数（±N，0–3，0=关闭） |
+| `siblingChunks` | `1` | `ContextWindow` 在锚点前后尝试附带的块数（±N，0–3）；`0` 仍返回仅含 anchor 的窗口 |
 | `semanticChunk` | `false` | 语义分块：段落嵌入 + 相邻相似段合并（按库可覆盖） |
 | `semanticChunkThreshold` | `0.75` | 语义分块合并阈值（0–1） |
 | `chunkTokenLimit` | `0` | 分块 Token 上限（0=不限制）；超限在句号/逗号/空格边界继续切分 |
@@ -169,6 +196,16 @@ dsh plugin --profile <name> add file:/path/to/dsh-knowledge
 ---
 
 ## 召回效果评测（自带工具，可对任意库复跑）
+
+仓库自带无网络、无模型下载的双语确定性基准（24 份合成文档、40 个问题），schema v2 同时检查 Hit/Recall/MRR、模型实际可见证据、自动检索背景、Bridge@1、`ContextWindow` 顺序与硬预算：
+
+```bash
+pnpm benchmark                 # 构建并执行全部质量门槛
+pnpm benchmark:json            # 输出含兼容能力与诊断值的 JSON
+pnpm benchmark:update-baseline # 仅刷新 observed；不会降低 thresholds
+```
+
+这些门槛只针对仓库内可复现的合成夹具，用于防止代码回归，不代表真实私有语料上的准确率承诺。独立 Bridge@1 夹具要求 top1 锚点本身不含答案、模型可见 `ContextWindow` 含答案，并验证一次真实 `getDocumentContext(anchorChunkId)` 续读仍能取得答案；它仍不等同于真实模型已自主完成整条工具轨迹。重复 Token 比率与 p50/p95 延迟只报告、不设跨机器硬阈值。
 
 `scripts/` 内置两套评估脚本，对**你自己的知识库**运行，无需任何外部服务：
 
@@ -216,6 +253,9 @@ pnpm run build    # esbuild → lib/（含 client bundle）
 
 ## 已知局限
 
+- **0.3.8 未处理跨 embedding 空间融合**：跨多个知识库做向量检索时，仍应确保它们使用兼容的 embedding 模型与向量空间；本版本没有实现逐库向量检索后的跨空间排名融合。
+- **0.3.8 未修复 stale-vector 签名或语义分块 centroid**：本版本不改变旧向量签名策略，也不改变语义分块以段落向量质心代表最终“标题 + 正文”chunk 的现有行为；两者需要后续版本的独立实现，本次升级不会自动重建索引。
+- **Issue #6 分块聚合不在本次范围**：普通智能分块、`chunkOverlap` 和 PDF 空行碎片化行为保持不变；`ContextWindow` 是查询时的动态上下文，不是对既有 chunk 的全局合并。
 - **模型下拉为建议式组合框，而非 provider 实时列表**：DSH 的 `ctx.llm` 只暴露对话模型（`listModels` 无 embedding 维度标记，且本插件的 embedding 端点/模型是独立配置）。设置面板因此用「内置精选建议 + 可输入自定义 id」的原生 datalist 组合框（嵌入 / 本地 / 重排三组建议）。
 - **嵌入在导入流程内联执行**：解析与分块有实时逐文件状态（解析中 / 嵌入中 NN%），向量化以批次内联运行（推理在独立 worker 线程，不阻塞 UI，但同一知识库的导入按 5 路并发池排队）；本地模型首次下载会阻塞到缓存完成（设置面板实时显示进度）。
 - **MinerU 需 API Key**：`documentProcessorProvider: mineru` 依赖 MinerU 官方服务（或自托管 host），需要注册获取 Key；未配置时 PDF 自动走本地解析 + OCR。

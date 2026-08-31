@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.8 — 2026-08-31
+
+### Retrieval execution and automatic retrieval
+
+- **One bounded rerank path**: `KnowledgeService.search(request, execution?)` keeps configured reranking for normal callers, while proactive retrieval explicitly skips service-level rerank. The first-token path never starts a local cross-encoder; a configured remote reranker may run once with no retries inside the remaining part of one four-second deadline. Provider timeout, crash, and failure preserve lexical order; owner cancellation exits immediately without injecting evidence or mutating retrieval memory.
+- **Follow-up-aware query planning**: the current turn always survives the 200-character query budget (head + tail). Short/deictic follow-ups may add one history-aware lexical query; the two rankings are fused with RRF. Already injected evidence is removed before rerank and per-base seat allocation, so same-topic turns can contribute one fresh item instead of being blocked before search.
+- **Stricter routing and identifiers**: explicitly naming a base that has proactive retrieval disabled or weight 0 no longer falls through to unrelated bases. Exact numeric/model/version/error identifiers use a boundary-aware path and must remain present in the final visible evidence.
+- **Consistent lexical/filter contracts**: short-query LIKE fallback now returns a deterministic positive score (`1024 / (1024 + searchTextLength)`), fixing two-character CJK automatic retrieval. `docIds: undefined` means unrestricted; an explicit empty allow-list matches no documents in both service and SQLite lexical/vector lanes.
+
+### Ordered evidence windows
+
+- **Additive `ContextWindow` API**: every new search hit carries ordered, token-bounded `before`, `anchor`, and `after` excerpts with chunk ids/indexes, heading paths, chunk-relative UTF-16 ranges, truncation flags, estimated tokens, and continuation flags. `SearchHit.text` remains the complete canonical anchor; deprecated `siblingContext` remains available throughout 0.3.x.
+- **One context composer**: reranking, explicit search rendering, proactive previews, and benchmark evaluation share the same document-order serializer. Context stops at heading changes by default, centres oversized anchors on the query, removes exact adjacent overlap, and keeps anchor evidence authoritative. Context is composed at query time; no bridge text is persisted or embedded.
+- **Stable degradation**: single- and multi-query results use the same contextual rerank input and stable tie ordering. Invalid/empty rerank output leaves the original retrieval order and its evidence windows intact.
+
+### Anchored reading and tool output
+
+- **Direct continuation from a hit**: `knowledge_search` exposes `chunkIndex` and one continuation hint. `knowledge_get_document` retains page mode but now uses true SQL limit/offset; passing exactly one of `anchorChunkId` or `anchorIndex` selects context mode with bounded `before`, `after`, `maxTokens`, `focus`, and `crossHeading` controls. Stale, disabled, or document-mismatched anchors fail explicitly.
+- **Visible offsets**: regular-expression results from `knowledge_read_document` render `charStart`/`charEnd` and include a copyable continuation instruction for reading around the first match.
+
+### Evaluation, release, and compatibility
+
+- **Benchmark schema v2**: the committed bilingual 24-document/40-question synthetic fixture now gates model-visible evidence recall, automatic-retrieval output, context order, and token budgets in addition to Hit@1/3, Recall@3, MRR, and legacy context recall. Its committed 0.3.8 baseline records 100% ContextWindow coverage, 100% visible-evidence recall/Bridge@1, and zero ordering or budget violations. A dedicated bridge fixture requires an answer absent from the top anchor to survive both its serialized window and a real `getDocumentContext(anchorChunkId)` continuation; this remains a deterministic service contract, not a claim about a live model autonomously completing the tool trajectory or about private-corpus accuracy. Duplicate-token ratio and latency remain informational.
+- **Version-independent release verification**: release metadata checks derive the version from `package.json`, validate the matching manifest, changelog heading, release-note file/heading, and optional Git tag, and include a dependency-free self-test in `release:check`.
+- **Migration-free upgrade**: 0.3.7 databases, chunks, embeddings, `SearchHit.text`, and page-mode calls remain valid. No database migration, automatic reindex, or extra embedding work is introduced.
+- **Explicit deferrals**: this release does not claim to solve cross-base mixed embedding spaces, stale-vector signatures, semantic-chunk centroid/final-text embedding correctness, or Issue #6 smart-chunk fragmentation/aggregation.
+
 ## 0.3.7 — 2026-08-30
 
 ### Local reranking (cross-encoder) hardening
