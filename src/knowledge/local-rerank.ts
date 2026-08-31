@@ -49,6 +49,7 @@ interface QueueEntry {
   request: LocalRerankRequest
   deadline: number
   timer: ReturnType<typeof setTimeout>
+  cleanup(): void
   resolve(value: unknown): void
   reject(error: Error): void
 }
@@ -71,6 +72,12 @@ let requestSequence = 0
 let idleTimer: ReturnType<typeof setTimeout> | null = null
 let intentionalExit = false
 let progressListener: ((event: LocalRerankProgressEvent) => void) | undefined
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The operation was aborted', 'AbortError')
+}
 
 function processPath(): string {
   return fileURLToPath(new URL('./rerank-process.mjs', import.meta.url))
@@ -128,7 +135,7 @@ function finishActive(error: Error | undefined, value?: unknown): void {
   const entry = active
   if (entry === null) return
   active = null
-  clearTimeout(entry.timer)
+  entry.cleanup()
   if (error !== undefined) entry.reject(error)
   else entry.resolve(value)
   queueMicrotask(pump)
@@ -207,7 +214,7 @@ function pump(): void {
   while (queue.length > 0) {
     const next = queue.shift()!
     if (Date.now() >= next.deadline) {
-      clearTimeout(next.timer)
+      next.cleanup()
       next.reject(new LocalRerankError('timeout', 'local rerank request timed out while queued', true))
       continue
     }
@@ -231,7 +238,9 @@ function callProcess(
   hfEndpoint: string | undefined,
   timeoutMs: number,
   input?: { query: string; texts: string[] },
+  signal?: AbortSignal,
 ): Promise<unknown> {
+  if (signal?.aborted === true) return Promise.reject(abortError(signal))
   if ((active === null ? 0 : 1) + queue.length >= MAX_QUEUE_SIZE) {
     return Promise.reject(new LocalRerankError('busy', 'local rerank queue is full', true))
   }
@@ -242,21 +251,58 @@ function callProcess(
     : { ...base, operation } as LocalRerankRequest
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeoutMs
-    const entry = {} as QueueEntry
-    const timer = setTimeout(() => {
+    let settled = false
+    let entry = {} as QueueEntry
+    const cleanup = (): void => {
+      clearTimeout(entry.timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    const settleResolve = (value: unknown): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(value)
+    }
+    const settleReject = (error: Error): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    const onAbort = (): void => {
+      const error = abortError(signal!)
       if (active === entry) {
         active = null
-        reject(new LocalRerankError('timeout', 'local rerank inference timed out', true))
+        entry.reject(error)
+        // Active ONNX inference cannot be interrupted safely in-process. Kill
+        // only the isolated rerank child; embedding's worker is independent.
         terminateChild()
         queueMicrotask(pump)
         return
       }
       const index = queue.indexOf(entry)
       if (index >= 0) queue.splice(index, 1)
-      reject(new LocalRerankError('timeout', 'local rerank request timed out while queued', true))
+      entry.reject(error)
+    }
+    const timer = setTimeout(() => {
+      if (active === entry) {
+        active = null
+        entry.reject(new LocalRerankError('timeout', 'local rerank inference timed out', true))
+        terminateChild()
+        queueMicrotask(pump)
+        return
+      }
+      const index = queue.indexOf(entry)
+      if (index >= 0) queue.splice(index, 1)
+      entry.reject(new LocalRerankError('timeout', 'local rerank request timed out while queued', true))
     }, timeoutMs)
     timer.unref?.()
-    Object.assign(entry, { id, operation, modelId, request, deadline, timer, resolve, reject })
+    entry = { id, operation, modelId, request, deadline, timer, cleanup, resolve: settleResolve, reject: settleReject }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted === true) {
+      onAbort()
+      return
+    }
     queue.push(entry)
     pump()
   })
@@ -308,10 +354,11 @@ export async function rerankInLocalProcess(
   query: string,
   texts: readonly string[],
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<number[]> {
   enterCircuit(modelId)
   try {
-    const scores = await callProcess('rerank', modelId, cacheDir, hfEndpoint, timeoutMs, { query, texts: [...texts] }) as number[]
+    const scores = await callProcess('rerank', modelId, cacheDir, hfEndpoint, timeoutMs, { query, texts: [...texts] }, signal) as number[]
     circuitSuccess(modelId)
     return scores
   } catch (error) {

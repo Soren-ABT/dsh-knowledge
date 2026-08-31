@@ -36,6 +36,12 @@ export interface HttpFetchOptions {
   body?: string | Uint8Array
   /** Per-attempt timeout in milliseconds. */
   timeoutMs?: number
+  /**
+   * Absolute wall-clock deadline shared by every attempt. When present, an
+   * individual attempt receives the smaller of `timeoutMs` and the remaining
+   * deadline budget, so retries can never multiply a caller's total budget.
+   */
+  deadlineAt?: number
   /** Extra retries after the first failed attempt (default 1). */
   retries?: number
   /** Redirect policy (default: follow, like fetch). SSRF guards pass 'manual'. */
@@ -46,24 +52,55 @@ export interface HttpFetchOptions {
 
 /** fetch through the global (proxy-aware) dispatcher with timeout + one retry. */
 export async function httpFetch(url: string, options: HttpFetchOptions = {}): Promise<Response> {
-  const { method, headers, body, timeoutMs = 30000, retries = 1, redirect, signal } = options
+  const { method, headers, body, redirect, signal } = options
+  const timeoutMs = positiveDuration(options.timeoutMs, 30000)
+  const retries = nonNegativeInteger(options.retries, 1)
+  const deadlineAt = options.deadlineAt !== undefined && Number.isFinite(options.deadlineAt)
+    ? options.deadlineAt
+    : undefined
   let lastError: unknown
   for (let attempt = 0; attempt <= retries; attempt += 1) {
+    throwIfExternallyAborted(signal)
+    const remainingMs = deadlineAt !== undefined ? Math.ceil(deadlineAt - Date.now()) : timeoutMs
+    if (remainingMs <= 0) {
+      lastError = new DOMException('The operation timed out', 'TimeoutError')
+      break
+    }
+    const attemptTimeoutMs = Math.max(1, Math.min(timeoutMs, remainingMs))
     try {
       return await fetch(url, {
         method,
         headers,
         body: body as BodyInit,
         signal: signal !== undefined
-          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
-          : AbortSignal.timeout(timeoutMs),
+          ? AbortSignal.any([signal, AbortSignal.timeout(attemptTimeoutMs)])
+          : AbortSignal.timeout(attemptTimeoutMs),
         ...(redirect !== undefined ? { redirect } : {}),
       })
     } catch (error) {
+      // An owner-initiated cancellation is terminal. In particular, never
+      // retry paid/provider requests after their caller has gone away.
+      throwIfExternallyAborted(signal)
       lastError = error
     }
   }
   throw new Error(`network request failed: ${describeNetworkError(lastError)}`)
+}
+
+function positiveDuration(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return fallback
+  return Math.max(1, Math.trunc(value))
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return fallback
+  return Math.trunc(value)
+}
+
+function throwIfExternallyAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return
+  if (signal.reason instanceof Error) throw signal.reason
+  throw new DOMException('The operation was aborted', 'AbortError')
 }
 
 /** A human-readable cause chain for a fetch/undici error. */

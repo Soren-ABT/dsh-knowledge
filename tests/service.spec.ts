@@ -5,9 +5,10 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { KnowledgeService } from '../src/knowledge/index.js'
+import { estimateContextTokens, serializeContextWindow } from '../src/knowledge/context.js'
 import type { Config } from '../src/knowledge/config.js'
 import type { KnowledgeService as KnowledgeServiceType } from '../src/knowledge/index.js'
-import type { SearchResult } from '../src/knowledge/types.js'
+import type { SearchHit, SearchResult } from '../src/knowledge/types.js'
 
 const DEFAULT_CONFIG: Config = {
   embeddingProvider: 'none',
@@ -94,6 +95,20 @@ async function mountService(): Promise<KnowledgeServiceType> {
   return ctx.get('knowledge') as unknown as KnowledgeServiceType
 }
 
+function expectOrderedContextWindow(hit: SearchHit): void {
+  const window = hit.contextWindow
+  expect(window).toBeDefined()
+  const ordered = [...window!.before, window!.anchor, ...window!.after]
+  const indices = ordered.map(chunk => chunk.index)
+  expect(indices).toEqual([...indices].sort((a, b) => a - b))
+  expect(window!.anchorChunkId).toBe(hit.chunkId)
+  expect(window!.anchorIndex).toBe(hit.index)
+  expect(window!.anchor.chunkId).toBe(hit.chunkId)
+  expect(ordered.filter(chunk => chunk.chunkId === hit.chunkId)).toHaveLength(1)
+  expect(window!.estimatedTokens).toBe(estimateContextTokens(serializeContextWindow(window!)))
+  expect(window!.estimatedTokens).toBeLessThanOrEqual(768)
+}
+
 describe('KnowledgeService', () => {
   it('creates a base, adds a text document, and searches lexically', async () => {
     const service = await mountService()
@@ -141,11 +156,84 @@ describe('KnowledgeService', () => {
     expect(hit.siblingContext).toContain('first paragraph')
     expect(hit.siblingContext).toContain('third paragraph')
     expect(hit.siblingContext).not.toContain('revenue')
+    expectOrderedContextWindow(hit)
+    expect([
+      ...hit.contextWindow!.before,
+      hit.contextWindow!.anchor,
+      ...hit.contextWindow!.after,
+    ].map(chunk => chunk.index)).toEqual([0, 1, 2])
 
-    // Radius 0 disables the context.
+    // Radius 0 disables legacy siblings but still returns an anchor-only
+    // ContextWindow, so every 0.3.8 search hit has one stable evidence shape.
     await service.setConfig({ siblingChunks: 0 })
     const without = await service.search({ query: 'revenue', baseId: base.id })
     expect(without.hits[0].siblingContext).toBeUndefined()
+    expectOrderedContextWindow(without.hits[0])
+    expect(without.hits[0].contextWindow!.before).toEqual([])
+    expect(without.hits[0].contextWindow!.after).toEqual([])
+    expect(without.hits[0].contextWindow!.anchor.text).toBe(without.hits[0].text)
+  })
+
+  it('loads merged context ranges once instead of once per search hit', async () => {
+    const service = await mountService()
+    const base = await service.createBase({
+      name: 'context-batch',
+      config: { smartChunk: false, chunkSeparator: '||', siblingChunks: 1 },
+    })
+    await service.addTextDocument({
+      baseId: base.id,
+      title: 'many adjacent matches',
+      content: Array.from({ length: 5 }, (_, index) => `needle evidence chunk ${index}`).join('||'),
+    })
+    const internal = service as unknown as {
+      store: {
+        listChunksByIndexRanges(ranges: readonly { docId: string; fromIdx: number; toIdx: number }[]): unknown[]
+      }
+    }
+    const rangeLoads = vi.spyOn(internal.store, 'listChunksByIndexRanges')
+
+    const result = await service.search({ query: 'needle evidence', baseId: base.id, topK: 5 })
+
+    expect(result.hits.length).toBeGreaterThan(1)
+    expect(result.hits.every(hit => hit.contextWindow !== undefined)).toBe(true)
+    expect(rangeLoads).toHaveBeenCalledTimes(1)
+    expect(rangeLoads.mock.calls[0][0]).toHaveLength(1)
+    rangeLoads.mockRestore()
+  })
+
+  it('searches legacy 0.3.7-shaped chunks without migration, writes, or re-embedding', async () => {
+    const service = await mountService()
+    const base = await service.createBase({
+      name: 'legacy-0.3.7',
+      config: { smartChunk: false, chunkSeparator: '||' },
+    })
+    const doc = await service.addTextDocument({
+      baseId: base.id,
+      title: 'legacy document',
+      content: 'legacy opening||legacy searchable evidence||legacy ending',
+    })
+    // KnowledgeChunk's durable 0.3.7 shape has no ContextWindow fields; the
+    // new evidence window is derived at read time and must never rewrite it.
+    const before = structuredClone(service.listChunks(doc.id))
+    expect(before.every(chunk => !('contextWindow' in chunk))).toBe(true)
+    const internal = service as unknown as {
+      store: {
+        putChunks(chunks: readonly unknown[]): Promise<void>
+        putChunkBatch(chunks: readonly unknown[]): Promise<void>
+      }
+    }
+    const writes = vi.spyOn(internal.store, 'putChunks')
+    const batchWrites = vi.spyOn(internal.store, 'putChunkBatch')
+
+    const result = await service.search({ query: 'searchable evidence', baseId: base.id })
+
+    expect(result.hits.length).toBeGreaterThan(0)
+    expectOrderedContextWindow(result.hits[0])
+    expect(service.listChunks(doc.id)).toEqual(before)
+    expect(writes).not.toHaveBeenCalled()
+    expect(batchWrites).not.toHaveBeenCalled()
+    writes.mockRestore()
+    batchWrites.mockRestore()
   })
 
   it('rejects duplicate content within a base', async () => {
@@ -274,6 +362,41 @@ describe('KnowledgeService', () => {
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0)
   })
 
+  it('propagates owner cancellation through remote embedding without lexical fallback', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'embedding-abort' })
+    await service.addTextDocument({ baseId: base.id, title: 'doc', content: 'alpha cancellation evidence' })
+    await service.setConfig({
+      embeddingProvider: 'openai',
+      embeddingBaseUrl: 'https://embedding.invalid',
+      embeddingModel: 'embedding-model',
+      searchMode: 'vector',
+    })
+    let markStarted!: () => void
+    const started = new Promise<void>(resolve => { markStarted = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      markStarted()
+      return await new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal
+        if (signal?.aborted === true) {
+          reject(signal.reason)
+          return
+        }
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    }))
+    const controller = new AbortController()
+    const reason = new DOMException('owner cancelled embedding', 'AbortError')
+    try {
+      const pending = service.search({ query: 'alpha', baseId: base.id, mode: 'vector' }, { signal: controller.signal })
+      await started
+      controller.abort(reason)
+      await expect(pending).rejects.toBe(reason)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('narrows search by document metadata filters', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'filters' })
@@ -290,13 +413,60 @@ describe('KnowledgeService', () => {
     const byIds = await service.search({ query: '排队论', baseId: base.id, filter: { docIds: [a.id, c.id] } })
     expect(byIds.hits.every(hit => hit.docId === a.id || hit.docId === c.id)).toBe(true)
 
+    // An explicitly empty allow-list is fail-closed. It must never widen to
+    // every document merely because the storage lane treats undefined as
+    // unrestricted.
+    const byNoIds = await service.search({ query: '排队论', baseId: base.id, filter: { docIds: [] } })
+    expect(byNoIds.hits).toHaveLength(0)
+
     // sourceTypes: 'text' matches all three; a nonexistent type matches none.
     const byType = await service.search({ query: '排队论', baseId: base.id, filter: { sourceTypes: ['file'] } })
     expect(byType.hits).toHaveLength(0)
+    const byNoTypes = await service.search({ query: '排队论', baseId: base.id, filter: { sourceTypes: [] } })
+    expect(byNoTypes.hits).toHaveLength(0)
 
     // updatedAfter excludes everything when the documents are old.
     const byTime = await service.search({ query: '排队论', baseId: base.id, filter: { updatedAfter: Date.now() + 1000 } })
     expect(byTime.hits).toHaveLength(0)
+  })
+
+  it('reads a bounded context window by a stable chunk anchor', async () => {
+    const service = await mountService()
+    const base = await service.createBase({
+      name: 'anchored-read',
+      config: { smartChunk: false, chunkSeparator: '||' },
+    })
+    const doc = await service.addTextDocument({
+      baseId: base.id,
+      title: 'manual',
+      content: 'first section||second section has the focus||third section||fourth section',
+    })
+    const chunks = service.listChunks(doc.id)
+    expect(chunks.length).toBeGreaterThanOrEqual(3)
+
+    const byId = service.getDocumentContext(doc.id, {
+      anchorChunkId: chunks[1].id,
+      before: 1,
+      after: 1,
+      maxTokens: 128,
+      focus: 'focus',
+    })
+    expect(byId.contextWindow.anchorChunkId).toBe(chunks[1].id)
+    expect([
+      ...byId.contextWindow.before,
+      byId.contextWindow.anchor,
+      ...byId.contextWindow.after,
+    ].map(chunk => chunk.index)).toEqual([0, 1, 2])
+
+    const byIndex = service.getDocumentContext(doc.id, { anchorIndex: 2, before: 0, after: 1 })
+    expect(byIndex.contextWindow.anchorIndex).toBe(2)
+    expect(byIndex.contextWindow.after.map(chunk => chunk.index)).toEqual([3])
+    expect(() => service.getDocumentContext(doc.id, { anchorIndex: 1.5 })).toThrow('anchorIndex is outside this document')
+    expect(() => service.getDocumentContext(doc.id, { anchorChunkId: 'stale-chunk' })).toThrow(/stale|no longer exists/)
+
+    const other = await service.addTextDocument({ baseId: base.id, title: 'other', content: 'unrelated' })
+    const otherChunk = service.listChunks(other.id)[0]
+    expect(() => service.getDocumentContext(doc.id, { anchorChunkId: otherChunk.id })).toThrow(/does not belong/)
   })
 
   it('replaces a same-name file entry when conflict is replace', async () => {
@@ -890,6 +1060,34 @@ describe('KnowledgeService', () => {
     expect(result.total).toBe(service.stats(base.id).chunkCount)
   })
 
+  it('attaches ordered ContextWindows to both single and multi-query results', async () => {
+    const service = await mountService()
+    const base = await service.createBase({
+      name: 'multi-query-context',
+      config: { smartChunk: false, chunkSeparator: '||', siblingChunks: 1 },
+    })
+    await service.addTextDocument({
+      baseId: base.id,
+      title: 'ordered evidence',
+      content: 'alpha opening evidence||neutral bridge context||omega closing evidence',
+    })
+
+    const single = await service.search({ query: 'alpha evidence', baseId: base.id, topK: 3 })
+    expect(single.hits.length).toBeGreaterThan(0)
+    for (const hit of single.hits) expectOrderedContextWindow(hit)
+
+    const multi = await service.search({
+      query: 'alpha evidence',
+      queries: ['omega evidence'],
+      baseId: base.id,
+      topK: 3,
+    })
+    expect(multi.hits.length).toBeGreaterThan(1)
+    expect(multi.hits.some(hit => hit.text.includes('alpha'))).toBe(true)
+    expect(multi.hits.some(hit => hit.text.includes('omega'))).toBe(true)
+    for (const hit of multi.hits) expectOrderedContextWindow(hit)
+  })
+
   it('deduplicates and caps extra query variants at three', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'multi-query-cap' })
@@ -910,25 +1108,35 @@ describe('KnowledgeService', () => {
   it('reranks a multi-query fusion only once', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'multi-query-rerank' })
-    await service.addTextDocument({ baseId: base.id, title: 'one', content: 'alpha reimbursement process and approval' })
+    await service.addTextDocument({ baseId: base.id, title: `oversized-${'title '.repeat(700)}`, content: 'alpha reimbursement process and approval' })
     await service.addTextDocument({ baseId: base.id, title: 'two', content: 'beta reimbursement invoice workflow' })
     await service.setConfig({ rerankModel: 'test-reranker', rerankBaseUrl: 'https://rerank.invalid' })
     let requests = 0
+    let rerankBody: { query: string; documents: string[] } | undefined
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       requests += 1
-      const body = JSON.parse(String(init?.body)) as { documents: string[] }
+      const body = JSON.parse(String(init?.body)) as { query: string; documents: string[] }
+      rerankBody = body
       return new Response(JSON.stringify({
         results: body.documents.map((_document, index) => ({ index, relevance_score: 0.9 - index * 0.1 })),
       }), { status: 200, headers: { 'content-type': 'application/json' } })
     }))
     try {
+      const longQuery = `alpha reimbursement ${'qualifier '.repeat(180)}final-condition`
       const result = await service.search({
-        query: 'alpha reimbursement',
+        query: longQuery,
         baseId: base.id,
         queries: ['beta invoice', 'reimbursement workflow'],
         topK: 2,
       })
       expect(requests).toBe(1)
+      expect(rerankBody).toBeDefined()
+      expect(estimateContextTokens(rerankBody!.query)).toBeLessThanOrEqual(128)
+      expect(rerankBody!.query).toContain('alpha reimbursement')
+      expect(rerankBody!.query).toContain('final-condition')
+      expect(rerankBody!.documents.every(document => estimateContextTokens(document) <= 352)).toBe(true)
+      expect(rerankBody!.documents.every(document =>
+        estimateContextTokens(document) + estimateContextTokens(rerankBody!.query) <= 480)).toBe(true)
       expect(result.reranked).toBe(true)
       expect(result.rerank).toMatchObject({
         configured: true,
@@ -950,12 +1158,24 @@ describe('KnowledgeService', () => {
     await service.addTextDocument({ baseId: base.id, title: 'two', content: 'alpha invoice submission policy' })
     await service.waitForIdle()
     const baseline = await service.search({ query: 'alpha reimbursement', baseId: base.id, topK: 2 })
+    for (const hit of baseline.hits) expectOrderedContextWindow(hit)
     await service.setConfig({ rerankModel: 'remote-reranker', rerankBaseUrl: 'https://rerank.invalid' })
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ results: [] }), {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ results: [] }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
-    })))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
     try {
+      const skipped = await service.search(
+        { query: 'alpha reimbursement', baseId: base.id, topK: 2 },
+        { rerank: 'skip' },
+      )
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(skipped.hits.map(hit => hit.chunkId)).toEqual(baseline.hits.map(hit => hit.chunkId))
+      expect(skipped.reranked).toBe(false)
+      expect(skipped.rerank).toBeUndefined()
+      for (const hit of skipped.hits) expectOrderedContextWindow(hit)
+
       const result = await service.search({ query: 'alpha reimbursement', baseId: base.id, topK: 2 })
       expect(result.hits.map(hit => hit.chunkId)).toEqual(baseline.hits.map(hit => hit.chunkId))
       expect(result.reranked).toBe(false)
@@ -965,6 +1185,8 @@ describe('KnowledgeService', () => {
         applied: false,
         error: { code: 'invalid_response', retryable: false },
       })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      for (const hit of result.hits) expectOrderedContextWindow(hit)
     } finally {
       vi.unstubAllGlobals()
     }

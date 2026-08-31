@@ -12,6 +12,7 @@ import { cp, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises
 import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { chunkText, mergeSemanticSegments, refineChunksByTokenLimit, splitSemanticSegments } from './chunk.js'
 import type { ChunkPiece } from './chunk.js'
+import { composeContextWindow, estimateContextTokens, serializeContextWindow } from './context.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
 import type { ConfigOverrides } from './domain.js'
 import {
@@ -60,6 +61,7 @@ import type {
   BaseStats,
   BaseSummary,
   CreateBaseRequest,
+  ContextWindow,
   DocumentDetail,
   DocumentSourceType,
   DocumentSummary,
@@ -83,8 +85,21 @@ export type * from './types.js'
 export { Config } from './config.js'
 export { knowledgeDomainSpec } from './domain.js'
 export { chunkText } from './chunk.js'
+export { composeContextWindow, estimateContextTokens, serializeContextWindow } from './context.js'
 export { embedTexts, getLocalModelStatus, DEFAULT_LOCAL_MODEL } from './embed.js'
 export { tokenize, cosineSimilarity, rank } from './retrieval.js'
+
+/** Per-call execution controls that are deliberately kept out of the public
+ * search request/HTTP contract. Proactive retrieval uses these controls to
+ * obtain lexical candidates without accidentally invoking a configured
+ * reranker. */
+export interface SearchExecutionOptions {
+  readonly rerank?: 'configured' | 'skip'
+  readonly signal?: AbortSignal
+  /** Absolute deadline for synchronous retrieval lanes. Internal callers use
+   * this alongside signal so SQLite can interrupt itself while JS is blocked. */
+  readonly deadlineAt?: number
+}
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -1621,9 +1636,13 @@ export class KnowledgeService extends Service {
     const filter = request.filter
     if (filter === undefined) return undefined
     const { docIds, titleIncludes, sourceTypes, updatedAfter, updatedBefore } = filter
-    const hasDocIds = docIds !== undefined && docIds.length > 0
+    // Presence is semantically distinct from absence: callers use an empty
+    // allow-list to mean "match no documents", never "remove the filter".
+    if (docIds !== undefined && docIds.length === 0) return new Set()
+    if (sourceTypes !== undefined && sourceTypes.length === 0) return new Set()
+    const hasDocIds = docIds !== undefined
     const hasTitle = titleIncludes !== undefined && titleIncludes.trim().length > 0
-    const hasTypes = sourceTypes !== undefined && sourceTypes.length > 0
+    const hasTypes = sourceTypes !== undefined
     const hasTime = updatedAfter !== undefined || updatedBefore !== undefined
     if (!hasDocIds && !hasTitle && !hasTypes && !hasTime) return undefined
 
@@ -1975,6 +1994,73 @@ export class KnowledgeService extends Service {
     return this.requireStore().listChunksByDoc(documentId, count, start)
   }
 
+  /** Read a bounded ordered context window around one current chunk anchor. */
+  getDocumentContext(
+    documentId: string,
+    options: {
+      anchorChunkId?: string
+      anchorIndex?: number
+      before?: number
+      after?: number
+      maxTokens?: number
+      focus?: string
+      crossHeading?: boolean
+    },
+  ): {
+    id: string
+    baseId: string
+    title: string
+    sourceType: DocumentSourceType
+    charCount: number
+    chunkCount: number
+    contextWindow: ContextWindow
+  } {
+    const hasChunkId = options.anchorChunkId !== undefined
+    const hasIndex = options.anchorIndex !== undefined
+    if (hasChunkId === hasIndex) throw new Error('provide exactly one of anchorChunkId or anchorIndex')
+    if (options.focus !== undefined && options.focus.length > 500) throw new Error('focus must not exceed 500 characters')
+    const store = this.requireStore()
+    const doc = store.getDocument(documentId)
+    if (doc === undefined) throw new Error(`document not found: ${documentId}`)
+    let anchor: KnowledgeChunk | undefined
+    if (options.anchorChunkId !== undefined) {
+      anchor = store.getChunk(options.anchorChunkId)
+      if (anchor === undefined) throw new Error('anchor chunk is stale or no longer exists; run knowledge_search again')
+    } else {
+      const requestedIndex = options.anchorIndex!
+      if (!Number.isInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= doc.chunkCount) {
+        throw new Error('anchorIndex is outside this document')
+      }
+      const index = requestedIndex
+      anchor = store.listChunksByIndexRange(documentId, index, index)[0]
+      if (anchor === undefined) throw new Error('anchorIndex is outside this document')
+    }
+    if (anchor.docId !== documentId || anchor.baseId !== doc.baseId) {
+      throw new Error('anchor chunk does not belong to the requested document')
+    }
+    const before = clampInt(options.before ?? 2, 0, 10, 2)
+    const after = clampInt(options.after ?? 2, 0, 10, 2)
+    const maxTokens = clampInt(options.maxTokens ?? 1600, 128, 4096, 1600)
+    const chunks = store.listChunksByIndexRange(documentId, anchor.index - before, anchor.index + after)
+    const contextWindow = composeContextWindow(chunks, anchor, {
+      before,
+      after,
+      maxTokens,
+      focus: options.focus,
+      crossHeading: options.crossHeading === true,
+      documentChunkCount: doc.chunkCount,
+    })
+    return {
+      id: doc.id,
+      baseId: doc.baseId,
+      title: doc.title,
+      sourceType: doc.sourceType,
+      charCount: doc.charCount,
+      chunkCount: doc.chunkCount,
+      contextWindow,
+    }
+  }
+
   getDocument(id: string, opts?: { includeChunks?: boolean; rawTextLimit?: number }): DocumentDetail {
     const store = this.requireStore()
     const doc = store.getDocument(id)
@@ -2138,15 +2224,18 @@ export class KnowledgeService extends Service {
 
   // ── retrieval ─────────────────────────────────────────────────────────────
 
-  async search(request: SearchRequest): Promise<SearchResult> {
+  async search(request: SearchRequest, execution: SearchExecutionOptions = {}): Promise<SearchResult> {
     const startedAt = Date.now()
+    throwIfAborted(execution.signal)
+    throwIfDeadline(execution.deadlineAt)
     const query = request.query.trim()
     if (query.length === 0) return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [] }
     if (query.length > 2000) throw new Error('search query must not exceed 2000 characters')
 
     const variants = normalizeQueryVariants(query, request.queries)
+    const allowRerank = execution.rerank !== 'skip'
     if (variants.length === 1) {
-      return this.searchSingle({ ...request, query, queries: undefined }, true, startedAt)
+      return this.searchSingle({ ...request, query, queries: undefined }, allowRerank, startedAt, execution.signal, execution.deadlineAt)
     }
 
     const config = this.getConfigFor(request.baseId)
@@ -2158,8 +2247,9 @@ export class KnowledgeService extends Service {
       query: variant,
       queries: undefined,
       topK: subTopK,
-    }, false, startedAt)))
-    return this.finishMultiQuerySearch(config, query, requestedMode, results, topK, request.threshold, startedAt)
+    }, false, startedAt, execution.signal, execution.deadlineAt)))
+    throwIfAborted(execution.signal)
+    return this.finishMultiQuerySearch(config, query, requestedMode, results, topK, request.threshold, startedAt, allowRerank, execution.signal)
   }
 
   /** One retrieval pass. Multi-query orchestration lives in search() so each
@@ -2168,7 +2258,11 @@ export class KnowledgeService extends Service {
     request: SearchRequest,
     allowRerank: boolean,
     startedAt: number,
+    signal?: AbortSignal,
+    deadlineAt?: number,
   ): Promise<SearchResult> {
+    throwIfAborted(signal)
+    throwIfDeadline(deadlineAt)
     const store = this.requireStore()
     const config = this.getConfigFor(request.baseId)
     const query = request.query.trim()
@@ -2189,6 +2283,12 @@ export class KnowledgeService extends Service {
     // Metadata filters narrow the search to a subset of documents. Resolved
     // once here into a docId allow-list shared by both retrieval paths.
     const filterDocIds = this.resolveSearchFilter(request)
+    // A present-but-empty allow-list is an explicit "match nothing" result.
+    // Never pass it to a storage implementation that might interpret [] as
+    // unrestricted scope.
+    if (filterDocIds !== undefined && filterDocIds.size === 0) {
+      return { query, mode: 'lexical', total: 0, reranked: false, elapsedMs: Date.now() - startedAt, hits: [] }
+    }
 
     const lane = store.retrievalLane
     if (lane !== undefined) {
@@ -2208,9 +2308,12 @@ export class KnowledgeService extends Service {
             config.embeddingModel,
             config.embeddingApiKey,
             [query],
+            signal,
           )
+          throwIfAborted(signal)
           queryVector = vector
         } catch (error) {
+          throwIfAborted(signal)
           // A configured local model that cannot load (weights deleted, download
           // failed) is a configuration problem, not a transient failure — surface
           // it instead of silently degrading to lexical (the user believes hybrid
@@ -2230,7 +2333,7 @@ export class KnowledgeService extends Service {
       const byId = new Map<string, KnowledgeChunk>()
       let total = 0
       if (useVector) {
-        const vec = await lane.vector(queryVector!, scope, poolSize, filterList)
+        const vec = await lane.vector(queryVector!, scope, poolSize, filterList, deadlineAt)
         total = Math.max(total, vec.total)
         for (const hit of vec.hits) byId.set(hit.id, hit)
         if (requestedMode === 'vector') {
@@ -2238,7 +2341,7 @@ export class KnowledgeService extends Service {
         } else {
           // Hybrid/auto: fuse both lanes with Reciprocal Rank Fusion; the
           // vector lane carries the configured relative weight.
-          const lex = await lane.lexical(query, scope, poolSize, filterList)
+          const lex = await lane.lexical(query, scope, poolSize, filterList, deadlineAt)
           total = Math.max(total, lex.total)
           for (const hit of lex.hits) if (!byId.has(hit.id)) byId.set(hit.id, hit)
           const vectorOrder = vec.hits.map(hit => hit.id)
@@ -2256,7 +2359,7 @@ export class KnowledgeService extends Service {
           }))
         }
       } else {
-        const lex = await lane.lexical(query, scope, poolSize, filterList)
+        const lex = await lane.lexical(query, scope, poolSize, filterList, deadlineAt)
         total = lex.total
         for (const hit of lex.hits) byId.set(hit.id, hit)
         ranked = lex.hits.map(hit => ({ id: hit.id, score: hit.score, lexicalScore: hit.score }))
@@ -2268,7 +2371,8 @@ export class KnowledgeService extends Service {
           ranked = maximalMarginalRelevance(ranked, byId, queryVector, config.mmrDiversity, Math.max(topK * 3, 12))
         }
       }
-      return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, total, startedAt, allowRerank)
+      throwIfAborted(signal)
+      return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, total, startedAt, allowRerank, signal)
     }
 
     const chunks = (request.baseId !== undefined
@@ -2295,9 +2399,12 @@ export class KnowledgeService extends Service {
           config.embeddingModel,
           config.embeddingApiKey,
           [query],
+          signal,
         )
+        throwIfAborted(signal)
         queryVector = vector
       } catch (error) {
+        throwIfAborted(signal)
         // See the lane path: a broken local model must not silently degrade.
         if (config.embeddingProvider === 'local') {
           throw await localEmbeddingError(config, error)
@@ -2317,7 +2424,8 @@ export class KnowledgeService extends Service {
       mmrLambda: config.mmrDiversity,
       queryVector,
     })
-    return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, chunks.length, startedAt, allowRerank)
+    throwIfAborted(signal)
+    return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, chunks.length, startedAt, allowRerank, signal)
   }
 
   /** Merge independent query rankings with RRF, then optionally rerank once. */
@@ -2329,7 +2437,11 @@ export class KnowledgeService extends Service {
     topK: number,
     requestedThreshold: number | undefined,
     startedAt: number,
+    allowRerank: boolean,
+    signal?: AbortSignal,
   ): Promise<SearchResult> {
+    const store = this.requireStore()
+    throwIfAborted(signal)
     const orders = results.map(result => result.hits.map(hit => hit.chunkId))
     const fused = reciprocalRankFusion(orders)
     const maxFused = results.length / (RRF_K + 1)
@@ -2341,61 +2453,25 @@ export class KnowledgeService extends Service {
       .map(hit => ({ ...hit, score: (fused.get(hit.chunkId) ?? 0) / maxFused }))
       .sort((a, b) => b.score - a.score)
       .slice(0, Math.min(50, Math.max(topK * 4, 20)))
-    let reranked = false
-    let rerank: RerankStatus | undefined
-    const rerankModel = config.rerankModel.trim()
-    if (rerankModel !== '' && hits.length <= 1) {
-      rerank = this.notNeededRerankStatus(rerankModel, hits.length)
-    } else if (rerankModel !== '' && hits.length > 1) {
-      const candidateCount = hits.length
-      const rerankStartedAt = Date.now()
-      try {
-        const scores = await rerankCandidates(
-          config.rerankBaseUrl,
-          config.rerankModel,
-          config.rerankApiKey,
-          query,
-          hits.map(hit => ({
-            id: hit.chunkId,
-            text: [hit.documentTitle, hit.heading, hit.text, hit.siblingContext]
-              .filter((part): part is string => part !== undefined && part.length > 0)
-              .join('\n'),
-          })),
-          topK,
-          rerankModel.startsWith('local:') ? config.localRerankTimeoutMs : 60_000,
-        )
-        const rescored = hits
-          .filter(hit => scores.has(hit.chunkId))
-          .map(hit => ({ ...hit, score: scores.get(hit.chunkId)! }))
-          .sort((a, b) => b.score - a.score)
-        if (rescored.length > 0) {
-          hits = rescored
-          reranked = true
-          rerank = this.appliedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt)
-          this.rerankLogState.delete(rerankModel)
-        }
-      } catch (error) {
-        const detail = rerankErrorDetail(error)
-        rerank = this.degradedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt, detail)
-        this.logRerankFailure(rerankModel, detail.code, candidateCount, rerank.elapsedMs ?? 0, rerankTechnicalMessage(error))
-      }
-    }
+    const applied = await this.applyRerank(store, config, query, hits, topK, allowRerank, signal)
+    hits = applied.hits
 
-    const threshold = requestedThreshold ?? config.similarityThreshold
-    if (reranked) hits = hits.filter(hit => hit.score >= threshold)
     const mode = results.some(result => result.mode === 'hybrid')
       ? 'hybrid'
       : results.some(result => result.mode === 'vector')
         ? 'vector'
         : requestedMode === 'lexical' ? 'lexical' : results[0]?.mode ?? 'lexical'
+    const threshold = requestedThreshold ?? config.similarityThreshold
+    if (applied.reranked || mode === 'vector') hits = hits.filter(hit => hit.score >= threshold)
+    const finalHits = attachContextWindows(store, hits.slice(0, topK), query, config.siblingChunks, SEARCH_EVIDENCE_TOKENS)
     return {
       query,
       mode,
       total: results.reduce((max, result) => Math.max(max, result.total), 0),
-      reranked,
-      ...(rerank !== undefined ? { rerank } : {}),
+      reranked: applied.reranked,
+      ...(applied.rerank !== undefined ? { rerank: applied.rerank } : {}),
       elapsedMs: Date.now() - startedAt,
-      hits: hits.slice(0, topK),
+      hits: finalHits,
     }
   }
 
@@ -2412,84 +2488,127 @@ export class KnowledgeService extends Service {
     total: number,
     startedAt: number,
     allowRerank = true,
+    signal?: AbortSignal,
   ): Promise<SearchResult> {
-    let ranked = initial
-    let reranked = false
-    let rerank: RerankStatus | undefined
-    const rerankModel = allowRerank ? config.rerankModel.trim() : ''
-    if (rerankModel !== '' && ranked.length <= 1) {
-      rerank = this.notNeededRerankStatus(rerankModel, ranked.length)
-    } else if (rerankModel !== '' && ranked.length > 1) {
-      const candidateCount = ranked.length
-      const rerankStartedAt = Date.now()
-      try {
-        const pool = ranked.map(hit => ({ id: hit.id, text: chunkSearchText(byId.get(hit.id)!)}))
-        // Cherry's mergeRerankResults: only the candidates the rerank model
-        // returned survive — its relevance scores (0–1) must not mix with raw
-        // BM25/cosine scores (different scales) in one ranked list. The API is
-        // asked for the final topK only (Cherry: `documentCount`).
-        const scores = await rerankCandidates(
-          config.rerankBaseUrl,
-          config.rerankModel,
-          config.rerankApiKey,
-          query,
-          pool,
-          topK,
-          rerankModel.startsWith('local:') ? config.localRerankTimeoutMs : 60_000,
-        )
-        const rescored = ranked
-          .filter(hit => scores.has(hit.id))
-          .map(hit => ({ ...hit, score: scores.get(hit.id)! }))
-        // An empty response is a failure, not evidence of zero relevance —
-        // keep retrieval order in that case (Cherry's rerank error path).
-        if (rescored.length > 0) {
-          ranked = rescored.sort((a, b) => b.score - a.score)
-          reranked = true
-          rerank = this.appliedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt)
-          this.rerankLogState.delete(rerankModel)
-        }
-      } catch (error) {
-        const detail = rerankErrorDetail(error)
-        rerank = this.degradedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt, detail)
-        this.logRerankFailure(rerankModel, detail.code, candidateCount, rerank.elapsedMs ?? 0, rerankTechnicalMessage(error))
-      }
-    }
+    throwIfAborted(signal)
+    const ranked = initial
+    const candidates = ranked
+      .map(hit => searchHitOf(store, byId.get(hit.id), hit))
+      .filter((hit): hit is SearchHit => hit !== undefined)
+    const applied = await this.applyRerank(store, config, query, candidates, topK, allowRerank, signal)
 
     // Cherry's applyRelevanceThreshold: only 'relevance' scores are
     // threshold-filtered — pure-vector cosine (mode 'vector') and reranked
     // relevance. Raw BM25/hybrid ranking scores (incomparable scales) never
     // are, even with a threshold configured.
-    const relevanceScores = reranked || requestedMode === 'vector'
-    const hits: SearchHit[] = ranked
-      .filter(hit => (relevanceScores ? hit.score >= threshold : true))
-      .slice(0, topK)
-      .map(hit => {
-        const chunk = byId.get(hit.id)
-        if (chunk === undefined) return undefined
-        return {
-          chunkId: chunk.id,
-          docId: chunk.docId,
-          baseId: chunk.baseId,
-          documentTitle: store.getDocument(chunk.docId)?.title ?? chunk.docId,
-          ...(chunk.heading !== undefined ? { heading: chunk.heading } : {}),
-          index: chunk.index,
-          text: chunk.text,
-          ...(config.siblingChunks > 0 ? { siblingContext: siblingContextOf(store, chunk, config.siblingChunks) } : {}),
-          score: hit.score,
-          ...(hit.vectorScore !== undefined ? { vectorScore: hit.vectorScore } : {}),
-          ...(hit.lexicalScore !== undefined ? { lexicalScore: hit.lexicalScore } : {}),
-        }
-      })
-      .filter((hit): hit is SearchHit => hit !== undefined)
+    const relevanceScores = applied.reranked || requestedMode === 'vector'
+    const hits = attachContextWindows(
+      store,
+      applied.hits
+        .filter(hit => (relevanceScores ? hit.score >= threshold : true))
+        .slice(0, topK),
+      query,
+      config.siblingChunks,
+      SEARCH_EVIDENCE_TOKENS,
+    )
 
     return {
       query,
       mode: effectiveMode(requestedMode, ranked),
       total,
-      reranked,
-      ...(rerank !== undefined ? { rerank } : {}),
+      reranked: applied.reranked,
+      ...(applied.rerank !== undefined ? { rerank: applied.rerank } : {}),
       elapsedMs: Date.now() - startedAt,
       hits,
+    }
+  }
+
+  /** One canonical rerank stage for both single-query retrieval and RRF-fused
+   * multi-query retrieval. It owns contextual input, deadline/retry policy,
+   * stable tie handling, structured degradation, and original-order fallback. */
+  private async applyRerank(
+    store: Store,
+    config: KnowledgeConfig,
+    query: string,
+    input: readonly SearchHit[],
+    topK: number,
+    allowRerank: boolean,
+    signal?: AbortSignal,
+  ): Promise<{ hits: SearchHit[]; reranked: boolean; rerank?: RerankStatus }> {
+    throwIfAborted(signal)
+    const original = [...input]
+    const rerankModel = allowRerank ? config.rerankModel.trim() : ''
+    if (rerankModel === '') return { hits: original, reranked: false }
+    if (original.length <= 1) {
+      return {
+        hits: original,
+        reranked: false,
+        rerank: this.notNeededRerankStatus(rerankModel, original.length),
+      }
+    }
+
+    const rerankQuery = fitRerankQuery(query)
+    const contextual = attachContextWindows(
+      store,
+      original,
+      query,
+      config.siblingChunks,
+      RERANK_EVIDENCE_TOKENS,
+      hit => rerankTitleReserve(hit.documentTitle),
+    )
+    const candidateCount = contextual.length
+    const rerankStartedAt = Date.now()
+    const rerankTimeoutMs = rerankModel.startsWith('local:') ? config.localRerankTimeoutMs : 60_000
+    try {
+      const scores = await rerankCandidates(
+        config.rerankBaseUrl,
+        config.rerankModel,
+        config.rerankApiKey,
+        rerankQuery,
+        contextual.map(hit => ({
+          id: hit.chunkId,
+          text: rerankEvidenceText(hit),
+        })),
+        {
+          topN: topK,
+          timeoutMs: rerankTimeoutMs,
+          deadlineAt: rerankStartedAt + rerankTimeoutMs,
+          retries: rerankModel.startsWith('local:') ? 0 : 1,
+          ...(signal !== undefined ? { signal } : {}),
+        },
+      )
+      throwIfAborted(signal)
+      const order = new Map(contextual.map((hit, index) => [hit.chunkId, index]))
+      const rescored = contextual
+        .filter(hit => scores.has(hit.chunkId))
+        .map(hit => ({ ...hit, score: scores.get(hit.chunkId)! }))
+        .sort((left, right) => right.score - left.score
+          || (order.get(left.chunkId) ?? 0) - (order.get(right.chunkId) ?? 0))
+      // rerankCandidates rejects an empty response, but retain this defensive
+      // branch for custom/test providers so an empty set never erases hits.
+      if (rescored.length === 0) {
+        const detail: RerankErrorDetail = {
+          code: 'invalid_response',
+          message: 'rerank provider returned no scored candidates',
+          retryable: false,
+          action: 'check_config',
+        }
+        const rerank = this.degradedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt, detail)
+        this.logRerankFailure(rerankModel, detail.code, candidateCount, rerank.elapsedMs ?? 0, detail.message)
+        return { hits: original, reranked: false, rerank }
+      }
+      this.rerankLogState.delete(rerankModel)
+      return {
+        hits: rescored,
+        reranked: true,
+        rerank: this.appliedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt),
+      }
+    } catch (error) {
+      throwIfAborted(signal)
+      const detail = rerankErrorDetail(error)
+      const rerank = this.degradedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt, detail)
+      this.logRerankFailure(rerankModel, detail.code, candidateCount, rerank.elapsedMs ?? 0, rerankTechnicalMessage(error))
+      return { hits: original, reranked: false, rerank }
     }
   }
 
@@ -2977,20 +3096,179 @@ function reconstructFromChunks(chunks: KnowledgeChunk[]): string {
  * neighbours. This is the "full paragraph" a RAG answer needs — a bare chunk
  * often cuts a sentence mid-way, and the neighbouring chunks carry the rest.
  */
-function siblingContextOf(store: Store, chunk: KnowledgeChunk, radius: number): string {
-  const neighbours = store.listChunksByIndexRange(chunk.docId, chunk.index - radius, chunk.index + radius)
-  const parts: string[] = []
-  for (const sibling of neighbours) {
-    if (sibling.id === chunk.id) continue
-    const heading = sibling.heading !== undefined ? `[${sibling.heading}] ` : ''
-    parts.push(`${heading}${sibling.text}`)
+const RERANK_EVIDENCE_TOKENS = 352
+const RERANK_QUERY_TOKENS = 128
+const RERANK_TITLE_TOKENS = 64
+const SEARCH_EVIDENCE_TOKENS = 768
+
+/** Deterministically retain both the intent at the start and qualifiers at the
+ * end of an oversized rerank query. The estimator is the same one used for
+ * evidence, so the pair budget remains enforceable without a model download. */
+function fitRerankQuery(query: string): string {
+  if (estimateContextTokens(query) <= RERANK_QUERY_TOKENS) return query
+  let low = 0
+  let high = query.length
+  let best = ''
+  while (low <= high) {
+    const retained = Math.floor((low + high) / 2)
+    const head = Math.ceil(retained * 0.6)
+    const tail = retained - head
+    const candidate = `${query.slice(0, head).trimEnd()} … ${query.slice(query.length - tail).trimStart()}`
+    if (estimateContextTokens(candidate) <= RERANK_QUERY_TOKENS) {
+      best = candidate
+      low = retained + 1
+    } else {
+      high = retained - 1
+    }
   }
-  return parts.join('\n\n')
+  return best || query.slice(0, 1)
+}
+
+/** Bound untrusted document metadata before it enters the cross-encoder pair.
+ * The title remains useful for disambiguation, but can never crowd the
+ * query-centred anchor out of the fixed 352-token evidence budget. */
+function fitRerankTitle(title: string): string {
+  const trimmed = title.trim()
+  if (estimateContextTokens(trimmed) <= RERANK_TITLE_TOKENS) return trimmed
+  let low = 0
+  let high = trimmed.length
+  let best = ''
+  while (low <= high) {
+    const length = Math.floor((low + high) / 2)
+    const candidate = `${trimmed.slice(0, length).trimEnd()}…`
+    if (estimateContextTokens(candidate) <= RERANK_TITLE_TOKENS) {
+      best = candidate
+      low = length + 1
+    } else {
+      high = length - 1
+    }
+  }
+  return best
+}
+
+function rerankTitleReserve(title: string): number {
+  const fitted = fitRerankTitle(title)
+  return fitted.length === 0 ? 0 : estimateContextTokens(`${fitted}\n`)
+}
+
+function rerankEvidenceText(hit: SearchHit): string {
+  const title = fitRerankTitle(hit.documentTitle)
+  const evidence = hit.contextWindow !== undefined ? serializeContextWindow(hit.contextWindow) : hit.text
+  const combined = title.length === 0 ? evidence : `${title}\n${evidence}`
+  // attachContextWindows reserved the exact fitted-title cost. Keep this
+  // defensive assertion local so a future serializer change degrades rerank
+  // instead of silently violating the public pair budget.
+  if (estimateContextTokens(combined) > RERANK_EVIDENCE_TOKENS) {
+    throw new Error('rerank evidence exceeded the 352-token budget')
+  }
+  return combined
+}
+
+function searchHitOf(store: Store, chunk: KnowledgeChunk | undefined, hit: RankedHit): SearchHit | undefined {
+  if (chunk === undefined) return undefined
+  return {
+    chunkId: chunk.id,
+    docId: chunk.docId,
+    baseId: chunk.baseId,
+    documentTitle: store.getDocument(chunk.docId)?.title ?? chunk.docId,
+    ...(chunk.heading !== undefined ? { heading: chunk.heading } : {}),
+    index: chunk.index,
+    text: chunk.text,
+    score: hit.score,
+    ...(hit.vectorScore !== undefined ? { vectorScore: hit.vectorScore } : {}),
+    ...(hit.lexicalScore !== undefined ? { lexicalScore: hit.lexicalScore } : {}),
+  }
+}
+
+/** Attach token-bounded ordered context to all hits while loading all merged
+ * document ranges through one storage operation. */
+function attachContextWindows(
+  store: Store,
+  hits: readonly SearchHit[],
+  focus: string,
+  radius: number,
+  maxTokens: number,
+  reserveTokens?: (hit: SearchHit) => number,
+): SearchHit[] {
+  if (hits.length === 0) return []
+  const safeRadius = clampInt(radius, 0, 10, 0)
+  const ranges = mergeChunkRanges(hits.map(hit => ({
+    docId: hit.docId,
+    fromIdx: Math.max(0, hit.index - safeRadius),
+    toIdx: hit.index + safeRadius,
+  })))
+  const loaded = store.listChunksByIndexRanges(ranges)
+  const byDoc = new Map<string, KnowledgeChunk[]>()
+  for (const chunk of loaded) {
+    const list = byDoc.get(chunk.docId) ?? []
+    list.push(chunk)
+    byDoc.set(chunk.docId, list)
+  }
+  return hits.map(hit => {
+    const anchor: KnowledgeChunk = {
+      id: hit.chunkId,
+      docId: hit.docId,
+      baseId: hit.baseId,
+      index: hit.index,
+      text: hit.text,
+      ...(hit.heading !== undefined ? { heading: hit.heading } : {}),
+    }
+    const neighbours = byDoc.get(hit.docId) ?? [anchor]
+    const document = store.getDocument(hit.docId)
+    const contextWindow = composeContextWindow(neighbours, anchor, {
+      before: safeRadius,
+      after: safeRadius,
+      maxTokens: Math.max(1, maxTokens - (reserveTokens?.(hit) ?? 0)),
+      focus,
+      documentChunkCount: document?.chunkCount,
+    })
+    const legacy = safeRadius > 0
+      ? neighbours
+        .filter(chunk => chunk.id !== anchor.id && chunk.index >= anchor.index - safeRadius && chunk.index <= anchor.index + safeRadius)
+        .sort((a, b) => a.index - b.index)
+        .map(chunk => `${chunk.heading !== undefined ? `[${chunk.heading}] ` : ''}${chunk.text}`)
+        .join('\n\n')
+      : ''
+    const { siblingContext: _oldSibling, contextWindow: _oldWindow, ...base } = hit
+    return {
+      ...base,
+      contextWindow,
+      ...(legacy.length > 0 ? { siblingContext: legacy } : {}),
+    }
+  })
+}
+
+function mergeChunkRanges(
+  ranges: readonly { docId: string; fromIdx: number; toIdx: number }[],
+): Array<{ docId: string; fromIdx: number; toIdx: number }> {
+  const ordered = [...ranges].sort((a, b) => a.docId.localeCompare(b.docId) || a.fromIdx - b.fromIdx || a.toIdx - b.toIdx)
+  const merged: Array<{ docId: string; fromIdx: number; toIdx: number }> = []
+  for (const range of ordered) {
+    const previous = merged[merged.length - 1]
+    if (previous !== undefined && previous.docId === range.docId && range.fromIdx <= previous.toIdx + 1) {
+      previous.toIdx = Math.max(previous.toIdx, range.toIdx)
+    } else {
+      merged.push({ ...range })
+    }
+  }
+  return merged
 }
 
 function clampInt(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback
   return Math.min(max, Math.max(min, Math.trunc(value)))
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return
+  if (signal.reason instanceof Error) throw signal.reason
+  throw new DOMException('The operation was aborted', 'AbortError')
+}
+
+function throwIfDeadline(deadlineAt: number | undefined): void {
+  if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+    throw new DOMException('knowledge search deadline exceeded', 'TimeoutError')
+  }
 }
 
 /** Trim, validate, normalize, and cap multi-query variants. */

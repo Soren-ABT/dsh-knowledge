@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ChunkDatabase } from '../src/knowledge/chunkdb.js'
 
 const open = (): ChunkDatabase => new ChunkDatabase(':memory:')
@@ -38,7 +38,41 @@ describe('ChunkDatabase lexical lane', () => {
     const db = openSeeded()
     const hits = await db.lexical('中', ['b1', 'b2'], 20)
     expect(hits.hits.length).toBeGreaterThan(0)
+    expect(hits.hits.every(hit => hit.score > 0 && hit.score < 1)).toBe(true)
     db.close()
+  })
+
+  it('normalizes two-character CJK LIKE scores and breaks equal-length ties by chunk id', async () => {
+    const db = open()
+    db.putChunks([
+      { id: 'c-b', docId: 'd-b', baseId: 'b1', index: 0, text: '年假乙' },
+      { id: 'c-a', docId: 'd-a', baseId: 'b1', index: 0, text: '年假甲' },
+    ])
+
+    const result = await db.lexical('年假', ['b1'], 20)
+    expect(result.hits.map(hit => hit.id)).toEqual(['c-a', 'c-b'])
+    expect(result.hits[0]?.score).toBeCloseTo(1024 / (1024 + 3), 12)
+    db.close()
+  })
+
+  it('treats an empty document allow-list as match-nothing', async () => {
+    const db = openSeeded()
+    await expect(db.lexical('hello', ['b1'], 20, [])).resolves.toEqual({ total: 0, hits: [] })
+    db.close()
+  })
+
+  it('interrupts a synchronous SQLite lexical scan at its absolute deadline', async () => {
+    const db = open()
+    db.putChunks([{ id: 'deadline', docId: 'deadline-doc', baseId: 'b1', index: 0, text: 'alpha deadline evidence' }])
+    const now = vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValue(1_000)
+    try {
+      await expect(db.lexical('alpha', ['b1'], 20, undefined, 500)).rejects.toMatchObject({ name: 'TimeoutError' })
+    } finally {
+      now.mockRestore()
+      db.close()
+    }
   })
 
   it('respects the base scope', async () => {
@@ -63,6 +97,15 @@ describe('ChunkDatabase vector lane', () => {
     const ranked = await db.vector([1, 0, 0], ['b1'], 20)
     expect(ranked.hits[0].id).toBe('v1')
     expect(ranked.hits[0].score).toBeGreaterThan(ranked.hits[1].score)
+    db.close()
+  })
+
+  it('treats an empty document allow-list as match-nothing', async () => {
+    const db = open()
+    db.putChunkBatch([
+      { id: 'v1', docId: 'd1', baseId: 'b1', index: 0, text: 'a', embedding: [1, 0], embeddingModel: 'm' },
+    ])
+    await expect(db.vector([1, 0], ['b1'], 20, [])).resolves.toEqual({ total: 0, hits: [] })
     db.close()
   })
 })

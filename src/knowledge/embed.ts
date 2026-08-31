@@ -78,14 +78,48 @@ export async function embedTexts(
   texts: readonly string[],
   signal?: AbortSignal,
 ): Promise<number[][]> {
+  throwIfAborted(signal)
   if (texts.length === 0) return []
   if (provider === 'none') throw new Error('embedding provider is "none" — configure an endpoint or a local model, or keep lexical search')
-  if (provider === 'local') return embedLocal(model.trim() === '' ? DEFAULT_LOCAL_MODEL : model, texts)
+  if (provider === 'local') {
+    // The long-lived embedding worker must not be terminated (reloading the
+    // native ONNX binding is unsafe on Linux), but the owning search can stop
+    // waiting immediately while the isolated worker finishes its current job.
+    return await withAbortSignal(embedLocal(model.trim() === '' ? DEFAULT_LOCAL_MODEL : model, texts), signal)
+  }
   if (baseUrl.trim() === '') throw new Error('embedding base URL is empty')
   if (model.trim() === '') throw new Error('embedding model is empty')
   if (provider === 'openai') return embedOpenAI(baseUrl, model, apiKey, texts, signal)
   if (provider === 'ollama') return embedOllama(baseUrl, model, apiKey, texts, signal)
   throw new Error(`unknown embedding provider ${String(provider)}`)
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return
+  if (signal.reason instanceof Error) throw signal.reason
+  throw new DOMException('The operation was aborted', 'AbortError')
+}
+
+async function withAbortSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise
+  throwIfAborted(signal)
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      if (signal.reason instanceof Error) reject(signal.reason)
+      else reject(new DOMException('The operation was aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      value => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
 }
 
 // ── local (dedicated worker thread running transformers.js) ─────────────────

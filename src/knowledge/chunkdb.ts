@@ -58,6 +58,12 @@ const DELETE_YIELD_BUDGET_MS = 50
 const VACUUM_MIN_FREELIST_RATIO = 0.2
 const VACUUM_MIN_FREED_BYTES = 8 * 1024 * 1024
 
+function throwIfDeadlineExpired(deadlineAt: number | undefined): void {
+  if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+    throw new DOMException('knowledge search deadline exceeded', 'TimeoutError')
+  }
+}
+
 // ── FTS query compilation (trigram tokenizer) ────────────────────────────────
 
 /**
@@ -113,7 +119,8 @@ function extractShortTerms(query: string): string[] {
  * (silent truncation would return wrong results for the caller).
  */
 function docFilterSql(docIds: readonly string[] | undefined, column: string): { sql: string; params: string[] } | null {
-  if (docIds === undefined || docIds.length === 0) return null
+  if (docIds === undefined) return null
+  if (docIds.length === 0) return { sql: ' AND 0 = 1', params: [] }
   if (docIds.length > EMBEDDING_HASH_QUERY_BATCH) {
     throw new Error(`too many document ids in filter (${docIds.length} > ${EMBEDDING_HASH_QUERY_BATCH})`)
   }
@@ -219,9 +226,9 @@ export interface LaneResult {
 
 export interface RetrievalLane {
   /** FTS5 BM25 hits over the scope (score normalized into [0, 1)). */
-  lexical(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[]): Promise<LaneResult>
+  lexical(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult>
   /** Brute-force cosine hits over the scope's stored vectors. */
-  vector(embedding: readonly number[], baseIds: readonly string[], limit: number, docIds?: readonly string[]): Promise<LaneResult>
+  vector(embedding: readonly number[], baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult>
 }
 
 /** The chunk store: bounded SQL reads, single-transaction writes. */
@@ -245,6 +252,16 @@ export class ChunkDatabase implements RetrievalLane {
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA synchronous = NORMAL')
     this.db.exec('PRAGMA foreign_keys = OFF')
+    // Abort long synchronous scans from inside SQLite itself. AbortSignal
+    // timers cannot fire while DatabaseSync blocks the JS event loop, so the
+    // non-deterministic row guard checks the absolute deadline during VM
+    // execution and raises before a short-CJK LIKE scan can run unbounded.
+    this.db.function('knowledge_before_deadline', (deadline, _rowKey) => {
+      if (typeof deadline === 'number' && Date.now() >= deadline) {
+        throw new Error('knowledge search deadline exceeded')
+      }
+      return 1
+    })
     // Multiple connections can touch the store (a second plugin instance, a
     // crashed-and-restarted host still holding the old file, the one-time
     // migration path, or a concurrent checkpoint/VACUUM). SQLite's default
@@ -420,6 +437,13 @@ export class ChunkDatabase implements RetrievalLane {
     return rows.map(rowToChunk)
   }
 
+  getChunk(id: string): KnowledgeChunk | undefined {
+    const row = this.db.prepare(
+      `SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk WHERE chunk_id = ?`,
+    ).get(id) as unknown as ChunkRow | undefined
+    return row === undefined ? undefined : rowToChunk(row)
+  }
+
   listChunksByDoc(docId: string, limit?: number, offset?: number): KnowledgeChunk[] {
     const sql = `SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk WHERE doc_id = ? ORDER BY idx`
     const rows = limit !== undefined
@@ -434,6 +458,17 @@ export class ChunkDatabase implements RetrievalLane {
     const rows = this.db.prepare(
       `SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk WHERE doc_id = ? AND idx >= ? AND idx <= ? ORDER BY idx`,
     ).all(docId, fromIdx, toIdx) as unknown as ChunkRow[]
+    return rows.map(rowToChunk)
+  }
+
+  /** Fetch several already-merged document ranges in one SQL statement. */
+  listChunksByIndexRanges(ranges: readonly { docId: string; fromIdx: number; toIdx: number }[]): KnowledgeChunk[] {
+    if (ranges.length === 0) return []
+    const clauses = ranges.map(() => '(doc_id = ? AND idx >= ? AND idx <= ?)').join(' OR ')
+    const params = ranges.flatMap(range => [range.docId, Math.trunc(range.fromIdx), Math.trunc(range.toIdx)])
+    const rows = this.db.prepare(
+      `SELECT ${ChunkDatabase.SELECT_COLUMNS} FROM chunk WHERE ${clauses} ORDER BY doc_id, idx`,
+    ).all(...params) as unknown as ChunkRow[]
     return rows.map(rowToChunk)
   }
 
@@ -687,16 +722,33 @@ export class ChunkDatabase implements RetrievalLane {
 
   // ── retrieval lanes ────────────────────────────────────────────────────────
 
-  async lexical(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[]): Promise<LaneResult> {
+  async lexical(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult> {
+    try {
+      return await this.lexicalUnchecked(query, baseIds, limit, docIds, deadlineAt)
+    } catch (error) {
+      // node:sqlite wraps exceptions raised by a user-defined function. Restore
+      // the public timeout identity once the absolute clock confirms that the
+      // row guard was responsible.
+      if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+        throw new DOMException('knowledge search deadline exceeded', 'TimeoutError')
+      }
+      throw error
+    }
+  }
+
+  private async lexicalUnchecked(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult> {
+    throwIfDeadlineExpired(deadlineAt)
     const scope = [...baseIds]
     if (scope.length === 0) return { total: 0, hits: [] }
+    if (docIds !== undefined && docIds.length === 0) return { total: 0, hits: [] }
     // An empty query must never scan the whole corpus (LIKE '%%' matches
     // everything) — the service layer guards too, but the lane stands alone.
     if (query.trim().length === 0) return { total: 0, hits: [] }
     const docFilter = docFilterSql(docIds, 'c.doc_id')
     const placeholders = scope.map(() => '?').join(',')
-    const scopeSql = `c.base_id IN (${placeholders})${docFilter?.sql ?? ''}`
-    const params: Array<string | number> = [...scope, ...(docFilter?.params ?? [])]
+    const deadlineSql = deadlineAt !== undefined ? ' AND knowledge_before_deadline(?, c.chunk_id)' : ''
+    const scopeSql = `c.base_id IN (${placeholders})${docFilter?.sql ?? ''}${deadlineSql}`
+    const params: Array<string | number> = [...scope, ...(docFilter?.params ?? []), ...(deadlineAt !== undefined ? [deadlineAt] : [])]
     const total = (this.db.prepare(`SELECT COUNT(*) AS c FROM chunk c WHERE ${scopeSql}`).get(...params) as { c: number }).c
     if (total === 0) return { total: 0, hits: [] }
 
@@ -716,7 +768,7 @@ export class ChunkDatabase implements RetrievalLane {
       const sql = `
         SELECT ${ChunkDatabase.SELECT_COLUMNS}, search_text FROM chunk c
         WHERE ${scopeSql} AND ${filters}
-        ORDER BY length(c.search_text) ASC
+        ORDER BY length(c.search_text) ASC, c.chunk_id ASC
         LIMIT ?
       `
       for (const token of tokens) {
@@ -725,7 +777,13 @@ export class ChunkDatabase implements RetrievalLane {
       }
       params.push(limit)
       const rows = this.db.prepare(sql).all(...params) as unknown as Array<ChunkRow & { search_text: string }>
-      return { total, hits: rows.map(row => ({ ...rowToChunk(row), score: -row.search_text.length })) }
+      return {
+        total,
+        hits: rows.map(row => ({
+          ...rowToChunk(row),
+          score: 1024 / (1024 + Math.max(1, row.search_text.length)),
+        })),
+      }
     }
     const matchTerms = extractMatchTerms(query)
     const matchQuery = matchTerms.map(term => `"${term.replaceAll('"', '""')}"`).join(' OR ')
@@ -754,15 +812,18 @@ export class ChunkDatabase implements RetrievalLane {
     return { total, hits }
   }
 
-  async vector(embedding: readonly number[], baseIds: readonly string[], limit: number, docIds?: readonly string[]): Promise<LaneResult> {
+  async vector(embedding: readonly number[], baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult> {
+    throwIfDeadlineExpired(deadlineAt)
     const scope = [...baseIds]
     if (scope.length === 0) return { total: 0, hits: [] }
+    if (docIds !== undefined && docIds.length === 0) return { total: 0, hits: [] }
     const query = embedding.length > 0 ? Float32Array.from(embedding) : null
-    const docFilter = docIds !== undefined && docIds.length > 0 ? new Set(docIds) : undefined
+    const docFilter = docIds !== undefined ? new Set(docIds) : undefined
     const scored: LaneHit[] = []
     let total = 0
     for (const baseId of scope) {
       for (const entry of this.ensureVectorCache(baseId)) {
+        if ((total & 255) === 0) throwIfDeadlineExpired(deadlineAt)
         if (docFilter !== undefined && !docFilter.has(entry.docId)) continue
         total += 1
         if (query === null || entry.vector.length !== query.length) continue

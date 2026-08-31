@@ -115,9 +115,12 @@ export interface Store {
   deleteDocument(id: string): Promise<void>
 
   listChunks(baseId: string): KnowledgeChunk[]
+  getChunk(id: string): KnowledgeChunk | undefined
   listChunksByDoc(docId: string, limit?: number, offset?: number): KnowledgeChunk[]
   /** Chunks of one document whose index falls in `[fromIdx, toIdx]` (sibling context around a search hit). */
   listChunksByIndexRange(docId: string, fromIdx: number, toIdx: number): KnowledgeChunk[]
+  /** Several merged document ranges fetched as one storage operation. */
+  listChunksByIndexRanges(ranges: readonly { docId: string; fromIdx: number; toIdx: number }[]): KnowledgeChunk[]
   putChunks(chunks: KnowledgeChunk[]): Promise<void>
   /**
    * Incrementally persist a batch of chunks WITHOUT clearing the document's
@@ -277,12 +280,20 @@ class DomainStore implements Store {
     return this.chunkDb.listChunks(baseId)
   }
 
+  getChunk(id: string): KnowledgeChunk | undefined {
+    return this.chunkDb.getChunk(id)
+  }
+
   listChunksByDoc(docId: string, limit?: number, offset?: number): KnowledgeChunk[] {
     return this.chunkDb.listChunksByDoc(docId, limit, offset)
   }
 
   listChunksByIndexRange(docId: string, fromIdx: number, toIdx: number): KnowledgeChunk[] {
     return this.chunkDb.listChunksByIndexRange(docId, fromIdx, toIdx)
+  }
+
+  listChunksByIndexRanges(ranges: readonly { docId: string; fromIdx: number; toIdx: number }[]): KnowledgeChunk[] {
+    return this.chunkDb.listChunksByIndexRanges(ranges)
   }
 
   async putChunks(chunks: KnowledgeChunk[]): Promise<void> {
@@ -484,6 +495,10 @@ class MemoryStore implements Store {
     return [...this.chunks.values()].filter(chunk => chunk.baseId === baseId)
   }
 
+  getChunk(id: string): KnowledgeChunk | undefined {
+    return this.chunks.get(id)
+  }
+
   listChunksByDoc(docId: string, limit?: number, offset?: number): KnowledgeChunk[] {
     const chunks = [...this.chunks.values()].filter(chunk => chunk.docId === docId).sort((a, b) => a.index - b.index)
     const start = offset ?? 0
@@ -495,6 +510,19 @@ class MemoryStore implements Store {
     return [...this.chunks.values()]
       .filter(chunk => chunk.docId === docId && chunk.index >= fromIdx && chunk.index <= toIdx)
       .sort((a, b) => a.index - b.index)
+  }
+
+  listChunksByIndexRanges(ranges: readonly { docId: string; fromIdx: number; toIdx: number }[]): KnowledgeChunk[] {
+    const seen = new Set<string>()
+    const chunks: KnowledgeChunk[] = []
+    for (const range of ranges) {
+      for (const chunk of this.listChunksByIndexRange(range.docId, range.fromIdx, range.toIdx)) {
+        if (seen.has(chunk.id)) continue
+        seen.add(chunk.id)
+        chunks.push(chunk)
+      }
+    }
+    return chunks.sort((a, b) => a.docId.localeCompare(b.docId) || a.index - b.index)
   }
 
   async putChunks(chunks: KnowledgeChunk[]): Promise<void> {

@@ -122,6 +122,36 @@ describe('local rerank child-process runtime', () => {
     await expect(second).rejects.toBeInstanceOf(LocalRerankError)
   })
 
+  it('cancels a queued request without interrupting the active inference', async () => {
+    state.mode = 'hang'
+    const first = rerankInLocalProcess('test/queued-abort', 'cache', undefined, 'q1', ['a'], 1000)
+    const handledFirst = first.catch(error => error)
+    const controller = new AbortController()
+    const reason = new DOMException('owner cancelled queued request', 'AbortError')
+    const second = rerankInLocalProcess('test/queued-abort', 'cache', undefined, 'q2', ['b'], 1000, controller.signal)
+    expect(localRerankRuntimeSnapshot()).toEqual({ active: true, queued: 1, process: true })
+    controller.abort(reason)
+    await expect(second).rejects.toBe(reason)
+    expect(localRerankRuntimeSnapshot()).toEqual({ active: true, queued: 0, process: true })
+    expect(state.instances[0]?.killed).toBe(false)
+    await disposeLocalRerankProcess()
+    expect(await handledFirst).toBeInstanceOf(LocalRerankError)
+  })
+
+  it('cancels active inference by terminating only the isolated rerank child', async () => {
+    state.mode = 'hang'
+    const controller = new AbortController()
+    const reason = new DOMException('owner cancelled active request', 'AbortError')
+    const pending = rerankInLocalProcess(
+      'test/active-abort', 'cache', undefined, 'q', ['a'], 1000, controller.signal,
+    )
+    expect(localRerankRuntimeSnapshot()).toEqual({ active: true, queued: 0, process: true })
+    controller.abort(reason)
+    await expect(pending).rejects.toBe(reason)
+    expect(state.instances[0]?.killed).toBe(true)
+    expect(localRerankRuntimeSnapshot()).toEqual({ active: false, queued: 0, process: false })
+  })
+
   it('bounds queue pressure and degrades the seventeenth concurrent request', async () => {
     state.mode = 'hang'
     const accepted = Array.from({ length: 16 }, (_, index) =>

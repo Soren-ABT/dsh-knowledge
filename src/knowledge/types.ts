@@ -235,17 +235,49 @@ export type AddFilesResult =
       accepted: Array<{ id: string; title: string; fileName: string; skipped?: boolean }>
     }
 
+/** One bounded excerpt from a canonical document chunk. Character offsets are
+ * relative to {@link KnowledgeChunk.text}, never to the original source file. */
+export interface ContextChunkExcerpt {
+  readonly chunkId: string
+  readonly index: number
+  readonly heading?: string
+  readonly text: string
+  /** Inclusive UTF-16 offset in the canonical chunk text. */
+  readonly textStart: number
+  /** Exclusive UTF-16 offset in the canonical chunk text. */
+  readonly textEnd: number
+  readonly truncatedStart: boolean
+  readonly truncatedEnd: boolean
+}
+
+/** Ordered, token-bounded evidence around one search/read anchor. */
+export interface ContextWindow {
+  readonly anchorChunkId: string
+  readonly anchorIndex: number
+  readonly before: ContextChunkExcerpt[]
+  readonly anchor: ContextChunkExcerpt
+  readonly after: ContextChunkExcerpt[]
+  readonly estimatedTokens: number
+  readonly hasMoreBefore: boolean
+  readonly hasMoreAfter: boolean
+}
+
 /** One ranked search result. */
-export interface SearchHit {  readonly chunkId: string
+export interface SearchHit {
+  readonly chunkId: string
   readonly docId: string
   readonly baseId: string
   readonly documentTitle: string
   readonly heading?: string
   readonly index: number
   readonly text: string
+  /** Ordered, bounded evidence around this hit. New in 0.3.8; optional so
+   * clients compiled against 0.3.7 payloads remain compatible. */
+  readonly contextWindow?: ContextWindow
   /** Surrounding chunks (±`siblingChunks`) of the hit, concatenated as
    *  context — the full paragraph the hit sits in. Empty when the document
-   *  has no neighbours or sibling context is disabled. */
+   *  has no neighbours or sibling context is disabled.
+   *  @deprecated Prefer {@link contextWindow}; retained throughout 0.3.x. */
   readonly siblingContext?: string
   readonly score: number
   readonly vectorScore?: number
@@ -393,11 +425,13 @@ export interface ImportUrlRequest {
 
 /** Metadata filters narrowing a search to a subset of documents (all optional, ANDed). */
 export interface SearchFilter {
-  /** Restrict to these document ids. */
+  /** Restrict to these document ids. `undefined` is unrestricted; `[]`
+   * deliberately matches no documents. */
   readonly docIds?: readonly string[]
   /** Case-insensitive substring match on the document title. */
   readonly titleIncludes?: string
-  /** Restrict to these source types (file / text / url / directory). */
+  /** Restrict to these source types (file / text / url / directory).
+   * `undefined` is unrestricted; `[]` deliberately matches nothing. */
   readonly sourceTypes?: readonly DocumentSourceType[]
   /** Only documents updated at or after this epoch millisecond. */
   readonly updatedAfter?: number
