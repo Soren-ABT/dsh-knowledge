@@ -1,19 +1,58 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "thresholds": {
     "primary": {
-      "hitAt1": 0.95,
-      "hitAt3": 0.975,
-      "recallAt3": 0.975,
-      "mrr": 0.95,
-      "contextRecall": 0.975
+      "hitAt1": 1,
+      "hitAt3": 1,
+      "recallAt3": 1,
+      "mrr": 1,
+      "contextRecall": 1,
+      "visibleEvidenceRecall": 1,
+      "contextWindowCoverage": 1
     },
     "multiQuery": {
-      "hitAt1": 0.95,
-      "hitAt3": 0.975,
-      "recallAt3": 0.975,
-      "mrr": 0.95,
-      "contextRecall": 0.975
+      "hitAt1": 1,
+      "hitAt3": 1,
+      "recallAt3": 1,
+      "mrr": 1,
+      "contextRecall": 1,
+      "visibleEvidenceRecall": 1,
+      "contextWindowCoverage": 1
+    },
+    "autoRetrieve": {
+      "injectionRate": 1,
+      "visibleEvidenceRecall": 1
+    },
+    "evidenceChain": {
+      "top1AnchorOnlyMissAt1": 1,
+      "searchWindowBridgeAt1": 1,
+      "anchorReadBridgeAt1": 1,
+      "bridgeSuccessAt1": 1,
+      "longAnchorCanonicalOversizedAt1": 1,
+      "longAnchorTailVisibleAt1": 1,
+      "contextWindowCoverage": 1
+    }
+  },
+  "maximums": {
+    "primary": {
+      "contextOrderErrors": 0,
+      "rendererOrderErrors": 0,
+      "hitBudgetOverruns": 0,
+      "contextBudgetOverruns": 0
+    },
+    "multiQuery": {
+      "contextOrderErrors": 0,
+      "rendererOrderErrors": 0,
+      "hitBudgetOverruns": 0,
+      "contextBudgetOverruns": 0
+    },
+    "autoRetrieve": {
+      "budgetOverruns": 0
+    },
+    "evidenceChain": {
+      "rendererOrderErrors": 0,
+      "hitBudgetOverruns": 0,
+      "globalBudgetOverruns": 0
     }
   },
   "observed": {
@@ -22,14 +61,50 @@
       "hitAt3": 1,
       "recallAt3": 1,
       "mrr": 1,
-      "contextRecall": 1
+      "contextRecall": 1,
+      "visibleEvidenceRecall": 1,
+      "contextWindowCoverage": 1,
+      "contextOrderErrors": 0,
+      "rendererOrderErrors": 0,
+      "hitBudgetOverruns": 0,
+      "contextBudgetOverruns": 0,
+      "duplicateTokenRatio": 0.12183,
+      "averageVisibleTokens": 405.475
     },
     "multiQuery": {
       "hitAt1": 1,
       "hitAt3": 1,
       "recallAt3": 1,
       "mrr": 1,
-      "contextRecall": 1
+      "contextRecall": 1,
+      "visibleEvidenceRecall": 1,
+      "contextWindowCoverage": 1,
+      "contextOrderErrors": 0,
+      "rendererOrderErrors": 0,
+      "hitBudgetOverruns": 0,
+      "contextBudgetOverruns": 0,
+      "duplicateTokenRatio": 0.073297,
+      "averageVisibleTokens": 393.65
+    },
+    "autoRetrieve": {
+      "injectionRate": 1,
+      "visibleEvidenceRecall": 1,
+      "budgetOverruns": 0,
+      "averageVisibleTokens": 243.075
+    },
+    "evidenceChain": {
+      "top1AnchorOnlyMissAt1": 1,
+      "searchWindowBridgeAt1": 1,
+      "anchorReadBridgeAt1": 1,
+      "bridgeSuccessAt1": 1,
+      "longAnchorCanonicalOversizedAt1": 1,
+      "longAnchorTailVisibleAt1": 1,
+      "contextWindowCoverage": 1,
+      "rendererOrderErrors": 0,
+      "hitBudgetOverruns": 0,
+      "globalBudgetOverruns": 0,
+      "maxHitVisibleTokens": 768,
+      "maxRenderedTokens": 8190
     }
   }
 }

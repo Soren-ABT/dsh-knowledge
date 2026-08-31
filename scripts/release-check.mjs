@@ -20,9 +20,11 @@ function run(command, args) {
 }
 
 try {
+  const releaseArguments = process.argv.slice(2)
   run('node', ['scripts/verify-build-policy.mjs', '--self-test'])
   run('node', ['scripts/verify-build-policy.mjs'])
-  run('node', ['scripts/verify-release.mjs'])
+  run('node', ['scripts/verify-release.mjs', '--self-test'])
+  run('node', ['scripts/verify-release.mjs', ...releaseArguments])
   run('node', ['scripts/audit-production.mjs', '--self-test'])
   run('node', ['scripts/audit-production.mjs'])
   run('npm', ['run', 'typecheck'])

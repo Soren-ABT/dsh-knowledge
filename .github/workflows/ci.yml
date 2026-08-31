@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -51,6 +52,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm run build:lib
       - name: Install plugin dependencies
         run: pnpm install --frozen-lockfile
+      - run: npm run verify:release
       - run: npm run audit:prod:self-test
       - run: npm run audit:prod
       - run: npm run typecheck

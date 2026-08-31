@@ -9,6 +9,7 @@ import { createServer } from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { estimateContextTokens } from '../src/knowledge/context.js'
 import { KnowledgeService } from '../src/knowledge/index.js'
 import { autoRetrieveBackground } from '../src/tool-knowledge/index.js'
 
@@ -141,13 +142,14 @@ try {
   await autoRetrieveBackground(service as never, a5 as never, '直属上级审批')
   check('same chunk not re-injected', a5.injected.length === 1)
 
-  // ── 8. long chunk clipping ─────────────────────────────────────────────────
-  console.log('\n8. long-chunk clipping')
+  // ── 8. query-centred long chunk keeps a tail answer under the hard budget ──
+  console.log('\n8. query-centred long-chunk evidence')
   const longBase = await service.createBase({ name: '长文库' })
+  const tailAnswer = '关键信息：长文档截断测试目标文本。'
   await service.addTextDocument({
     baseId: longBase.id,
     title: '长文',
-    content: '这是一段非常长的内容，'.repeat(200) + '关键信息：长文档截断测试目标文本。',
+    content: '这是一段非常长的内容，'.repeat(200) + tailAnswer,
   })
   await service.waitForIdle()
   const a6 = stubAgent('long')
@@ -155,10 +157,9 @@ try {
   check('long doc query injects', a6.injected.length === 1)
   if (a6.injected.length > 0) {
     const text = textOf(a6.injected[0])
-    // 2 chunks max × 300 chars + source prefixes stays bounded; the tail
-    // keyword (at char ~2400) must have been clipped away.
-    check('injected background stays bounded (≤700 chars)', text.length <= 700, String(text.length))
-    check('clipped tail keyword not leaked', !text.includes('关键信息：长文档截断测试目标文本'))
+    const visibleTokens = estimateContextTokens(text)
+    check('tail answer remains visible after query-centred clipping', text.includes(tailAnswer), text.slice(-160))
+    check('injected background respects the 640-token hard budget', visibleTokens <= 640, `${visibleTokens} tokens`)
   }
 
   // ── 9. weak match → nothing ────────────────────────────────────────────────
