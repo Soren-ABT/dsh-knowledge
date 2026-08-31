@@ -58,6 +58,7 @@ import type {
   AddFilesResult,
   AddTextDocumentRequest,
   BaseConfig,
+  BaseSourceInfo,
   BaseStats,
   BaseSummary,
   CreateBaseRequest,
@@ -664,16 +665,20 @@ export class KnowledgeService extends Service {
       const chunkCount = documents.reduce((sum, doc) => sum + doc.chunkCount, 0)
       const charCount = documents.reduce((sum, doc) => sum + doc.charCount, 0)
       const tokenCount = documents.reduce((sum, doc) => sum + (doc.tokenCount ?? 0), 0)
+      const storedDocCount = documents.reduce((sum, doc) => sum + (doc.rawFilePath !== undefined ? 1 : 0), 0)
+      const sourceInfo = baseSourceLines(documents)
       return {
         id: base.id,
         name: base.name,
         description: base.description,
         ...(base.group !== undefined ? { group: base.group } : {}),
         documentCount: documents.length,
+        storedDocCount,
         chunkCount,
         charCount,
         tokenCount,
         ...(base.config !== undefined ? { config: base.config } : {}),
+        ...(sourceInfo.length > 0 ? { sourceInfo } : {}),
         createdAt: base.createdAt,
         updatedAt: base.updatedAt,
       }
@@ -1035,14 +1040,21 @@ export class KnowledgeService extends Service {
         if (store.raw !== undefined) {
           rawFilePath = await store.raw.writeRel(job.baseId, basename(file), buffer)
         }
-        await this.ingestDocument({
-          baseId: job.baseId,
-          title: basename(file),
-          sourceType: 'file',
-          fileName: basename(file),
-          rawFilePath,
-          text,
-        })
+        try {
+          await this.ingestDocument({
+            baseId: job.baseId,
+            title: basename(file),
+            sourceType: 'file',
+            fileName: basename(file),
+            rawFilePath,
+            text,
+          })
+        } catch (error) {
+          // A rejected item (e.g. duplicate content) must not leave an
+          // orphaned raw copy behind.
+          if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
+          throw error
+        }
         job.imported += 1
       } catch (error) {
         job.errors.push({ file, error: error instanceof Error ? error.message : String(error) })
@@ -1127,15 +1139,22 @@ export class KnowledgeService extends Service {
               const relPath = relative(path, full).replace(/\\/g, '/')
               rawFilePath = await store.raw.writeRel(baseId, relPath, buffer)
             }
-            await this.ingestDocument({
-              baseId,
-              title: basename(full),
-              sourceType: 'file',
-              fileName: basename(full),
-              parentDirectoryId: parentId,
-              rawFilePath,
-              text,
-            })
+            try {
+              await this.ingestDocument({
+                baseId,
+                title: basename(full),
+                sourceType: 'file',
+                fileName: basename(full),
+                parentDirectoryId: parentId,
+                rawFilePath,
+                text,
+              })
+            } catch (error) {
+              // A rejected item (e.g. duplicate content) must not leave an
+              // orphaned raw copy behind.
+              if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
+              throw error
+            }
             imported += 1
           } catch (error) {
             errors.push({ file: full, error: error instanceof Error ? error.message : String(error) })
@@ -1146,6 +1165,103 @@ export class KnowledgeService extends Service {
 
     await walk(path, rootId, 0)
     return { imported, directories, errors }
+  }
+
+  /** Import a single local file by its absolute path (server-side). */
+  async importFileFromPath(baseId: string, filePath: string): Promise<{ imported: boolean; title: string }> {
+    const store = this.requireStore()
+    if (store.getBase(baseId) === undefined) throw new Error(`knowledge base not found: ${baseId}`)
+    const name = basename(filePath)
+    if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(name))) {
+      throw new Error(`Unsupported knowledge file type: ${name}`)
+    }
+    const buffer = await readFile(filePath)
+    const text = await parseDocumentBuffer(buffer, name)
+    if (text.trim().length === 0) throw new Error(`file is empty or unreadable: ${filePath}`)
+    // Persist a stable raw copy (Cherry's "import means copy") so the base
+    // stays rebuildable even if the source file changes or disappears.
+    let rawFilePath: string | undefined
+    if (store.raw !== undefined) {
+      rawFilePath = await store.raw.writeRel(baseId, name, buffer)
+    }
+    try {
+      await this.ingestDocument({
+        baseId,
+        title: name,
+        sourceType: 'file',
+        fileName: name,
+        rawFilePath,
+        sourcePath: filePath,
+        text,
+      })
+    } catch (error) {
+      // A rejected item (e.g. duplicate content) must not leave an orphaned
+      // raw copy behind.
+      if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
+      throw error
+    }
+    return { imported: true, title: name }
+  }
+
+  /**
+   * Import a local path (directory tree or single file) by its absolute path,
+   * validating that it exists first. Directories reuse the tree import, which
+   * records `sourcePath` on every container so reindex rescans the disk.
+   */
+  async importFromPath(baseId: string, path: string): Promise<{ kind: 'directory' | 'file'; imported: number }> {
+    const trimmed = path.trim()
+    if (trimmed.length === 0) throw new Error('path is required')
+    let st
+    try {
+      st = await stat(trimmed)
+    } catch {
+      throw new Error(`path not found: ${trimmed}`)
+    }
+    if (st.isDirectory()) {
+      const result = await this.importDirectoryTree(baseId, trimmed)
+      return { kind: 'directory', imported: result.imported }
+    }
+    if (st.isFile()) {
+      await this.importFileFromPath(baseId, trimmed)
+      return { kind: 'file', imported: 1 }
+    }
+    throw new Error(`not a file or directory: ${trimmed}`)
+  }
+
+  /**
+   * Repoint a base's source: set `sourcePath` on every top-level directory
+   * container (path must be an existing directory), or on every top-level file
+   * document (path must be an existing file) when the base has no directory
+   * root. Used by the pencil button next to the base's source line.
+   */
+  async setBaseSourcePath(baseId: string, path: string): Promise<{ set: number }> {
+    const store = this.requireStore()
+    if (store.getBase(baseId) === undefined) throw new Error(`knowledge base not found: ${baseId}`)
+    const trimmed = path.trim()
+    if (trimmed.length === 0) throw new Error('path is required')
+    let st
+    try {
+      st = await stat(trimmed)
+    } catch {
+      throw new Error(`path not found: ${trimmed}`)
+    }
+    const roots = store.listDocuments(baseId).filter(doc => doc.parentDirectoryId === undefined)
+    const dirRoots = roots.filter(doc => doc.sourceType === 'directory')
+    const fileRoots = roots.filter(doc => doc.sourceType === 'file')
+    let targets: KnowledgeDocument[]
+    if (dirRoots.length > 0) {
+      if (!st.isDirectory()) throw new Error(`not a directory: ${trimmed}`)
+      targets = dirRoots
+    } else if (fileRoots.length > 0) {
+      if (!st.isFile()) throw new Error(`not a file: ${trimmed}`)
+      targets = fileRoots
+    } else {
+      throw new Error('base has no directory or file source to repoint')
+    }
+    for (const doc of targets) {
+      await store.putDocument({ ...doc, sourcePath: trimmed, updatedAt: Date.now() })
+    }
+    return { set: targets.length }
   }
 
   async addUrlDocument(request: ImportUrlRequest): Promise<KnowledgeDocument> {
@@ -1385,7 +1501,9 @@ export class KnowledgeService extends Service {
    * - files/directories removed from disk are deleted from the base,
    * - new supported files are parsed and ingested (raw copy persisted),
    * - new subdirectories become containers (with their own sourcePath),
-   * - existing items are re-indexed (re-chunk + hash-reuse re-embed).
+   * - existing items are re-indexed (re-chunk + hash-reuse re-embed); when
+   *   the on-disk bytes differ from the base's persisted raw copy, the copy
+   *   is refreshed first so EDITS to source files are picked up too.
    * A missing/unreadable source keeps the existing subtree untouched (Cherry
    * skips roots whose source cannot be rebuilt). Failures are isolated per
    * entry and summarized at the end.
@@ -1464,6 +1582,42 @@ export class KnowledgeService extends Service {
         try {
           if (existing !== undefined) {
             if (this.indexing.has(existing.id)) continue
+            // Content sync with the disk: reindex alone rebuilds from the
+            // base's persisted raw copy, so edits to a source file were never
+            // picked up. When the on-disk bytes differ from the stored copy,
+            // refresh the copy and re-index from the NEW content. Equal bytes
+            // fall through to the plain reindex (rebuild from the stored
+            // copy); a failed disk read must never wipe the stored copy or
+            // the existing vectors, so it also falls through unchanged.
+            if (store.raw !== undefined && existing.rawFilePath !== undefined) {
+              try {
+                const buffer = await readFile(full)
+                const stored = await store.raw.read(existing.rawFilePath)
+                const changed = stored === null || stored === undefined || stored.byteLength === 0
+                  || !Buffer.from(stored).equals(buffer)
+                if (changed) {
+                  const text = await parseDocumentBuffer(buffer, entry.name)
+                  // Never replace a good snapshot with empty/unreadable new
+                  // content: keep the stored copy and the old vectors.
+                  if (text.trim().length > 0) {
+                    // rawFilePath already carries the `<baseId>/` prefix (it is
+                    // the full base-relative path), so strip it before writeRel,
+                    // which prepends `<baseId>/` again — otherwise the refreshed
+                    // bytes land at a doubled path and the following reindex still
+                    // rebuilds from the stale stored copy.
+                    const relRaw = existing.rawFilePath.startsWith(`${document.baseId}/`)
+                      ? existing.rawFilePath.slice(document.baseId.length + 1)
+                      : existing.rawFilePath
+                    await store.raw.writeRel(document.baseId, relRaw, buffer)
+                    await this.reindexDocument(existing.id)
+                    continue
+                  }
+                }
+              } catch {
+                // Disk or raw read failed: fall back to the stored-copy
+                // reindex below (the copy and vectors stay intact).
+              }
+            }
             await this.reindexDocument(existing.id)
           } else {
             // New file: parse + ingest like an import, with a persisted raw
@@ -1484,15 +1638,22 @@ export class KnowledgeService extends Service {
               }
               const relPath = relative(root.sourcePath ?? source, full).replace(/\\/g, '/')
               rawFilePath = await store.raw.writeRel(document.baseId, relPath, buffer)
-              await this.ingestDocument({
-                baseId: document.baseId,
-                title: entry.name,
-                sourceType: 'file',
-                fileName: entry.name,
-                parentDirectoryId: document.id,
-                rawFilePath,
-                text,
-              })
+              try {
+                await this.ingestDocument({
+                  baseId: document.baseId,
+                  title: entry.name,
+                  sourceType: 'file',
+                  fileName: entry.name,
+                  parentDirectoryId: document.id,
+                  rawFilePath,
+                  text,
+                })
+              } catch (error) {
+                // A rejected item (e.g. duplicate content) must not leave an
+                // orphaned raw copy behind.
+                await store.raw.delete(rawFilePath)
+                throw error
+              }
             } else {
               await this.ingestDocument({
                 baseId: document.baseId,
@@ -2213,6 +2374,7 @@ export class KnowledgeService extends Service {
     return {
       ...(baseId !== undefined ? { baseId } : {}),
       documentCount: documents.length,
+      storedDocCount: documents.reduce((sum, doc) => sum + (doc.rawFilePath !== undefined ? 1 : 0), 0),
       chunkCount: chunkStats.count,
       charCount,
       tokenCount,
@@ -2747,6 +2909,8 @@ export class KnowledgeService extends Service {
     text: string
     /** Base-relative path of the persisted original source bytes (file docs). */
     rawFilePath?: string
+    /** Absolute source path the item was imported from (file/path imports). */
+    sourcePath?: string
     /** Pre-created placeholder id (already stored, shown while embedding). */
     placeholderId?: string
   }, signal?: AbortSignal): Promise<KnowledgeDocument> {
@@ -2791,6 +2955,7 @@ export class KnowledgeService extends Service {
         ...(input.url !== undefined ? { url: input.url } : {}),
         ...(input.parentDirectoryId !== undefined ? { parentDirectoryId: input.parentDirectoryId } : {}),
         ...(input.rawFilePath !== undefined ? { rawFilePath: input.rawFilePath } : {}),
+        ...(input.sourcePath !== undefined ? { sourcePath: input.sourcePath } : {}),
         contentHash,
         rawText: input.text,
         charCount: input.text.length,
@@ -3069,6 +3234,39 @@ function effectiveMode(requested: SearchMode, ranked: readonly RankedHit[]): Sea
   if (requested === 'hybrid') return hybrid ? 'hybrid' : 'lexical'
   // auto
   return hybrid ? 'hybrid' : 'lexical'
+}
+
+/** Bounded list of a base's top-level sources (directory roots / files / URLs /
+ *  text nodes), for the detail header. Nested children are covered by their
+ *  root, so only `parentDirectoryId === undefined` items are listed. */
+function baseSourceLines(documents: KnowledgeDocument[]): BaseSourceInfo[] {
+  const MAX = 4
+  const seen = new Set<string>()
+  const lines: BaseSourceInfo[] = []
+  for (const doc of documents) {
+    if (doc.parentDirectoryId !== undefined) continue
+    let kind: DocumentSourceType
+    let text: string
+    if (doc.sourceType === 'directory') {
+      kind = 'directory'
+      text = doc.sourcePath ?? doc.title
+    } else if (doc.sourceType === 'url') {
+      kind = 'url'
+      text = doc.url ?? doc.title
+    } else if (doc.sourceType === 'file') {
+      kind = 'file'
+      text = doc.sourcePath ?? doc.fileName ?? doc.title
+    } else {
+      kind = 'text'
+      text = 'node'
+    }
+    const key = `${kind}:${text}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    lines.push({ kind, text })
+    if (lines.length >= MAX) break
+  }
+  return lines
 }
 
 function sha256(text: string): string {

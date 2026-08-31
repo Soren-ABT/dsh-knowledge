@@ -42,16 +42,29 @@ export interface BaseConfig {
   resumeInterruptedOnStartup?: boolean
 }
 
+/** One origin line for a base: where its content came from (shown under the
+ *  base name in the detail header — path for directories/files, link for URLs,
+ *  "node" for manually added text). */
+export interface BaseSourceInfo {
+  kind: 'text' | 'file' | 'url' | 'directory'
+  /** Directory path / file name / URL / 'node'. */
+  text: string
+}
+
 export interface BaseSummary {
   id: string
   name: string
   description: string
   group?: string
   documentCount: number
+  /** Documents with a persisted raw source copy (actually imported & stored). */
+  storedDocCount: number
   chunkCount: number
   charCount: number
   tokenCount: number
   config?: BaseConfig
+  /** Top-level sources of the base's content, for display (bounded). */
+  sourceInfo?: BaseSourceInfo[]
   createdAt: number
   updatedAt: number
 }
@@ -232,6 +245,8 @@ export interface RerankStatus {
 export interface BaseStats {
   baseId?: string
   documentCount: number
+  /** Documents with a persisted raw source copy (actually imported & stored). */
+  storedDocCount: number
   chunkCount: number
   charCount: number
   tokenCount: number
@@ -275,14 +290,16 @@ interface Envelope<T> {
 }
 
 export class KnowledgeApi {
-  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async call<T>(method: string, path: string, body?: unknown, timeoutMs = 60_000): Promise<T> {
     const response = await fetch(`/knowledge${path}`, {
       method,
       headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
       // A hung host must not pin the panel's busy state forever: fail the
-      // call with a clear error instead of an indefinite spinner.
-      signal: AbortSignal.timeout(60_000),
+      // call with a clear error instead of an indefinite spinner. Long-running
+      // jobs (reindex of a whole base) pass a larger budget so a slow sweep is
+      // not cut short while the server is still working.
+      signal: AbortSignal.timeout(timeoutMs),
     })
     let envelope: Envelope<T>
     try {
@@ -517,6 +534,16 @@ export class KnowledgeApi {
     return this.call('POST', `/bases/${encodeURIComponent(baseId)}/import-directory-tree`, { baseId, path })
   }
 
+  /** Import a local directory or single file by its absolute path (validated server-side). */
+  importFromPath(baseId: string, path: string): Promise<{ kind: 'directory' | 'file'; imported: number }> {
+    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/import-path`, { baseId, path })
+  }
+
+  /** Repoint the base's source path (validated server-side). */
+  setBaseSourcePath(baseId: string, path: string): Promise<{ set: number }> {
+    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/source-path`, { baseId, path })
+  }
+
   getDirectoryImport(jobId: string): Promise<DirectoryImportStatus> {
     return this.call('GET', `/import-directory/${encodeURIComponent(jobId)}`)
   }
@@ -541,7 +568,7 @@ export class KnowledgeApi {
   }
 
   reindexDocument(documentId: string): Promise<{ id: string; chunkCount: number }> {
-    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/reindex`)
+    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/reindex`, undefined, 30 * 60_000)
   }
 
   refreshUrlDocument(documentId: string): Promise<{ changed: boolean; title: string; chunkCount: number }> {
@@ -549,7 +576,7 @@ export class KnowledgeApi {
   }
 
   reindexDocuments(ids: string[]): Promise<{ reindexed: number; skipped: number }> {
-    return this.call('POST', '/documents/reindex', { ids })
+    return this.call('POST', '/documents/reindex', { ids }, 30 * 60_000)
   }
 
   deleteDocument(id: string): Promise<{ deleted: boolean }> {

@@ -4,3 +4,5 @@ lib/
 *.tgz
 .DS_Store
 coverage/
+npm-cache/
+pack/

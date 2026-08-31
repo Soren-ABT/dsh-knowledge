@@ -125,7 +125,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const browseCacheDir = useCallback(async (): Promise<void> => {
     setError(null)
     if (props.workspaces === undefined) {
-      setError('文件夹选择不可用（当前环境无目录选择能力）')
+      setError(t('cacheDirPickUnavailable'))
       return
     }
     try {
@@ -134,7 +134,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [props.workspaces])
+  }, [props.workspaces, t])
 
   const openCacheDir = useCallback(async (): Promise<void> => {
     setError(null)
@@ -155,7 +155,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       setCacheDir(result.to)
       setError(null)
       if (result.moved > 0) {
-        setError(`${result.moved} 个模型目录已迁移到 ${result.to}`)
+        setError(t('cacheDirMigrated').replace('{count}', String(result.moved)).replace('{to}', result.to))
       } else {
         // Also silent before: a no-op migration (same dir, or the target
         // already holds the entries) showed nothing at all.
@@ -180,6 +180,24 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       setOllamaBusy(false)
     }
   }, [api, ollamaBase, t])
+
+  // Make the Ollama server used here the global embedding default, so new
+  // bases inherit it (per-base settings only override it). Non-fatal on
+  // error — model management must keep working even if persistence fails.
+  const persistOllamaDefault = useCallback((): void => {
+    const base = ollamaBase.trim()
+    if (base === '') return
+    void api.setConfig({ embeddingProvider: 'ollama', embeddingBaseUrl: base }).catch(() => {})
+    // Also default the embedding model so a fresh base embeds out of the box:
+    // the first installed embedding model (or a recommended one) becomes the
+    // global default only while none is configured yet.
+    void api.getConfig().then(current => {
+      if ((current.embeddingModel ?? '').trim() !== '') return
+      const candidate = [...ollamaSuggestions.ollamaEmbedding, ...ollamaInstalled.map(m => m.name)]
+        .find(name => /embed|bge|mxbai|e5|gte|nomic/i.test(name))
+      if (candidate !== undefined) void api.setConfig({ embeddingModel: candidate }).catch(() => {})
+    }).catch(() => {})
+  }, [api, ollamaBase, ollamaInstalled, ollamaSuggestions])
 
   // Live Ollama pull progress (polled only while a pull is actually running).
   // The moment a pull leaves the `pulling` state its card clears and, on
@@ -252,6 +270,14 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     setError(null)
     try {
       await api.pullOllamaModel(model, ollamaBase)
+      // Pulling from an Ollama server makes it the global embedding default
+      // (provider + URL), so new bases inherit it instead of reconfiguring.
+      persistOllamaDefault()
+      // If the pulled model is an embedding model, also set it as the global
+      // embedding-model default.
+      if (ollamaSuggestions.ollamaEmbedding.includes(model) || /embed|bge|mxbai|e5|gte|nomic/i.test(model)) {
+        void api.setConfig({ embeddingModel: model }).catch(() => {})
+      }
       setPullingModels(prev => prev.some(p => p.model === model)
         ? prev
         : [...prev, { model, status: 'pulling', progress: 0, message: '' }])
@@ -264,7 +290,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       setError(`${err instanceof Error ? err.message : String(err)} ${t('ollamaNeedInstall')}`)
       setOllamaBusy(false)
     }
-  }, [api, ollamaModel, ollamaBase, t])
+  }, [api, ollamaModel, ollamaBase, ollamaSuggestions, persistOllamaDefault, t])
 
   const cancelOllama = useCallback(async (model: string): Promise<void> => {
     try {
@@ -559,7 +585,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             value={ollamaBase}
             onChange={(e) => setOllamaBase(e.target.value)}
           />
-          <button className="kb-btn" style={style.button} disabled={ollamaBusy} onClick={() => void refreshOllamaTags()}>
+          <button className="kb-btn" style={style.button} disabled={ollamaBusy} onClick={() => { persistOllamaDefault(); void refreshOllamaTags() }}>
             <IconRefresh size={13} />{t('ollamaRefresh')}
           </button>
         </div>
