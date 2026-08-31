@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, DragEvent } from 'react'
+import { serializeContextWindow } from '../../knowledge/context.js'
 import { KnowledgeApi } from './api.js'
 import type {
   BaseStats,
@@ -1953,6 +1954,12 @@ function RecallResultCard(props: { hit: SearchHit; index: number; t: Translate }
   const { hit, index, t } = props
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
+  // Keep the collapsed scan view and copied citation anchored to the
+  // canonical hit. Only the explicit detail view expands into the exact
+  // before → anchor → after evidence sequence used by the service.
+  const displayText = expanded && hit.contextWindow !== undefined
+    ? serializeContextWindow(hit.contextWindow)
+    : hit.text
   const copy = async (): Promise<void> => {
     try {
       // Copy a full Markdown citation (quote + source) so the excerpt can be
@@ -1985,7 +1992,7 @@ function RecallResultCard(props: { hit: SearchHit; index: number; t: Translate }
         <p style={{
           margin: 0, fontSize: 13, color: C.muted, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           ...(expanded ? {} : { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }),
-        }}>{hit.text}</p>
+        }}>{displayText}</p>
       </div>
     </div>
   )

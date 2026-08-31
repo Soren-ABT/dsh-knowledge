@@ -169,10 +169,37 @@ export interface SearchHit {
   heading?: string
   index: number
   text: string
+  /** Ordered, token-bounded evidence around the canonical hit. Optional for
+   * compatibility with 0.3.7 servers and persisted responses. */
+  contextWindow?: ContextWindow
+  /** @deprecated Prefer contextWindow; retained throughout 0.3.x. */
   siblingContext?: string
   score: number
   vectorScore?: number
   lexicalScore?: number
+}
+
+export interface ContextChunkExcerpt {
+  chunkId: string
+  index: number
+  heading?: string
+  text: string
+  /** UTF-16 offsets relative to this chunk's canonical text. */
+  textStart: number
+  textEnd: number
+  truncatedStart: boolean
+  truncatedEnd: boolean
+}
+
+export interface ContextWindow {
+  anchorChunkId: string
+  anchorIndex: number
+  before: ContextChunkExcerpt[]
+  anchor: ContextChunkExcerpt
+  after: ContextChunkExcerpt[]
+  estimatedTokens: number
+  hasMoreBefore: boolean
+  hasMoreAfter: boolean
 }
 
 export interface SearchResult {
