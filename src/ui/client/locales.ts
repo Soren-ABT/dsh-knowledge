@@ -111,6 +111,10 @@ export type KnowledgeKey =
   | 'batchSize'
   | 'stats'
   | 'statsDocs'
+  | 'statsSourceDocs'
+  | 'statsStoredDocs'
+  | 'statsSourceDocsTitle'
+  | 'statsStoredDocsTitle'
   | 'statsChunks'
   | 'statsChars'
   | 'statsTokens'
@@ -125,6 +129,10 @@ export type KnowledgeKey =
   | 'docCount'
   | 'chunkCount'
   | 'tabDir'
+  | 'tabPath'
+  | 'pathDesc'
+  | 'sourcePathEdit'
+  | 'sourcePathPrompt'
   | 'dirPlaceholder'
   | 'importDirButton'
   | 'conflictTitle'
@@ -299,6 +307,18 @@ export type KnowledgeKey =
   | 'kbScopeHint'
   | 'dragResize'
   | 'loadMoreChunks'
+  | 'timeJustNow'
+  | 'timeMinutes'
+  | 'timeHours'
+  | 'timeDays'
+  | 'cacheDirPickUnavailable'
+  | 'cacheDirMigrated'
+  | 'mineruOption'
+  | 'mineruHostPlaceholder'
+  | 'visionModelPlaceholder'
+  | 'captionBaseUrlOllamaPlaceholder'
+  | 'captionBaseUrlPlaceholder'
+  | 'citationSource'
   | 'error'
 
 /** Bound translate over the knowledge dictionary. */
@@ -402,6 +422,10 @@ export const zh: Record<KnowledgeKey, string> = {
   batchSize: 'embedding 批大小',
   stats: '统计',
   statsDocs: '文档',
+  statsSourceDocs: '来源文档',
+  statsStoredDocs: '已解析文档',
+  statsSourceDocsTitle: '来源中跟踪的项目（文件夹 + 文件）',
+  statsStoredDocsTitle: '实际解析并作为原始副本存储在缓存中的文档',
   statsChunks: '分块',
   statsChars: '字符',
   statsTokens: '≈ Token',
@@ -416,6 +440,10 @@ export const zh: Record<KnowledgeKey, string> = {
   docCount: '个文档',
   chunkCount: '个分块',
   tabDir: '目录',
+  tabPath: '路径',
+  pathDesc: '输入目录或文件的绝对路径',
+  sourcePathEdit: '修改来源路径',
+  sourcePathPrompt: '来源路径',
   dirPlaceholder: '输入本机目录路径，如 D:\\docs\\policy',
   importDirButton: '导入',
   conflictTitle: '存在同名数据源',
@@ -599,6 +627,18 @@ export const zh: Record<KnowledgeKey, string> = {
   kbScopeHint: '留空 = 全部库可用',
   dragResize: '拖动调整宽度',
   loadMoreChunks: '加载更多分块',
+  timeJustNow: '刚刚',
+  timeMinutes: '{n} 分钟前',
+  timeHours: '{n} 小时前',
+  timeDays: '{n} 天前',
+  cacheDirPickUnavailable: '文件夹选择不可用（当前环境无目录选择能力）',
+  cacheDirMigrated: '{count} 个模型目录已迁移到 {to}',
+  mineruOption: 'MinerU（远程，扫描件/复杂版面）',
+  mineruHostPlaceholder: 'API Host（默认 https://mineru.net）',
+  visionModelPlaceholder: '视觉模型（如 qwen-vl-plus、gpt-4o-mini）',
+  captionBaseUrlOllamaPlaceholder: 'Ollama 地址（默认 http://127.0.0.1:11434）',
+  captionBaseUrlPlaceholder: 'API 地址（留空用嵌入模型地址）',
+  citationSource: '（知识库 {id}）',
   error: '出错了',
 }
 
@@ -700,6 +740,10 @@ export const en: Record<KnowledgeKey, string> = {
   batchSize: 'Embedding batch size',
   stats: 'Stats',
   statsDocs: 'docs',
+  statsSourceDocs: 'source docs',
+  statsStoredDocs: 'parsed docs',
+  statsSourceDocsTitle: 'Items tracked from the source (folders + files)',
+  statsStoredDocsTitle: 'Documents actually parsed and stored as raw copies in the cache',
   statsChunks: 'chunks',
   statsChars: 'chars',
   statsTokens: '~tokens',
@@ -714,6 +758,10 @@ export const en: Record<KnowledgeKey, string> = {
   docCount: ' docs',
   chunkCount: ' chunks',
   tabDir: 'Directory',
+  tabPath: 'Path',
+  pathDesc: 'Absolute path to a directory or file',
+  sourcePathEdit: 'Edit source path',
+  sourcePathPrompt: 'Source path',
   dirPlaceholder: 'Enter a local directory path, e.g. D:\\docs\\policy',
   importDirButton: 'Import',
   conflictTitle: 'Same-name source',
@@ -792,7 +840,7 @@ export const en: Record<KnowledgeKey, string> = {
   noOllamaModels: 'No installed Ollama models — pull one in Settings → Local Models',
   selectModelPlaceholder: 'Select a model',
   ollamaUnreachable: 'Cannot reach Ollama (check the address or whether it is running)',
-  embeddingSwitchWarning: '⚠ Switching the embedding model invalidates this base\'s stored vectors, so the save will be refused — rebuild via 重建知识库 with the new model instead (or empty the base first)',
+  embeddingSwitchWarning: '⚠ Switching the embedding model invalidates this base\'s stored vectors, so the save will be refused — rebuild via \u201cRebuild base\u201d with the new model instead (or empty the base first)',
   staleModelSuffix: ' (not installed)',
   embeddingModelMissingHint: 'The embedding provider is the local model, which is not downloaded yet — imported content cannot be vectorized for retrieval. Download the embedding model (~585MB) in Settings → Local Models first.',
   localModelStatusLabel: 'Local embedding model',
@@ -897,5 +945,17 @@ export const en: Record<KnowledgeKey, string> = {
   kbScopeHint: 'Empty = all bases',
   dragResize: 'Drag to resize',
   loadMoreChunks: 'Load more chunks',
+  timeJustNow: 'just now',
+  timeMinutes: '{n} min ago',
+  timeHours: '{n} h ago',
+  timeDays: '{n} d ago',
+  cacheDirPickUnavailable: 'Folder picking is unavailable (this environment has no directory picker)',
+  cacheDirMigrated: '{count} model director(y/ies) moved to {to}',
+  mineruOption: 'MinerU (remote, scans/complex layouts)',
+  mineruHostPlaceholder: 'API Host (default https://mineru.net)',
+  visionModelPlaceholder: 'Vision model (e.g. qwen-vl-plus, gpt-4o-mini)',
+  captionBaseUrlOllamaPlaceholder: 'Ollama URL (default http://127.0.0.1:11434)',
+  captionBaseUrlPlaceholder: 'API URL (leave empty to use the embedding model URL)',
+  citationSource: ' (KB {id})',
   error: 'Error',
 }
