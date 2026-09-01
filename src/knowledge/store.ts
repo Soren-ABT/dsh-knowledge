@@ -10,8 +10,8 @@
  */
 
 import type { Domain, DomainSpec } from '@deepseek-ai/dsh-storage-domain'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { dirname, extname, join } from 'node:path'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { dirname, extname, join, relative } from 'node:path'
 import { knowledgeDomainSpec, TABLES } from './domain.js'
 import type { ConfigOverrides } from './domain.js'
 import { ChunkDatabase, hashEmbeddingText, legacyChunkFilePath, migrateLegacyChunkFile, resolveChunkStorePath, searchTextOf } from './chunkdb.js'
@@ -47,6 +47,8 @@ export interface RawFileStore {
   writeRel(baseId: string, relativePath: string, bytes: Uint8Array): Promise<string>
   /** Read a document's source bytes back (null when absent). */
   read(relativePath: string): Promise<Uint8Array | null>
+  /** Every stored base-relative path (for orphan-raw reconciliation). */
+  listAll(): Promise<string[]>
   /** Remove one document's source file by its stored relative path (missing = no-op). */
   delete(relativePath: string): Promise<void>
   /** Remove every source file of a base. */
@@ -90,6 +92,25 @@ export class RawFileStorage implements RawFileStore {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
       throw error
     }
+  }
+
+  async listAll(): Promise<string[]> {
+    const out: string[] = []
+    const walk = async (dir: string): Promise<void> => {
+      let entries
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) await walk(full)
+        else out.push(relative(this.root, full).replace(/\\/g, '/'))
+      }
+    }
+    await walk(this.root)
+    return out
   }
 
   async delete(relativePath: string): Promise<void> {
@@ -153,6 +174,8 @@ export interface Store {
    *   before/during parse) — re-indexed by the service after startup.
    */
   recoverInterruptedImports(startedAt: number): Promise<{ removed: number; resume: string[] }>
+  /** Remove raw source copies no document references (orphans from failed/duplicate imports). */
+  reconcileOrphanRaws(): Promise<number>
   /** Aggregate chunk stats without loading chunk rows. */
   chunkStats(baseIds: readonly string[]): ChunkStats
   /** SQL-backed retrieval lanes (FTS5 + vector scan); absent on in-memory stores. */
@@ -220,6 +243,8 @@ export async function openStore(
       const recovery = await store.recoverInterruptedImports(Date.now())
       if (recovery.removed > 0) console.warn(`dsh-knowledge: removed ${recovery.removed} incomplete import(s) left by an interrupted run`)
       await store.reconcileChunkCounts()
+      const orphaned = await store.reconcileOrphanRaws()
+      if (orphaned > 0) console.warn(`dsh-knowledge: removed ${orphaned} orphaned raw source file(s) no document referenced`)
       return store
     } catch (error) {
       // Fall through to memory on any open failure (no backend, version mismatch, …).
@@ -379,6 +404,23 @@ class DomainStore implements Store {
 
   docChunkStatus(baseId: string): { withChunks: Set<string>; missingEmbedding: Set<string> } {
     return this.chunkDb.docChunkStatus(baseId)
+  }
+
+  async reconcileOrphanRaws(): Promise<number> {
+    const referenced = new Set<string>()
+    for (const base of this.listBases()) {
+      for (const doc of this.listDocuments(base.id)) {
+        if (doc.rawFilePath !== undefined) referenced.add(doc.rawFilePath)
+      }
+    }
+    let removed = 0
+    for (const rel of await this.rawStore.listAll()) {
+      if (!referenced.has(rel)) {
+        await this.rawStore.delete(rel)
+        removed += 1
+      }
+    }
+    return removed
   }
 
   chunkStats(baseIds: readonly string[]): ChunkStats {
@@ -591,6 +633,11 @@ class MemoryStore implements Store {
       removed += 1
     }
     return { removed, resume }
+  }
+
+  async reconcileOrphanRaws(): Promise<number> {
+    // In-memory store keeps no raw files on disk.
+    return 0
   }
 
   docChunkStatus(baseId: string): { withChunks: Set<string>; missingEmbedding: Set<string> } {
