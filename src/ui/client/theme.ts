@@ -11,10 +11,17 @@ export const C = {
   surface: 'var(--dsw-alias-bg-layer-1, #ffffff)',
   surface2: 'var(--dsw-alias-bg-layer-2, #f1f2f5)',
   overlay: 'var(--dsw-alias-bg-overlay, #ffffff)',
-  border: 'var(--dsw-alias-border-l1, #e3e5e9)',
-  borderStrong: 'var(--dsw-alias-border-l2, #c7ccd4)',
   text: 'var(--dsw-alias-label-primary, #1f2329)',
-  muted: 'var(--dsw-alias-label-secondary, #8a919c)',
+  // DSH's label-secondary is extremely faint in the light theme (#cfd3d6 on
+  // white ≈ 1.4:1), which makes hint/secondary text visually merge with the
+  // surface. Derive a readable "muted" from the primary label color instead
+  // (≈72% of near-black in light, ≈72% of near-white in dark), so it stays
+  // legible in both DSH themes while still reading as secondary.
+  muted: 'color-mix(in srgb, var(--dsw-alias-label-primary, #1f2329) 72%, transparent)',
+  // DSH's border-l1 is ~6% black / 9% white — too faint to separate panels.
+  // Use the stronger border-l2 / border-l3 tiers for card and control edges.
+  border: 'var(--dsw-alias-border-l2, #c7ccd4)',
+  borderStrong: 'var(--dsw-alias-border-l3, #9aa1ab)',
   accent: 'var(--dsw-alias-brand-primary, #3b6ef6)',
   danger: 'var(--dsw-alias-state-error-primary, #e5484d)',
   success: 'var(--dsw-alias-state-success-primary, #30a46c)',
@@ -29,8 +36,24 @@ export const PANEL_CSS = `
 @keyframes kb-fade-in { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
 .kb-spinner { animation: kb-spin 0.9s linear infinite }
 .kb-panel-in { animation: kb-fade-in 0.18s ease-out }
+/* Theme-adaptive interaction fills. DSH's own layer tokens are pure white in
+   the light theme and its interactive-bg-hover is only ~6% alpha, so hovers
+   built on them are nearly invisible. Derive hover/active fills from the
+   inverted label-primary token instead: ~9% black-on-white in light, ~9%
+   white-on-dark in dark — clearly visible in both base themes. Declared on
+   body (portal menus and the sidebar action render outside the panel) and
+   re-scoped to the panel root. */
+body, .kb-panel-in {
+  --kb-hover: color-mix(in srgb, var(--dsw-alias-label-primary, #1f2329) 9%, transparent);
+  --kb-active: color-mix(in srgb, var(--dsw-alias-label-primary, #1f2329) 16%, transparent);
+}
 .kb-row { transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease }
-.kb-row:hover { background: var(--dsw-alias-bg-layer-2, #f1f2f5) }
+.kb-row:hover { background: var(--kb-hover) }
+/* Menu items fill on hover/active; the fill rides a CSS variable referenced from
+   the inline background so the class can override the inline style. */
+.kb-menuitem { transition: background 0.15s ease }
+.kb-menuitem:hover { --kb-mibg: var(--kb-hover) }
+.kb-menuitem:active { --kb-mibg: var(--kb-active) }
 .kb-card { transition: border-color 0.15s ease, background 0.15s ease }
 .kb-card:hover { border-color: var(--dsw-alias-border-l2, #c7ccd4) }
 .kb-iconbtn { transition: color 0.15s ease, background 0.15s ease }
@@ -38,15 +61,43 @@ export const PANEL_CSS = `
 /* Buttons styled with style.button get a hover tint like the shell's own
    buttons. The tint rides a CSS variable referenced from the inline
    background, because inline styles outrank plain class rules: on hover the
-   variable flips and the inline background follows it. */
+   variable flips and the inline background follows it. The .kb-panel-in rule
+   covers every panel button even without the kb-btn class (the class is only
+   required for the settings section, which lives outside the panel). */
 .kb-btn { transition: background 0.15s ease, border-color 0.15s ease }
-.kb-btn:hover { --kb-btn-bg: var(--dsw-alias-interactive-bg-hover, #eceef1) }
+.kb-btn:hover { --kb-btn-bg: var(--kb-hover) }
 .kb-btn:disabled:hover { --kb-btn-bg: var(--dsw-alias-bg-layer-1, #ffffff) }
+.kb-panel-in button:hover { --kb-btn-bg: var(--kb-hover) }
+.kb-panel-in button:disabled:hover { --kb-btn-bg: var(--dsw-alias-bg-layer-1, #ffffff) }
 /* Backgrounds live in classes (not inline) so :hover can override them, the
    same way the shell's Settings trigger styles itself. */
 .kb-sidebar-action { background: transparent }
-.kb-sidebar-action:hover { background: var(--dsw-alias-interactive-bg-hover) }
+.kb-sidebar-action:hover { background: var(--kb-hover) }
+.kb-sidebar-action:active { background: var(--kb-active) }
 .kb-dangerbtn:hover { color: var(--dsw-alias-state-error-primary, #e5484d); background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 10%, transparent) }
+/* Primary (accent-filled) buttons: DSH's brand-primary inverts between themes
+   (near-black in light, near-white in dark) and ships a dedicated hover token,
+   so the hover fill follows that token and stays visible in both. */
+.kb-primary { transition: background 0.15s ease, filter 0.15s ease }
+.kb-primary:hover:not(:disabled) { --kb-primary-bg: var(--dsw-alias-button-primary-hover, #43454a) }
+.kb-primary:active:not(:disabled) { filter: brightness(0.94) }
+.kb-primary:disabled { opacity: 0.5; cursor: not-allowed }
+.kb-danger-primary { transition: background 0.15s ease, filter 0.15s ease }
+.kb-danger-primary:hover:not(:disabled) { --kb-danger-bg: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 78%, #000) }
+.kb-danger-primary:active:not(:disabled) { filter: brightness(0.94) }
+.kb-danger-primary:disabled { opacity: 0.5; cursor: not-allowed }
+/* Disabled feedback for every panel button. */
+.kb-panel-in button:disabled { opacity: 0.5; cursor: not-allowed }
+/* Visible focus indicators (DSH's business-primary is a blue that reads in
+   both themes, unlike the inverted brand-primary). */
+.kb-panel-in button:focus-visible, .kb-menuitem:focus-visible, .kb-sidebar-action:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, #4176e6); outline-offset: 2px }
+.kb-panel-in input:focus, .kb-panel-in select:focus, .kb-panel-in textarea:focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 35%, transparent) }
+/* Resize sash: an 8px grab strip whose 2px grip lights up on hover so the
+   draggable edge is discoverable (a 5px transparent sliver was impossible to
+   find/click). z-index keeps it above adjacent scrollbars. */
+.kb-sash { position: relative; z-index: 6 }
+.kb-sash::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%); width: 2px; background: transparent; transition: background 0.15s ease }
+.kb-sash:hover::before { background: color-mix(in srgb, var(--dsw-alias-brand-primary, #3b6ef6) 45%, transparent) }
 .kb-scroll::-webkit-scrollbar { width: 8px; height: 8px }
 .kb-scroll::-webkit-scrollbar-thumb { background: var(--dsw-alias-border-l2, #c7ccd4); border-radius: 999px }
 .kb-scroll::-webkit-scrollbar-track { background: transparent }
@@ -95,6 +146,21 @@ export const style = {
   } as CSSProperties,
   baseName: { fontSize: 13, fontWeight: 600 } as CSSProperties,
   baseMeta: { fontSize: 11, color: C.muted, marginTop: 2 } as CSSProperties,
+  baseSourceRow: {
+    display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 14px',
+    marginTop: 6, padding: '5px 10px', borderRadius: 8,
+    background: 'color-mix(in srgb, var(--dsw-alias-label-primary, #1f2329) 6%, transparent)',
+    fontSize: 11, color: C.muted,
+  } as CSSProperties,
+  baseSourceItem: { display: 'inline-flex', alignItems: 'center', gap: 5, minWidth: 0 } as CSSProperties,
+  baseSourceGlyph: {
+    display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: C.accent,
+  } as CSSProperties,
+  baseSourceText: {
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    fontFamily: "'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace",
+  } as CSSProperties,
+  baseSourceEdit: { marginLeft: 'auto', flexShrink: 0 } as CSSProperties,
   main: { flex: 1, minWidth: 0, overflowY: 'auto', padding: 18, display: 'flex', flexDirection: 'column', gap: 14 } as CSSProperties,
   card: { border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface, padding: 14, position: 'relative' } as CSSProperties,
   cardTitle: { fontSize: 13, fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' } as CSSProperties,
@@ -104,12 +170,16 @@ export const style = {
   } as CSSProperties,
   primary: {
     display: 'inline-flex', alignItems: 'center', gap: 5, border: '1px solid transparent',
-    borderRadius: 8, padding: '6px 14px', background: C.accent, color: '#fff', cursor: 'pointer',
+    borderRadius: 8, padding: '6px 14px', background: `var(--kb-primary-bg, ${C.accent})`,
+    // DSH's brand-primary is near-BLACK in light but near-WHITE in dark; the
+    // foreground token inverts with the theme so the label stays readable on
+    // the accent fill in both modes (white text on white would vanish in dark).
+    color: 'var(--dsw-alias-label-primary-foreground, #fff)', cursor: 'pointer',
     fontSize: 13, fontWeight: 600,
   } as CSSProperties,
   primaryDanger: {
     display: 'inline-flex', alignItems: 'center', gap: 5, border: '1px solid transparent',
-    borderRadius: 8, padding: '6px 14px', background: C.danger, color: '#fff', cursor: 'pointer',
+    borderRadius: 8, padding: '6px 14px', background: `var(--kb-danger-bg, ${C.danger})`, color: 'var(--dsw-alias-label-primary-foreground, #fff)', cursor: 'pointer',
     fontSize: 13, fontWeight: 600,
   } as CSSProperties,
   danger: {
@@ -165,7 +235,8 @@ export const style = {
   empty: { color: C.muted, fontSize: 13, padding: 24, textAlign: 'center' } as CSSProperties,
   error: { color: C.danger, fontSize: 12, background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 8%, transparent)', borderRadius: 8, padding: '8px 12px' } as CSSProperties,
   modalBackdrop: {
-    position: 'absolute', inset: 0, zIndex: 20, background: 'rgba(0,0,0,0.32)',
+    position: 'absolute', inset: 0, zIndex: 20, // Less transparent so dialog content stays clearly behind the modal.
+    background: 'rgba(0,0,0,0.58)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
   } as CSSProperties,
   modal: {
@@ -203,9 +274,14 @@ export const style = {
     display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center',
   } as CSSProperties,
   toast: {
-    display: 'flex', alignItems: 'center', gap: 8, borderRadius: 999, padding: '8px 16px',
+    display: 'flex', alignItems: 'center', gap: 8, borderRadius: 12, padding: '8px 14px',
     fontSize: 13, fontWeight: 600, background: C.overlay, border: `1px solid ${C.border}`,
-    boxShadow: '0 8px 24px rgba(0,0,0,0.14)', color: C.text,
+    boxShadow: '0 8px 24px rgba(0,0,0,0.14)', color: C.text, maxWidth: 'min(90vw, 560px)',
+  } as CSSProperties,
+  toastClose: {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+    width: 20, height: 20, border: 'none', borderRadius: 999, background: 'transparent',
+    color: C.muted, cursor: 'pointer', padding: 0, marginLeft: 2,
   } as CSSProperties,
   fileRow: {
     display: 'flex', alignItems: 'center', gap: 8, border: `1px solid ${C.border}`,
@@ -214,10 +290,13 @@ export const style = {
   spinner: { display: 'inline-block', width: 14, height: 14, borderRadius: '50%', border: '2px solid currentColor', borderTopColor: 'transparent' } as CSSProperties,
   menu: {
     position: 'absolute', zIndex: 30, minWidth: 180, borderRadius: 10, padding: 4,
-    background: C.overlay, border: `1px solid ${C.border}`, boxShadow: '0 10px 32px rgba(0,0,0,0.18)',
+    // Opaque overlay surface (never translucent) with the stronger border tier
+    // so the popover separates from the panel in both themes.
+    background: C.overlay, border: `1px solid ${C.borderStrong}`, boxShadow: '0 10px 32px rgba(0,0,0,0.22)',
+    color: C.text,
   } as CSSProperties,
   menuItem: {
-    display: 'flex', alignItems: 'center', gap: 8, width: '100%', border: 'none', background: 'transparent',
+    display: 'flex', alignItems: 'center', gap: 8, width: '100%', border: 'none', background: 'var(--kb-mibg, transparent)',
     borderRadius: 7, padding: '7px 10px', fontSize: 13, color: C.text, cursor: 'pointer', textAlign: 'left',
   } as CSSProperties,
   menuItemDanger: { color: C.danger } as CSSProperties,
@@ -233,7 +312,10 @@ export const style = {
   } as CSSProperties,
   switchOn: { background: C.accent } as CSSProperties,
   switchKnob: {
-    position: 'absolute', top: 2, left: 2, width: 16, height: 16, borderRadius: '50%', background: '#fff',
+    position: 'absolute', top: 2, left: 2, width: 16, height: 16, borderRadius: '50%',
+    // Contrasts with the accent track in both themes (near-black knob on the
+    // near-white accent in dark mode, near-white knob on dark accent in light).
+    background: 'var(--dsw-alias-label-primary-foreground, #fff)',
     transition: 'transform 0.15s',
   } as CSSProperties,
   accordionHeader: {
@@ -267,9 +349,14 @@ export const style = {
     cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
     color: '#fff', padding: 0, flexShrink: 0, fontSize: 11, lineHeight: 1,
   } as CSSProperties,
-  checkboxOn: { background: C.accent, borderColor: C.accent } as CSSProperties,
+  checkboxOn: {
+    background: C.accent, borderColor: C.accent,
+    color: 'var(--dsw-alias-label-primary-foreground, #fff)',
+  } as CSSProperties,
   sidePanelScrim: {
-    position: 'absolute', inset: 0, zIndex: 30, background: 'rgba(0,0,0,0.28)',
+    // Less transparent scrim so the drawer clearly separates from the
+    // panel behind it (nothing reads through).
+    position: 'absolute', inset: 0, zIndex: 30, background: 'rgba(0,0,0,0.58)',
     display: 'flex', justifyContent: 'flex-end',
   } as CSSProperties,
   sidePanel: {
@@ -302,15 +389,27 @@ export function formatSize(charCount: number): string {
   return `${(charCount / (1024 * 1024)).toFixed(2)} MB`
 }
 
-/** Compact relative time, Cherry Studio style (刚刚 / N 分钟前 / N 小时前…). */
-export function formatRelativeTime(timestamp: number, now: number = Date.now()): string {
+/**
+ * Compact relative time, locale-aware via the bound translate (the old
+ * implementation hardcoded Chinese “刚刚 / N 分钟前…” which leaked into the
+ * English UI). now is only overridable for tests.
+ */
+export function formatRelativeTime(
+  timestamp: number,
+  // Optional so the previous one-arg call keeps compiling on `main` until
+  // KnowledgeSection adopts the locale-aware signature in the feature branch.
+  // Narrow key union keeps it callable with the bound Translate
+  // ((key: KnowledgeKey) => string) while staying decoupled from locales.
+  t?: (key: 'timeJustNow' | 'timeMinutes' | 'timeHours' | 'timeDays') => string,
+  now: number = Date.now(),
+): string {
   const diff = Math.max(0, now - timestamp)
   const minutes = Math.floor(diff / 60000)
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes} 分钟前`
+  if (minutes < 1) return t !== undefined ? t('timeJustNow') : '刚刚'
+  if (minutes < 60) return t !== undefined ? t('timeMinutes').replace('{n}', String(minutes)) : `${minutes} 分钟前`
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
+  if (hours < 24) return t !== undefined ? t('timeHours').replace('{n}', String(hours)) : `${hours} 小时前`
   const days = Math.floor(hours / 24)
-  if (days < 30) return `${days} 天前`
+  if (days < 30) return t !== undefined ? t('timeDays').replace('{n}', String(days)) : `${days} 天前`
   return new Date(timestamp).toLocaleDateString()
 }
