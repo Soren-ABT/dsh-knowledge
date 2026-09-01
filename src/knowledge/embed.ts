@@ -87,9 +87,13 @@ export async function embedTexts(
     // waiting immediately while the isolated worker finishes its current job.
     return await withAbortSignal(embedLocal(model.trim() === '' ? DEFAULT_LOCAL_MODEL : model, texts), signal)
   }
-  if (baseUrl.trim() === '') throw new Error('embedding base URL is empty')
   if (model.trim() === '') throw new Error('embedding model is empty')
-  if (provider === 'openai') return embedOpenAI(baseUrl, model, apiKey, texts, signal)
+  if (provider === 'openai') {
+    if (baseUrl.trim() === '') throw new Error('embedding base URL is empty')
+    return embedOpenAI(baseUrl, model, apiKey, texts, signal)
+  }
+  // Ollama defaults an empty base URL to the well-known local endpoint, so a
+  // base with an unset URL still embeds against http://127.0.0.1:11434.
   if (provider === 'ollama') return embedOllama(baseUrl, model, apiKey, texts, signal)
   throw new Error(`unknown embedding provider ${String(provider)}`)
 }
@@ -503,7 +507,7 @@ async function embedOllama(
   texts: readonly string[],
   signal?: AbortSignal,
 ): Promise<number[][]> {
-  const base = trimBase(baseUrl)
+  const base = trimBase(baseUrl.trim() === '' ? 'http://127.0.0.1:11434' : baseUrl)
   // Modern Ollama: POST /api/embed { model, input: [..] } -> { embeddings: [[..]] }
   const response = await httpFetch(`${base}/api/embed`, {
     method: 'POST',
