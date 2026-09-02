@@ -37,6 +37,18 @@
 
 ---
 
+## 0.3.9 本地路径来源追踪与界面改进
+
+- 新增按绝对路径导入单个文件或完整目录树，并记录每个顶层来源的稳定 id、类型和原始路径；目录重扫可同步新增、修改和删除的文件。
+- 修改来源路径时只作用于用户选中的顶层文件或目录。相对路径、跨知识库 id、嵌套子项以及文件/目录类型不匹配会被明确拒绝；跨扩展名切换会采用新文件对应的解析器。
+- 不同目录根即使含有相同相对路径，也使用互不冲突的 raw 缓存。重建失败会保留上一份已提交原始数据，部分目录导入的逐文件错误会返回界面。
+- Ollama embedding 地址留空时默认连接 `http://127.0.0.1:11434`；浏览或拉取 Ollama 模型不会再隐式改变当前 embedding 配置。
+- 统一主题 token，改进根级/嵌套 popover 的视口定位、关闭行为、Toast 交互和中英文案。
+
+本版本为加法兼容升级，不迁移数据库、不自动重建索引、不重新下载模型；0.3.8 的检索证据链和工具契约保持不变。社区 PR #10–#13 的 ThinkForge-core 原作者提交及署名完整保留。
+
+---
+
 ## 0.3.8 检索证据链
 
 `knowledge_search` 仍保留完整的 `SearchHit.text` 作为规范锚点，同时新增可选、加法兼容的 `contextWindow`：
@@ -94,7 +106,7 @@ interface ContextWindow {
 dsh plugin --profile <name> add dsh-knowledge
 
 # 从发布 tarball（GitHub Releases 或 npm pack 产物）
-dsh plugin --profile <name> add ./dsh-knowledge-0.3.8.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.3.9.tgz
 
 # 从本地源码目录（需先构建，见下方「开发」）
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge

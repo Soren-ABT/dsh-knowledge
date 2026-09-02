@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.9 — 2026-09-02
+
+### Local-path import and source tracking
+
+- **Import by absolute path**: the knowledge panel can import one local file or a complete directory tree while retaining the originating path on every top-level source. Directory rescans discover new files, update changed files, and remove vanished files without conflating separate roots.
+- **Targeted source repointing**: changing a source path now targets exactly one selected top-level file or directory. The service rejects relative paths, cross-base ids, nested children, path-kind mismatches, and non-file/directory sources instead of guessing which source to update.
+- **Correct reindex identity**: a repointed file is read from its new path and parsed using its new extension. Mixed file/directory bases keep independent source identities, and source summaries expose stable ids for unambiguous UI updates.
+- **Collision- and failure-safe raw storage**: two directory roots containing the same relative path receive distinct raw copies. A failed replacement reindex retains the previous committed raw bytes, while successful replacement removes only the superseded copy. Partial directory imports return their per-file errors to the UI.
+
+### Ollama and interface polish
+
+- **Ollama empty-URL fallback**: an empty Ollama embedding URL now uses `http://127.0.0.1:11434`; OpenAI-compatible providers continue to require an explicit endpoint. Regression coverage protects the provider-specific behavior.
+- **Explicit model settings**: browsing or pulling Ollama models no longer changes the configured embedding provider/model implicitly.
+- **Popover and theme hardening**: root and nested portal popovers stay inside the viewport, close consistently, and use the shared theme tokens. Toast dismissal and model-setting behavior are protected by UI policy tests.
+- **Localization**: Chinese and English strings cover local-path import, source tracking, partial failures, and the integrated UI states.
+
+### Compatibility and quality
+
+- The release is additive and migration-free: v0.3.8 databases, chunks, embeddings, retrieval contracts, and existing upload/URL import flows remain valid. No automatic reindex or model download is triggered.
+- The integration preserves the original ThinkForge-core author commits from PRs #10–#13 and layers maintainer safety fixes and regression tests as separate commits.
+- Full typecheck, 322-test Vitest suite, retrieval benchmark v2, production audit policy, deterministic build, npm package verification, and Windows local-path filesystem scenarios pass before release.
+
 ## 0.3.8 — 2026-08-31
 
 ### Retrieval execution and automatic retrieval

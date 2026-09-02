@@ -35,6 +35,18 @@ A **knowledge base system** as a standalone, open-source bundle plugin for [Deep
 
 ---
 
+## 0.3.9 Local-path source tracking and UI polish
+
+- Import one local file or a complete directory tree by absolute path while retaining a stable id, kind, and original path for every top-level source. Directory rescans synchronize added, changed, and removed files.
+- Repointing a source affects only the selected top-level file or directory. Relative paths, cross-base ids, nested children, and file/directory kind mismatches fail explicitly; changing extensions selects the parser for the new file identity.
+- Separate directory roots keep distinct raw copies even when they contain the same relative path. A failed replacement reindex preserves the previous committed source, and partial directory imports return per-file failures to the UI.
+- An empty Ollama embedding URL defaults to `http://127.0.0.1:11434`. Browsing or pulling Ollama models no longer changes the active embedding configuration implicitly.
+- Shared theme tokens and viewport-aware root/nested popovers improve menu placement and dismissal, with additional toast, model-setting, and localization coverage.
+
+The upgrade is additive and migration-free: it does not rebuild indexes, redownload models, or change the v0.3.8 retrieval/evidence-window contracts. The original ThinkForge-core authorship from community PRs #10–#13 remains preserved in the merged history.
+
+---
+
 ## Architecture
 
 One bundle mounts three plugin rows plus **two dedicated worker threads** that carry all inference (Cherry's own-worker posture — a native/WASM crash can never take down the host):
@@ -58,7 +70,7 @@ The package declares `dsh.bundle.patch`, so `dsh plugin add` registers it automa
 ```bash
 dsh plugin --profile <name> add dsh-knowledge          # from npm
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
-dsh plugin --profile <name> add ./dsh-knowledge-0.3.8.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.3.9.tgz
 ```
 
 > **pnpm 10+ build allowlist (required)**: the plugin's dependencies `onnxruntime-node`, `sharp`, `protobufjs`, and `tesseract.js` ship postinstall scripts that pnpm refuses to run by default and exits non-zero — `dsh plugin add` then **stops before registering the bundle, so the plugin never activates**. Add this to the profile's `pnpm-workspace.yaml` **before** installing, then run the add:
