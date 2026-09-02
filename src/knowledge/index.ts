@@ -1234,10 +1234,14 @@ export class KnowledgeService extends Service {
   }
 
   /**
-   * Repoint a base's source: set `sourcePath` on every top-level directory
-   * container (path must be an existing directory), or on every top-level file
-   * document (path must be an existing file) when the base has no directory
-   * root. Used by the pencil button next to the base's source line.
+   * Repoint a base's source. The target set is chosen by the KIND of the
+   * passed path, not by whichever roots happen to exist: an existing
+   * DIRECTORY repoints every top-level directory container, an existing FILE
+   * repoints every top-level file document. This lets a mixed base — several
+   * imported directory roots plus a couple of single-file imports — repoint
+   * just the file source even when directory roots are present (previously the
+   * presence of any directory root made the file repoint fail with
+   * "not a directory"). Used by the pencil button next to the base's source line.
    */
   async setBaseSourcePath(baseId: string, path: string): Promise<{ set: number }> {
     const store = this.requireStore()
@@ -1251,17 +1255,15 @@ export class KnowledgeService extends Service {
       throw new Error(`path not found: ${trimmed}`)
     }
     const roots = store.listDocuments(baseId).filter(doc => doc.parentDirectoryId === undefined)
-    const dirRoots = roots.filter(doc => doc.sourceType === 'directory')
-    const fileRoots = roots.filter(doc => doc.sourceType === 'file')
     let targets: KnowledgeDocument[]
-    if (dirRoots.length > 0) {
-      if (!st.isDirectory()) throw new Error(`not a directory: ${trimmed}`)
-      targets = dirRoots
-    } else if (fileRoots.length > 0) {
-      if (!st.isFile()) throw new Error(`not a file: ${trimmed}`)
-      targets = fileRoots
+    if (st.isDirectory()) {
+      targets = roots.filter(doc => doc.sourceType === 'directory')
+      if (targets.length === 0) throw new Error('base has no directory source to repoint')
+    } else if (st.isFile()) {
+      targets = roots.filter(doc => doc.sourceType === 'file')
+      if (targets.length === 0) throw new Error('base has no file source to repoint')
     } else {
-      throw new Error('base has no directory or file source to repoint')
+      throw new Error(`not a file or directory: ${trimmed}`)
     }
     for (const doc of targets) {
       await store.putDocument({ ...doc, sourcePath: trimmed, updatedAt: Date.now() })
