@@ -312,7 +312,11 @@ async function route(
         return service.importFromPath(baseId, typeof body.path === 'string' ? body.path : '')
       }
       if (segments[2] === 'source-path' && method === 'POST') {
-        return service.setBaseSourcePath(baseId, typeof body.path === 'string' ? body.path : '')
+        return service.setBaseSourcePath(
+          baseId,
+          typeof body.sourceId === 'string' ? body.sourceId : '',
+          typeof body.path === 'string' ? body.path : '',
+        )
       }
       if (segments[2] === 'directories' && method === 'POST') {
         return service.createDirectory(

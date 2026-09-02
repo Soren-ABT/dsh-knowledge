@@ -844,7 +844,7 @@ describe('local-path import source tracking', () => {
 
         // Repoint the source to a different file and reindex: the reindex must
         // rebuild from the NEW path (previously it re-read the old raw copy).
-        await service.setBaseSourcePath(base.id, src2)
+        await service.setBaseSourcePath(base.id, doc!.id, src2)
         await service.reindexDocument(doc!.id)
         const reindexed = store.getDocument(doc!.id)
         expect(reindexed).toBeDefined()
@@ -866,7 +866,7 @@ describe('local-path import source tracking', () => {
         expect(dDoc).toBeDefined()
         const src3 = join(dir, 'e.txt')
         await writeFile(src3, 'epsilon content', 'utf8')
-        await service.setBaseSourcePath(base.id, src3)    // a FILE path now repoints files
+        await service.setBaseSourcePath(base.id, dDoc!.id, src3)
         await service.reindexDocument(dDoc!.id)
         expect(store.getDocument(dDoc!.id)!.rawText).toContain('epsilon')
         // The directory root was NOT touched by the file repoint.
@@ -923,6 +923,169 @@ describe('local-path import source tracking', () => {
         expect(remaining).toHaveLength(1)
         const survivor = store.listDocuments(base.id).filter(d => d.sourceType === 'file')[0]
         expect(decode(await store.raw!.read(survivor.rawFilePath!))).toContain('B')
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('repoints exactly one selected top-level source', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const first = join(dir, 'first.txt')
+      const second = join(dir, 'second.txt')
+      const replacement = join(dir, 'replacement.txt')
+      await writeFile(first, 'first source', 'utf8')
+      await writeFile(second, 'second source', 'utf8')
+      await writeFile(replacement, 'replacement source', 'utf8')
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'targeted' })
+        await service.importFromPath(base.id, first)
+        await service.importFromPath(base.id, second)
+        const store = storeOf(service)
+        const firstDoc = store.listDocuments(base.id).find(doc => doc.sourcePath === first)!
+        const secondDoc = store.listDocuments(base.id).find(doc => doc.sourcePath === second)!
+
+        await expect(service.setBaseSourcePath(base.id, firstDoc.id, replacement))
+          .resolves.toEqual({ set: 1 })
+        expect(store.getDocument(firstDoc.id)?.sourcePath).toBe(replacement)
+        expect(store.getDocument(secondDoc.id)?.sourcePath).toBe(second)
+        expect(service.listBases().find(row => row.id === base.id)?.sourceInfo).toEqual([
+          expect.objectContaining({ sourceId: firstDoc.id, sourcePath: replacement }),
+          expect.objectContaining({ sourceId: secondDoc.id, sourcePath: second }),
+        ])
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('validates source identity, top-level ownership, path kind, and absolute paths', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const root = join(dir, 'root')
+      const file = join(dir, 'file.txt')
+      await mkdir(root, { recursive: true })
+      await writeFile(join(root, 'child.txt'), 'nested child', 'utf8')
+      await writeFile(file, 'top level file', 'utf8')
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'validation' })
+        const other = await service.createBase({ name: 'other' })
+        await service.importFromPath(base.id, root)
+        await service.importFromPath(other.id, file)
+        const textDoc = await service.addTextDocument({ baseId: base.id, title: 'note', content: 'manual note' })
+        const store = storeOf(service)
+        const directoryRoot = store.listDocuments(base.id).find(doc => doc.sourceType === 'directory' && doc.parentDirectoryId === undefined)!
+        const nestedFile = store.listDocuments(base.id).find(doc => doc.sourceType === 'file')!
+        const otherFile = store.listDocuments(other.id).find(doc => doc.sourceType === 'file')!
+
+        await expect(service.importFromPath(base.id, '.')).rejects.toThrow(/absolute/i)
+        await expect(service.setBaseSourcePath(base.id, directoryRoot.id, '.')).rejects.toThrow(/absolute/i)
+        await expect(service.setBaseSourcePath(base.id, directoryRoot.id, file)).rejects.toThrow(/directory/i)
+        await expect(service.setBaseSourcePath(base.id, nestedFile.id, file)).rejects.toThrow(/top-level/i)
+        await expect(service.setBaseSourcePath(base.id, otherFile.id, file)).rejects.toThrow(/does not belong/i)
+        await expect(service.setBaseSourcePath(base.id, textDoc.id, file)).rejects.toThrow(/file or directory source/i)
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the new file identity when a source is repointed across extensions', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const original = join(dir, 'original.txt')
+      const replacement = join(dir, 'replacement.html')
+      await writeFile(original, 'plain original', 'utf8')
+      await writeFile(replacement, '<html><body><h1>Replacement</h1><p>HTML body</p></body></html>', 'utf8')
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'parser identity' })
+        await service.importFromPath(base.id, original)
+        const store = storeOf(service)
+        const doc = store.listDocuments(base.id).find(row => row.sourceType === 'file')!
+
+        await service.setBaseSourcePath(base.id, doc.id, replacement)
+        await service.reindexDocument(doc.id)
+
+        const updated = store.getDocument(doc.id)!
+        expect(updated.fileName).toBe('replacement.html')
+        expect(updated.rawText).toContain('Replacement')
+        expect(updated.rawText).not.toContain('<h1>')
+        expect(updated.mimeType).toBeUndefined()
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the previous raw copy when reindex fails before the new document commits', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const original = join(dir, 'original.txt')
+      const replacement = join(dir, 'replacement.txt')
+      await writeFile(original, 'stable original bytes', 'utf8')
+      await writeFile(replacement, 'candidate replacement bytes', 'utf8')
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'failure safe' })
+        await service.importFromPath(base.id, original)
+        const store = storeOf(service)
+        const doc = store.listDocuments(base.id).find(row => row.sourceType === 'file')!
+        const previousRaw = doc.rawFilePath!
+        await service.setBaseSourcePath(base.id, doc.id, replacement)
+
+        const putChunks = vi.spyOn(store, 'putChunks').mockRejectedValueOnce(new Error('simulated chunk commit failure'))
+        await expect(service.reindexDocument(doc.id)).rejects.toThrow('simulated chunk commit failure')
+        putChunks.mockRestore()
+
+        const failed = store.getDocument(doc.id)!
+        expect(failed.rawFilePath).toBe(previousRaw)
+        expect(decode(await store.raw!.read(previousRaw))).toContain('stable original bytes')
+        expect(await store.raw!.listAll()).toEqual([previousRaw])
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('returns per-file errors from a partial directory path import', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const source = join(dir, 'partial')
+      await mkdir(source, { recursive: true })
+      await writeFile(join(source, 'good.txt'), 'readable content', 'utf8')
+      await writeFile(join(source, 'broken.pptx'), new Uint8Array([1, 2, 3, 4]))
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'partial import' })
+        const result = await service.importFromPath(base.id, source)
+        expect(result.kind).toBe('directory')
+        expect(result.imported).toBe(1)
+        expect(result.errors).toHaveLength(1)
+        expect(result.errors[0]?.file).toContain('broken.pptx')
       } finally {
         await closeStore(service)
       }

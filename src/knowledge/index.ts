@@ -1213,9 +1213,16 @@ export class KnowledgeService extends Service {
    * validating that it exists first. Directories reuse the tree import, which
    * records `sourcePath` on every container so reindex rescans the disk.
    */
-  async importFromPath(baseId: string, path: string): Promise<{ kind: 'directory' | 'file'; imported: number }> {
+  async importFromPath(baseId: string, path: string): Promise<{
+    kind: 'directory' | 'file'
+    imported: number
+    errors: Array<{ file: string; error: string }>
+  }> {
+    const store = this.requireStore()
+    if (store.getBase(baseId) === undefined) throw new Error(`knowledge base not found: ${baseId}`)
     const trimmed = path.trim()
     if (trimmed.length === 0) throw new Error('path is required')
+    if (!isAbsolute(trimmed)) throw new Error(`path must be absolute: ${trimmed}`)
     let st
     try {
       st = await stat(trimmed)
@@ -1224,51 +1231,60 @@ export class KnowledgeService extends Service {
     }
     if (st.isDirectory()) {
       const result = await this.importDirectoryTree(baseId, trimmed)
-      return { kind: 'directory', imported: result.imported }
+      return { kind: 'directory', imported: result.imported, errors: result.errors }
     }
     if (st.isFile()) {
       await this.importFileFromPath(baseId, trimmed)
-      return { kind: 'file', imported: 1 }
+      return { kind: 'file', imported: 1, errors: [] }
     }
     throw new Error(`not a file or directory: ${trimmed}`)
   }
 
   /**
-   * Repoint a base's source. The target set is chosen by the KIND of the
-   * passed path, not by whichever roots happen to exist: an existing
-   * DIRECTORY repoints every top-level directory container, an existing FILE
-   * repoints every top-level file document. This lets a mixed base — several
-   * imported directory roots plus a couple of single-file imports — repoint
-   * just the file source even when directory roots are present (previously the
-   * presence of any directory root made the file repoint fail with
-   * "not a directory"). Used by the pencil button next to the base's source line.
+   * Repoint exactly one top-level file or directory source. Source identity is
+   * explicit: a base may contain several independent roots of the same kind,
+   * and editing one must never redirect its siblings.
    */
-  async setBaseSourcePath(baseId: string, path: string): Promise<{ set: number }> {
+  async setBaseSourcePath(baseId: string, sourceId: string, path: string): Promise<{ set: number }> {
     const store = this.requireStore()
     if (store.getBase(baseId) === undefined) throw new Error(`knowledge base not found: ${baseId}`)
+    const source = store.getDocument(sourceId)
+    if (source === undefined) throw new Error(`source document not found: ${sourceId}`)
+    if (source.baseId !== baseId) throw new Error(`source ${sourceId} does not belong to knowledge base ${baseId}`)
+    if (source.parentDirectoryId !== undefined) throw new Error('source path can only be changed for a top-level source')
+    if (source.sourceType !== 'file' && source.sourceType !== 'directory') {
+      throw new Error('source path can only be changed for a file or directory source')
+    }
     const trimmed = path.trim()
     if (trimmed.length === 0) throw new Error('path is required')
+    if (!isAbsolute(trimmed)) throw new Error(`path must be absolute: ${trimmed}`)
     let st
     try {
       st = await stat(trimmed)
     } catch {
       throw new Error(`path not found: ${trimmed}`)
     }
-    const roots = store.listDocuments(baseId).filter(doc => doc.parentDirectoryId === undefined)
-    let targets: KnowledgeDocument[]
-    if (st.isDirectory()) {
-      targets = roots.filter(doc => doc.sourceType === 'directory')
-      if (targets.length === 0) throw new Error('base has no directory source to repoint')
-    } else if (st.isFile()) {
-      targets = roots.filter(doc => doc.sourceType === 'file')
-      if (targets.length === 0) throw new Error('base has no file source to repoint')
+    if (source.sourceType === 'directory') {
+      if (!st.isDirectory()) throw new Error('a directory source must be repointed to a directory')
+      await store.putDocument({ ...source, sourcePath: trimmed, updatedAt: Date.now() })
     } else {
-      throw new Error(`not a file or directory: ${trimmed}`)
+      if (!st.isFile()) throw new Error('a file source must be repointed to a file')
+      const nextFileName = basename(trimmed)
+      if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(nextFileName))) {
+        throw new Error(`Unsupported knowledge file type: ${nextFileName}`)
+      }
+      // Drop stale MIME metadata so parser dispatch follows the new source's
+      // extension. Preserve the user-facing title, which may have been renamed.
+      const { mimeType: _staleMimeType, ...withoutMimeType } = source
+      await store.putDocument({
+        ...withoutMimeType,
+        sourcePath: trimmed,
+        fileName: nextFileName,
+        updatedAt: Date.now(),
+      })
     }
-    for (const doc of targets) {
-      await store.putDocument({ ...doc, sourcePath: trimmed, updatedAt: Date.now() })
-    }
-    return { set: targets.length }
+    await this.touchBase(baseId)
+    return { set: 1 }
   }
 
   async addUrlDocument(request: ImportUrlRequest): Promise<KnowledgeDocument> {
@@ -1448,40 +1464,65 @@ export class KnowledgeService extends Service {
     // Fall back to the persisted text (then to reconstructed chunks) when the
     // file is gone or unreadable — a reindex must never wipe vectors for a
     // source that cannot be rebuilt.
-    const { text, rawFilePath: nextRawFilePath } = await this.sourceTextOf(document)
-    const config = this.getConfigFor(document.baseId)
-    // Mark the document incomplete so a crash mid-reindex is resumed on the
-    // next start (buildChunks persists each embedded batch; hash reuse makes
-    // the resume re-embed only what never landed).
-    await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
-    const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, document.id, document.title, text, config, undefined, batch => store.putChunkBatch(batch))
-    const { embeddingError: _staleError, errorCode: _staleCode, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = document
-    const next: KnowledgeDocument = {
-      ...rest,
-      // A refreshed raw copy (e.g. sourceTextOf re-read a repointed sourcePath)
-      // must win over the stale stored path.
-      ...(nextRawFilePath !== undefined ? { rawFilePath: nextRawFilePath } : {}),
-      rawText: text,
-      contentHash: sha256(text),
-      charCount: text.length,
-      tokenCount: estimateTokens(text),
-      chunkCount: chunks.length,
-      ...(embeddingError !== undefined
-        ? { embeddingError, ...(embeddingErrorCode !== undefined ? { errorCode: embeddingErrorCode } : {}) }
-        : {}),
-      updatedAt: Date.now(),
+    const rebuilt = await this.sourceTextOf(document)
+    const discardCandidate = async (): Promise<void> => {
+      if (rebuilt.candidateRawFilePath === undefined) return
+      try {
+        await store.raw?.delete(rebuilt.candidateRawFilePath)
+      } catch (error) {
+        this.ctx.logger.warn(`knowledge: failed to discard uncommitted raw source ${rebuilt.candidateRawFilePath}: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
-    // putChunks overwrites the doc's chunk bundle in one write (legacy per-chunk
-    // rows, if any, stay hidden because a bundle record is authoritative).
-    // A delete that landed mid-reindex must not resurrect rows or chunks
-    // (Cherry's deleting-guard).
-    if (store.getDocument(document.id) === undefined || store.getBase(document.baseId) === undefined) {
-      return document
+    let candidateCommitted = false
+    try {
+      const config = this.getConfigFor(document.baseId)
+      // Mark the document incomplete so a crash mid-reindex is resumed on the
+      // next start (buildChunks persists each embedded batch; hash reuse makes
+      // the resume re-embed only what never landed). The document continues to
+      // reference the previous raw copy until the complete replacement commits.
+      await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
+      const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, document.id, document.title, rebuilt.text, config, undefined, batch => store.putChunkBatch(batch))
+      const { embeddingError: _staleError, errorCode: _staleCode, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = document
+      const next: KnowledgeDocument = {
+        ...rest,
+        ...(rebuilt.rawFilePath !== undefined ? { rawFilePath: rebuilt.rawFilePath } : {}),
+        rawText: rebuilt.text,
+        contentHash: sha256(rebuilt.text),
+        charCount: rebuilt.text.length,
+        tokenCount: estimateTokens(rebuilt.text),
+        chunkCount: chunks.length,
+        ...(embeddingError !== undefined
+          ? { embeddingError, ...(embeddingErrorCode !== undefined ? { errorCode: embeddingErrorCode } : {}) }
+          : {}),
+        updatedAt: Date.now(),
+      }
+      // putChunks overwrites the doc's chunk bundle in one write (legacy
+      // per-chunk rows, if any, stay hidden because a bundle record is
+      // authoritative). A delete that landed mid-reindex must not resurrect
+      // rows, chunks, or the candidate raw source.
+      if (store.getDocument(document.id) === undefined || store.getBase(document.baseId) === undefined) {
+        await discardCandidate()
+        return document
+      }
+      await store.putChunks(chunks)
+      await store.putDocument(next)
+      candidateCommitted = true
+
+      if (rebuilt.previousRawFilePath !== undefined && rebuilt.previousRawFilePath !== rebuilt.rawFilePath) {
+        try {
+          await store.raw?.delete(rebuilt.previousRawFilePath)
+        } catch (error) {
+          // The new document already points at the committed candidate. Leave
+          // an undeleted predecessor for startup orphan reconciliation.
+          this.ctx.logger.warn(`knowledge: failed to remove superseded raw source ${rebuilt.previousRawFilePath}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      await this.touchBase(document.baseId)
+      return next
+    } catch (error) {
+      if (!candidateCommitted) await discardCandidate()
+      throw error
     }
-    await store.putChunks(chunks)
-    await store.putDocument(next)
-    await this.touchBase(document.baseId)
-    return next
   }
 
   /** Rebuild source text of a document. A path-imported single file (sourcePath)
@@ -1489,7 +1530,12 @@ export class KnowledgeService extends Service {
    *  are picked up, refreshing the persisted raw copy; otherwise the raw copy,
    *  then persisted text, then reconstructed chunks are used. Returns the rebuilt
    *  text and, when the raw copy was refreshed, its new base-relative path. */
-  private async sourceTextOf(document: KnowledgeDocument): Promise<{ text: string; rawFilePath?: string }> {
+  private async sourceTextOf(document: KnowledgeDocument): Promise<{
+    text: string
+    rawFilePath?: string
+    candidateRawFilePath?: string
+    previousRawFilePath?: string
+  }> {
     const store = this.requireStore()
     // A single-file path import tracks its live source on disk. Reindex re-reads
     // that path so edits and a repointed source (setBaseSourcePath) are actually
@@ -1499,15 +1545,21 @@ export class KnowledgeService extends Service {
       try {
         const buffer = await readFile(document.sourcePath)
         if (buffer.byteLength > 0) {
-          const text = await parseDocumentBuffer(buffer, document.fileName ?? document.title, document.mimeType)
+          const fileName = basename(document.sourcePath)
+          // A repointed source may use a different extension. Dispatch from
+          // the live source identity rather than stale fileName/MIME metadata.
+          const text = await parseDocumentBuffer(buffer, fileName)
           if (text.trim().length > 0) {
             if (store.raw !== undefined) {
-              const fileName = document.fileName ?? document.title
-              const nextRaw = await store.raw.write(document.baseId, document.id, safeRawExtension(fileName), buffer)
-              if (nextRaw !== document.rawFilePath && document.rawFilePath !== undefined) {
-                await store.raw.delete(document.rawFilePath)
+              // Always stage to a fresh path. The caller switches the document
+              // reference only after chunks and metadata commit successfully.
+              const nextRaw = await store.raw.write(document.baseId, crypto.randomUUID(), safeRawExtension(fileName), buffer)
+              return {
+                text,
+                rawFilePath: nextRaw,
+                candidateRawFilePath: nextRaw,
+                ...(document.rawFilePath !== undefined ? { previousRawFilePath: document.rawFilePath } : {}),
               }
-              return { text, rawFilePath: nextRaw }
             }
             return { text }
           }
@@ -3273,7 +3325,6 @@ function effectiveMode(requested: SearchMode, ranked: readonly RankedHit[]): Sea
  *  root, so only `parentDirectoryId === undefined` items are listed. */
 function baseSourceLines(documents: KnowledgeDocument[]): BaseSourceInfo[] {
   const MAX = 4
-  const seen = new Set<string>()
   const lines: BaseSourceInfo[] = []
   for (const doc of documents) {
     if (doc.parentDirectoryId !== undefined) continue
@@ -3292,10 +3343,12 @@ function baseSourceLines(documents: KnowledgeDocument[]): BaseSourceInfo[] {
       kind = 'text'
       text = 'node'
     }
-    const key = `${kind}:${text}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    lines.push({ kind, text })
+    lines.push({
+      sourceId: doc.id,
+      kind,
+      text,
+      ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
+    })
     if (lines.length >= MAX) break
   }
   return lines

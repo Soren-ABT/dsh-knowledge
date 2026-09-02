@@ -13,6 +13,7 @@ import type { CSSProperties, DragEvent } from 'react'
 import { serializeContextWindow } from '../../knowledge/context.js'
 import { KnowledgeApi } from './api.js'
 import type {
+  BaseSourceInfo,
   BaseStats,
   BaseSummary,
   ChunkView,
@@ -143,7 +144,7 @@ type DialogState =
   | { kind: 'confirmDeleteGroup'; group: string }
   | { kind: 'addUrl' }
   | { kind: 'addPath' }
-  | { kind: 'editSourcePath'; initial: string }
+  | { kind: 'editSourcePath'; sourceId: string; initial: string }
   | { kind: 'addText' }
   | null
 
@@ -557,7 +558,13 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       try {
         const result = await api.importFromPath(selectedBaseId, trimmed)
         setDialog(null)
-        notify('success', `${t('tabPath')}: ${result.kind === 'directory' ? `${result.imported} ${t('docCount')}` : result.imported}`)
+        if (result.errors.length > 0) {
+          notify('warning', t('pathImportPartial')
+            .replace('{count}', String(result.imported))
+            .replace('{errors}', String(result.errors.length)))
+        } else {
+          notify('success', `${t('tabPath')}: ${result.kind === 'directory' ? `${result.imported} ${t('docCount')}` : result.imported}`)
+        }
         await refreshBases()
         await reloadDocuments()
       } catch (err) {
@@ -566,20 +573,19 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     })
   }, [api, run, refreshBases, reloadDocuments, notify, selectedBaseId, t])
 
-  const promptForSourcePath = useCallback((): void => {
+  const promptForSourcePath = useCallback((source: BaseSourceInfo): void => {
     if (selectedBaseId === null) return
-    const currentBase = bases.find(base => base.id === selectedBaseId)
-    const current = currentBase?.sourceInfo?.map(source => source.text).find(Boolean) ?? ''
-    setDialog({ kind: 'editSourcePath', initial: current })
-  }, [bases, selectedBaseId])
+    if (source.sourcePath === undefined) return
+    setDialog({ kind: 'editSourcePath', sourceId: source.sourceId, initial: source.sourcePath })
+  }, [selectedBaseId])
 
-  const editSourcePath = useCallback((path: string): void => {
+  const editSourcePath = useCallback((sourceId: string, path: string): void => {
     if (selectedBaseId === null) return
     const trimmed = path.trim()
     if (trimmed === '') return
     void run(async () => {
       try {
-        const result = await api.setBaseSourcePath(selectedBaseId, trimmed)
+        const result = await api.setBaseSourcePath(selectedBaseId, sourceId, trimmed)
         setDialog(null)
         notify('success', `${t('sourcePathEdit')}: ${result.set}`)
         await refreshBases()
@@ -1343,21 +1349,23 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                   repoints the base's source path (validated server-side). */}
               {(selectedBase.sourceInfo ?? []).length > 0 && (
                 <div style={style.baseSourceRow}>
-                  {selectedBase.sourceInfo!.map((source, i) => (
-                    <span key={i} style={style.baseSourceItem}>
+                  {selectedBase.sourceInfo!.map(source => (
+                    <span key={source.sourceId} style={style.baseSourceItem}>
                       <span style={style.baseSourceGlyph}>{baseSourceGlyph(source.kind)}</span>
                       <span style={style.baseSourceText} title={source.text}>{source.text}</span>
+                      {source.sourcePath !== undefined && (
+                        <button
+                          className="kb-iconbtn"
+                          style={{ ...style.baseSourceEdit, ...style.iconOnlyButton }}
+                          title={t('sourcePathEdit')}
+                          aria-label={`${t('sourcePathEdit')}: ${source.text}`}
+                          onClick={() => promptForSourcePath(source)}
+                        >
+                          <IconPencil size={11} />
+                        </button>
+                      )}
                     </span>
                   ))}
-                  <button
-                    className="kb-iconbtn"
-                    style={{ ...style.baseSourceEdit, ...style.iconOnlyButton }}
-                    title={t('sourcePathEdit')}
-                    aria-label={t('sourcePathEdit')}
-                    onClick={promptForSourcePath}
-                  >
-                    <IconPencil size={11} />
-                  </button>
                 </div>
               )}
 
@@ -1849,7 +1857,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
           title={t('sourcePathEdit')}
           label={t('sourcePathPrompt')}
           initial={dialog.initial}
-          onOk={(value) => { setDialog(null); editSourcePath(value) }}
+          onOk={(value) => { setDialog(null); editSourcePath(dialog.sourceId, value) }}
           onClose={() => setDialog(null)}
         />
       )}

@@ -133,6 +133,7 @@ export type KnowledgeKey =
   | 'pathDesc'
   | 'sourcePathEdit'
   | 'sourcePathPrompt'
+  | 'pathImportPartial'
   | 'dirPlaceholder'
   | 'importDirButton'
   | 'conflictTitle'
@@ -422,7 +423,7 @@ export const zh: Record<KnowledgeKey, string> = {
   batchSize: 'embedding 批大小',
   stats: '统计',
   statsDocs: '文档',
-  statsSourceDocs: '来源文档',
+  statsSourceDocs: '来源项',
   statsStoredDocs: '已解析文档',
   statsSourceDocsTitle: '来源中跟踪的项目（文件夹 + 文件）',
   statsStoredDocsTitle: '实际解析并作为原始副本存储在缓存中的文档',
@@ -444,6 +445,7 @@ export const zh: Record<KnowledgeKey, string> = {
   pathDesc: '输入目录或文件的绝对路径',
   sourcePathEdit: '修改来源路径',
   sourcePathPrompt: '来源路径',
+  pathImportPartial: '导入完成：成功 {count}，失败 {errors}',
   dirPlaceholder: '输入本机目录路径，如 D:\\docs\\policy',
   importDirButton: '导入',
   conflictTitle: '存在同名数据源',
@@ -632,7 +634,7 @@ export const zh: Record<KnowledgeKey, string> = {
   timeHours: '{n} 小时前',
   timeDays: '{n} 天前',
   cacheDirPickUnavailable: '文件夹选择不可用（当前环境无目录选择能力）',
-  cacheDirMigrated: '{count} 个模型目录已迁移到 {to}',
+  cacheDirMigrated: '模型缓存已迁移到 {to}（移动条目：{count}）',
   mineruOption: 'MinerU（远程，扫描件/复杂版面）',
   mineruHostPlaceholder: 'API Host（默认 https://mineru.net）',
   visionModelPlaceholder: '视觉模型（如 qwen-vl-plus、gpt-4o-mini）',
@@ -740,7 +742,7 @@ export const en: Record<KnowledgeKey, string> = {
   batchSize: 'Embedding batch size',
   stats: 'Stats',
   statsDocs: 'docs',
-  statsSourceDocs: 'source docs',
+  statsSourceDocs: 'source items',
   statsStoredDocs: 'parsed docs',
   statsSourceDocsTitle: 'Items tracked from the source (folders + files)',
   statsStoredDocsTitle: 'Documents actually parsed and stored as raw copies in the cache',
@@ -762,6 +764,7 @@ export const en: Record<KnowledgeKey, string> = {
   pathDesc: 'Absolute path to a directory or file',
   sourcePathEdit: 'Edit source path',
   sourcePathPrompt: 'Source path',
+  pathImportPartial: 'Import finished: {count} succeeded, {errors} failed',
   dirPlaceholder: 'Enter a local directory path, e.g. D:\\docs\\policy',
   importDirButton: 'Import',
   conflictTitle: 'Same-name source',
@@ -950,7 +953,7 @@ export const en: Record<KnowledgeKey, string> = {
   timeHours: '{n} h ago',
   timeDays: '{n} d ago',
   cacheDirPickUnavailable: 'Folder picking is unavailable (this environment has no directory picker)',
-  cacheDirMigrated: '{count} model director(y/ies) moved to {to}',
+  cacheDirMigrated: 'Model cache migrated to {to} ({count} entries moved)',
   mineruOption: 'MinerU (remote, scans/complex layouts)',
   mineruHostPlaceholder: 'API Host (default https://mineru.net)',
   visionModelPlaceholder: 'Vision model (e.g. qwen-vl-plus, gpt-4o-mini)',

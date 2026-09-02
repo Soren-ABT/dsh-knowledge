@@ -319,9 +319,13 @@ export interface DocumentSummary {
  *  base name in the detail header — path for directories/files, link for URLs,
  *  "node" for manually added text). */
 export interface BaseSourceInfo {
+  /** Top-level document/container that owns this source. */
+  readonly sourceId: string
   readonly kind: DocumentSourceType
   /** Directory path / file name / URL / 'node'. */
   readonly text: string
+  /** Absolute tracked path when this source can be repointed. */
+  readonly sourcePath?: string
 }
 
 /** Summary of one knowledge base, for listing UIs. */

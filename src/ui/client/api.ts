@@ -46,9 +46,13 @@ export interface BaseConfig {
  *  base name in the detail header — path for directories/files, link for URLs,
  *  "node" for manually added text). */
 export interface BaseSourceInfo {
+  /** Top-level document/container that owns this source. */
+  sourceId: string
   kind: 'text' | 'file' | 'url' | 'directory'
   /** Directory path / file name / URL / 'node'. */
   text: string
+  /** Absolute tracked path when this source can be repointed. */
+  sourcePath?: string
 }
 
 export interface BaseSummary {
@@ -535,13 +539,13 @@ export class KnowledgeApi {
   }
 
   /** Import a local directory or single file by its absolute path (validated server-side). */
-  importFromPath(baseId: string, path: string): Promise<{ kind: 'directory' | 'file'; imported: number }> {
-    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/import-path`, { baseId, path })
+  importFromPath(baseId: string, path: string): Promise<{ kind: 'directory' | 'file'; imported: number; errors: Array<{ file: string; error: string }> }> {
+    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/import-path`, { baseId, path }, 30 * 60_000)
   }
 
   /** Repoint the base's source path (validated server-side). */
-  setBaseSourcePath(baseId: string, path: string): Promise<{ set: number }> {
-    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/source-path`, { baseId, path })
+  setBaseSourcePath(baseId: string, sourceId: string, path: string): Promise<{ set: number }> {
+    return this.call('POST', `/bases/${encodeURIComponent(baseId)}/source-path`, { baseId, sourceId, path })
   }
 
   getDirectoryImport(jobId: string): Promise<DirectoryImportStatus> {
