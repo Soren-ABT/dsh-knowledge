@@ -853,6 +853,26 @@ describe('local-path import source tracking', () => {
         expect(reindexed!.sourcePath).toBe(src2)
         // The persisted raw copy was refreshed to the new file's bytes.
         expect(decode(await store.raw!.read(reindexed!.rawFilePath!))).toContain('beta')
+
+        // Mixed-base repoint: with a directory root present, a FILE repoint must
+        // still select the top-level files (not the directories).
+        const mixed = join(dir, 'mixed')
+        await mkdir(join(mixed, 'sub'), { recursive: true })
+        await writeFile(join(mixed, 'sub', 'c.txt'), 'c content', 'utf8')
+        await writeFile(join(dir, 'd.txt'), 'delta content', 'utf8')
+        await service.importFromPath(base.id, mixed)      // adds a directory root
+        await service.importFromPath(base.id, join(dir, 'd.txt')) // adds a top-level file
+        const dDoc = store.listDocuments(base.id).find(d => d.sourceType === 'file' && d.fileName === 'd.txt')
+        expect(dDoc).toBeDefined()
+        const src3 = join(dir, 'e.txt')
+        await writeFile(src3, 'epsilon content', 'utf8')
+        await service.setBaseSourcePath(base.id, src3)    // a FILE path now repoints files
+        await service.reindexDocument(dDoc!.id)
+        expect(store.getDocument(dDoc!.id)!.rawText).toContain('epsilon')
+        // The directory root was NOT touched by the file repoint.
+        const dirRoot = store.listDocuments(base.id).find(d => d.sourceType === 'directory')
+        expect(dirRoot).toBeDefined()
+        expect(dirRoot!.sourcePath).toBe(mixed)
       } finally {
         await closeStore(service)
       }
