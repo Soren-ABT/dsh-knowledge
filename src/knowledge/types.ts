@@ -315,6 +315,19 @@ export interface DocumentSummary {
   readonly updatedAt?: number
 }
 
+/** One origin line for a base: where its content came from (shown under the
+ *  base name in the detail header — path for directories/files, link for URLs,
+ *  "node" for manually added text). */
+export interface BaseSourceInfo {
+  /** Top-level document/container that owns this source. */
+  readonly sourceId: string
+  readonly kind: DocumentSourceType
+  /** Directory path / file name / URL / 'node'. */
+  readonly text: string
+  /** Absolute tracked path when this source can be repointed. */
+  readonly sourcePath?: string
+}
+
 /** Summary of one knowledge base, for listing UIs. */
 export interface BaseSummary {
   readonly id: string
@@ -322,10 +335,14 @@ export interface BaseSummary {
   readonly description: string
   readonly group?: string
   readonly documentCount: number
+  /** Documents with a persisted raw source copy (actually imported & stored). */
+  readonly storedDocCount: number
   readonly chunkCount: number
   readonly charCount: number
   readonly tokenCount: number
   readonly config?: BaseConfig
+  /** Top-level sources of the base's content, for display (bounded). */
+  readonly sourceInfo?: BaseSourceInfo[]
   readonly createdAt: number
   readonly updatedAt: number
 }
@@ -334,6 +351,8 @@ export interface BaseSummary {
 export interface BaseStats {
   readonly baseId?: string
   readonly documentCount: number
+  /** Documents with a persisted raw source copy (actually imported & stored). */
+  readonly storedDocCount: number
   readonly chunkCount: number
   readonly charCount: number
   readonly tokenCount: number

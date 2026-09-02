@@ -308,6 +308,16 @@ async function route(
       if (segments[2] === 'import-directory-tree' && method === 'POST') {
         return service.importDirectoryTree(baseId, typeof body.path === 'string' ? body.path : '')
       }
+      if (segments[2] === 'import-path' && method === 'POST') {
+        return service.importFromPath(baseId, typeof body.path === 'string' ? body.path : '')
+      }
+      if (segments[2] === 'source-path' && method === 'POST') {
+        return service.setBaseSourcePath(
+          baseId,
+          typeof body.sourceId === 'string' ? body.sourceId : '',
+          typeof body.path === 'string' ? body.path : '',
+        )
+      }
       if (segments[2] === 'directories' && method === 'POST') {
         return service.createDirectory(
           baseId,

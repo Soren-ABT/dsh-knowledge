@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { Context } from '@deepseek-ai/cordis'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { knowledgeDomainSpec } from '../src/knowledge/domain.js'
 import { ChunkDatabase, hashEmbeddingText, migrateLegacyChunkFile } from '../src/knowledge/chunkdb.js'
 import { openStore } from '../src/knowledge/store.js'
-import type { StorageDomainFacility } from '../src/knowledge/store.js'
+import type { StorageDomainFacility, Store } from '../src/knowledge/store.js'
 import { KnowledgeService } from '../src/knowledge/index.js'
 import type { Config } from '../src/knowledge/config.js'
 import type { KnowledgeChunk } from '../src/knowledge/types.js'
@@ -800,6 +800,294 @@ describe('KnowledgeService restart', () => {
         expect(service2.getConfig().localModelCacheDir).toBe(resolve(modelsDir))
       } finally {
         await closeStore(service2)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('local-path import source tracking', () => {
+  const decode = (bytes: Uint8Array | null): string => bytes !== null ? new TextDecoder().decode(bytes) : ''
+  const mount = async (dir: string): Promise<KnowledgeService> => {
+    const ctx = new Context()
+    ctx.provide('webServer', { routes: [], register: () => () => {} })
+    ctx.provide('storageDomain', { open: async () => fakeDomain() })
+    await ctx.plugin(KnowledgeService, { ...TEST_CONFIG, chunkStorePath: join(dir, 'chunks.sqlite') })
+    return ctx.get('knowledge') as KnowledgeService
+  }
+  const closeStore = async (service: KnowledgeService): Promise<void> => {
+    await (service as unknown as { store: { close(): Promise<void> } }).store.close()
+  }
+  const storeOf = (service: KnowledgeService): Store =>
+    (service as unknown as { store: Store }).store
+
+  it('reindexes a single-file path import from the repointed sourcePath', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const src1 = join(dir, 'a.txt')
+      const src2 = join(dir, 'b.txt')
+      await writeFile(src1, 'alpha content', 'utf8')
+      await writeFile(src2, 'beta content', 'utf8')
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'src' })
+        await service.importFromPath(base.id, src1)
+        const store = storeOf(service)
+        const doc = store.listDocuments(base.id).find(d => d.sourceType === 'file')
+        expect(doc).toBeDefined()
+        expect(doc!.rawText).toContain('alpha')
+        expect(doc!.sourcePath).toBe(src1)
+        const beforeHash = doc!.contentHash
+
+        // Repoint the source to a different file and reindex: the reindex must
+        // rebuild from the NEW path (previously it re-read the old raw copy).
+        await service.setBaseSourcePath(base.id, doc!.id, src2)
+        await service.reindexDocument(doc!.id)
+        const reindexed = store.getDocument(doc!.id)
+        expect(reindexed).toBeDefined()
+        expect(reindexed!.rawText).toContain('beta')
+        expect(reindexed!.contentHash).not.toBe(beforeHash)
+        expect(reindexed!.sourcePath).toBe(src2)
+        // The persisted raw copy was refreshed to the new file's bytes.
+        expect(decode(await store.raw!.read(reindexed!.rawFilePath!))).toContain('beta')
+
+        // Mixed-base repoint: with a directory root present, a FILE repoint must
+        // still select the top-level files (not the directories).
+        const mixed = join(dir, 'mixed')
+        await mkdir(join(mixed, 'sub'), { recursive: true })
+        await writeFile(join(mixed, 'sub', 'c.txt'), 'c content', 'utf8')
+        await writeFile(join(dir, 'd.txt'), 'delta content', 'utf8')
+        await service.importFromPath(base.id, mixed)      // adds a directory root
+        await service.importFromPath(base.id, join(dir, 'd.txt')) // adds a top-level file
+        const dDoc = store.listDocuments(base.id).find(d => d.sourceType === 'file' && d.fileName === 'd.txt')
+        expect(dDoc).toBeDefined()
+        const src3 = join(dir, 'e.txt')
+        await writeFile(src3, 'epsilon content', 'utf8')
+        await service.setBaseSourcePath(base.id, dDoc!.id, src3)
+        await service.reindexDocument(dDoc!.id)
+        expect(store.getDocument(dDoc!.id)!.rawText).toContain('epsilon')
+        // The directory root was NOT touched by the file repoint.
+        const dirRoot = store.listDocuments(base.id).find(d => d.sourceType === 'directory')
+        expect(dirRoot).toBeDefined()
+        expect(dirRoot!.sourcePath).toBe(mixed)
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps raw copies distinct when two directory roots share a relative path', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const rootA = join(dir, 'rootA')
+      const rootB = join(dir, 'rootB')
+      await mkdir(join(rootA, 'docs'), { recursive: true })
+      await mkdir(join(rootB, 'docs'), { recursive: true })
+      await writeFile(join(rootA, 'docs', 'report.txt'), 'report from A', 'utf8')
+      await writeFile(join(rootB, 'docs', 'report.txt'), 'report from B', 'utf8')
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'collide' })
+        await service.importFromPath(base.id, rootA)
+        await service.importFromPath(base.id, rootB)
+        const store = storeOf(service)
+        const docs = store.listDocuments(base.id).filter(d => d.sourceType === 'file')
+        expect(docs).toHaveLength(2)
+
+        // Both files share the relative path docs/report.txt, but each must own
+        // a distinct raw copy whose bytes match its own source (no collision).
+        const raws = new Set<string>()
+        const contents: string[] = []
+        for (const doc of docs) {
+          expect(doc.rawFilePath).toBeDefined()
+          raws.add(doc.rawFilePath!)
+          contents.push(decode(await store.raw!.read(doc.rawFilePath!)))
+        }
+        expect(raws.size).toBe(2)
+        expect(contents).toEqual(expect.arrayContaining(['report from A', 'report from B']))
+
+        // Removing report.txt from rootA and rescanning rootA must delete A's
+        // doc and its raw copy, but leave rootB's cached raw untouched.
+        await rm(join(rootA, 'docs', 'report.txt'))
+        const rootAId = store.listDocuments(base.id)
+          .find(d => d.sourceType === 'directory' && d.title === 'rootA')!.id
+        await service.reindexDocument(rootAId)
+        const remaining = store.listDocuments(base.id).filter(d => d.sourceType === 'file')
+        expect(remaining).toHaveLength(1)
+        const survivor = store.listDocuments(base.id).filter(d => d.sourceType === 'file')[0]
+        expect(decode(await store.raw!.read(survivor.rawFilePath!))).toContain('B')
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('repoints exactly one selected top-level source', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const first = join(dir, 'first.txt')
+      const second = join(dir, 'second.txt')
+      const replacement = join(dir, 'replacement.txt')
+      await writeFile(first, 'first source', 'utf8')
+      await writeFile(second, 'second source', 'utf8')
+      await writeFile(replacement, 'replacement source', 'utf8')
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'targeted' })
+        await service.importFromPath(base.id, first)
+        await service.importFromPath(base.id, second)
+        const store = storeOf(service)
+        const firstDoc = store.listDocuments(base.id).find(doc => doc.sourcePath === first)!
+        const secondDoc = store.listDocuments(base.id).find(doc => doc.sourcePath === second)!
+
+        await expect(service.setBaseSourcePath(base.id, firstDoc.id, replacement))
+          .resolves.toEqual({ set: 1 })
+        expect(store.getDocument(firstDoc.id)?.sourcePath).toBe(replacement)
+        expect(store.getDocument(secondDoc.id)?.sourcePath).toBe(second)
+        expect(service.listBases().find(row => row.id === base.id)?.sourceInfo).toEqual([
+          expect.objectContaining({ sourceId: firstDoc.id, sourcePath: replacement }),
+          expect.objectContaining({ sourceId: secondDoc.id, sourcePath: second }),
+        ])
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('validates source identity, top-level ownership, path kind, and absolute paths', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const root = join(dir, 'root')
+      const file = join(dir, 'file.txt')
+      await mkdir(root, { recursive: true })
+      await writeFile(join(root, 'child.txt'), 'nested child', 'utf8')
+      await writeFile(file, 'top level file', 'utf8')
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'validation' })
+        const other = await service.createBase({ name: 'other' })
+        await service.importFromPath(base.id, root)
+        await service.importFromPath(other.id, file)
+        const textDoc = await service.addTextDocument({ baseId: base.id, title: 'note', content: 'manual note' })
+        const store = storeOf(service)
+        const directoryRoot = store.listDocuments(base.id).find(doc => doc.sourceType === 'directory' && doc.parentDirectoryId === undefined)!
+        const nestedFile = store.listDocuments(base.id).find(doc => doc.sourceType === 'file')!
+        const otherFile = store.listDocuments(other.id).find(doc => doc.sourceType === 'file')!
+
+        await expect(service.importFromPath(base.id, '.')).rejects.toThrow(/absolute/i)
+        await expect(service.setBaseSourcePath(base.id, directoryRoot.id, '.')).rejects.toThrow(/absolute/i)
+        await expect(service.setBaseSourcePath(base.id, directoryRoot.id, file)).rejects.toThrow(/directory/i)
+        await expect(service.setBaseSourcePath(base.id, nestedFile.id, file)).rejects.toThrow(/top-level/i)
+        await expect(service.setBaseSourcePath(base.id, otherFile.id, file)).rejects.toThrow(/does not belong/i)
+        await expect(service.setBaseSourcePath(base.id, textDoc.id, file)).rejects.toThrow(/file or directory source/i)
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the new file identity when a source is repointed across extensions', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const original = join(dir, 'original.txt')
+      const replacement = join(dir, 'replacement.html')
+      await writeFile(original, 'plain original', 'utf8')
+      await writeFile(replacement, '<html><body><h1>Replacement</h1><p>HTML body</p></body></html>', 'utf8')
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'parser identity' })
+        await service.importFromPath(base.id, original)
+        const store = storeOf(service)
+        const doc = store.listDocuments(base.id).find(row => row.sourceType === 'file')!
+
+        await service.setBaseSourcePath(base.id, doc.id, replacement)
+        await service.reindexDocument(doc.id)
+
+        const updated = store.getDocument(doc.id)!
+        expect(updated.fileName).toBe('replacement.html')
+        expect(updated.rawText).toContain('Replacement')
+        expect(updated.rawText).not.toContain('<h1>')
+        expect(updated.mimeType).toBeUndefined()
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the previous raw copy when reindex fails before the new document commits', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const original = join(dir, 'original.txt')
+      const replacement = join(dir, 'replacement.txt')
+      await writeFile(original, 'stable original bytes', 'utf8')
+      await writeFile(replacement, 'candidate replacement bytes', 'utf8')
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'failure safe' })
+        await service.importFromPath(base.id, original)
+        const store = storeOf(service)
+        const doc = store.listDocuments(base.id).find(row => row.sourceType === 'file')!
+        const previousRaw = doc.rawFilePath!
+        await service.setBaseSourcePath(base.id, doc.id, replacement)
+
+        const putChunks = vi.spyOn(store, 'putChunks').mockRejectedValueOnce(new Error('simulated chunk commit failure'))
+        await expect(service.reindexDocument(doc.id)).rejects.toThrow('simulated chunk commit failure')
+        putChunks.mockRestore()
+
+        const failed = store.getDocument(doc.id)!
+        expect(failed.rawFilePath).toBe(previousRaw)
+        expect(decode(await store.raw!.read(previousRaw))).toContain('stable original bytes')
+        expect(await store.raw!.listAll()).toEqual([previousRaw])
+      } finally {
+        await closeStore(service)
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('returns per-file errors from a partial directory path import', async () => {
+    const dir = await tempDir()
+    try {
+      vi.stubEnv('DSH_HOME', dir)
+      const source = join(dir, 'partial')
+      await mkdir(source, { recursive: true })
+      await writeFile(join(source, 'good.txt'), 'readable content', 'utf8')
+      await writeFile(join(source, 'broken.pptx'), new Uint8Array([1, 2, 3, 4]))
+
+      const service = await mount(dir)
+      try {
+        const base = await service.createBase({ name: 'partial import' })
+        const result = await service.importFromPath(base.id, source)
+        expect(result.kind).toBe('directory')
+        expect(result.imported).toBe(1)
+        expect(result.errors).toHaveLength(1)
+        expect(result.errors[0]?.file).toContain('broken.pptx')
+      } finally {
+        await closeStore(service)
       }
     } finally {
       await rm(dir, { recursive: true, force: true })

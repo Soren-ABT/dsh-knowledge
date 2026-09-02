@@ -185,7 +185,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
         }
       } catch (err) {
         setProbing(false)
-        setSaveError(`${t('dimensionProbeFailed')}：${err instanceof Error ? err.message : String(err)}`)
+        setSaveError(`${t('dimensionProbeFailed')}: ${err instanceof Error ? err.message : String(err)}`)
         return
       }
       setProbing(false)
@@ -223,7 +223,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
             onChange={(e) => patch({ documentProcessorProvider: e.target.value as 'builtin' | 'mineru' })}
           >
             <option value="builtin">{t('processorBuiltin')}</option>
-            <option value="mineru">MinerU（远程，扫描件/复杂版面）</option>
+            <option value="mineru">{t('mineruOption')}</option>
           </select>
           {values.documentProcessorProvider === 'mineru' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
@@ -236,7 +236,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
               />
               <input
                 style={style.input}
-                placeholder="API Host（默认 https://mineru.net）"
+                placeholder={t('mineruHostPlaceholder')}
                 value={values.mineruApiHost}
                 onChange={(e) => patch({ mineruApiHost: e.target.value })}
               />
@@ -292,7 +292,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 ) : (
                   <input
                     style={style.input}
-                    placeholder="视觉模型（如 qwen-vl-plus、gpt-4o-mini）"
+                    placeholder={t('visionModelPlaceholder')}
                     value={values.imageCaptionModel}
                     onChange={(e) => patch({ imageCaptionModel: e.target.value })}
                   />
@@ -300,8 +300,8 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 <input
                   style={style.input}
                   placeholder={values.imageCaptionProvider === 'ollama'
-                    ? 'Ollama 地址（默认 http://127.0.0.1:11434）'
-                    : 'API 地址（留空用嵌入模型地址）'}
+                    ? t('captionBaseUrlOllamaPlaceholder')
+                    : t('captionBaseUrlPlaceholder')}
                   value={values.imageCaptionBaseUrl}
                   onChange={(e) => patch({ imageCaptionBaseUrl: e.target.value })}
                 />
@@ -343,7 +343,13 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 const next = ollamaEmbeddingModels.includes(values.embeddingModel)
                   ? values.embeddingModel
                   : (ollamaEmbeddingModels[0] ?? '')
-                patch({ embeddingProvider: provider, embeddingModel: next })
+                // Auto-fill the well-known local Ollama endpoint so a user
+                // creating a fresh base does not retype http://127.0.0.1:11434
+                // every time (the model name is already auto-picked).
+                const nextBase = values.embeddingBaseUrl.trim() === ''
+                  ? 'http://127.0.0.1:11434'
+                  : values.embeddingBaseUrl
+                patch({ embeddingProvider: provider, embeddingModel: next, embeddingBaseUrl: nextBase })
               } else {
                 // openai / none: free-text or none — keep whatever was typed.
                 patch({ embeddingProvider: provider })
@@ -683,7 +689,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
         >
           <IconRefresh size={13} />{t('reset')}
         </button>
-        <button style={style.primary} disabled={!dirty || busy || probing} onClick={() => void save()}>
+        <button className="kb-primary" style={style.primary} disabled={!dirty || busy || probing} onClick={() => void save()}>
           {probing ? t('dimensionProbing') : t('save')}
         </button>
       </div>

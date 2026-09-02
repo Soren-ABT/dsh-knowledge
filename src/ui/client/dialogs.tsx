@@ -20,7 +20,7 @@ export interface Toast {
   text: string
 }
 
-export function Toasts(props: { toasts: readonly Toast[] }): JSX.Element | null {
+export function Toasts(props: { toasts: readonly Toast[]; onDismiss?: (id: number) => void }): JSX.Element | null {
   if (props.toasts.length === 0) return null
   return (
     <div style={style.toastStack}>
@@ -33,7 +33,10 @@ export function Toasts(props: { toasts: readonly Toast[] }): JSX.Element | null 
               : toast.kind === 'warning'
                 ? <IconX size={14} color="#f5a524" />
                 : null}
-          <span>{toast.text}</span>
+          <span style={{ userSelect: 'text', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{toast.text}</span>
+          <button style={style.toastClose} onClick={() => props.onDismiss?.(toast.id)} aria-label="close">
+            <IconX size={12} color={C.muted} />
+          </button>
         </div>
       ))}
     </div>
@@ -77,7 +80,7 @@ export function ConfirmDialog(props: {
       <p style={{ fontSize: 13, margin: '0 0 16px', lineHeight: 1.6 }}>{props.message}</p>
       <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
         <button style={style.button} onClick={props.onClose}>✕</button>
-        <button style={style.primaryDanger} onClick={props.onConfirm} disabled={props.busy === true}>{props.confirmLabel}</button>
+        <button className="kb-danger-primary" style={style.primaryDanger} onClick={props.onConfirm} disabled={props.busy === true}>{props.confirmLabel}</button>
       </div>
     </Modal>
   )
@@ -116,7 +119,7 @@ export function PromptDialog(props: {
       </div>
       <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
         <button style={style.button} onClick={props.onClose}>✕</button>
-        <button style={style.primary} disabled={submitting || value.trim().length === 0} onClick={submit}>OK</button>
+        <button className="kb-primary" style={style.primary} disabled={submitting || value.trim().length === 0} onClick={submit}>OK</button>
       </div>
     </Modal>
   )
@@ -157,7 +160,7 @@ export function TextDocumentDialog(props: {
       <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
         <button style={style.button} onClick={props.onClose}>{props.t('cancel')}</button>
         <button
-          style={style.primary}
+          className="kb-primary" style={style.primary}
           disabled={props.busy === true || title.trim().length === 0 || content.trim().length === 0}
           onClick={() => props.onCreate(title.trim(), content)}
         >
@@ -200,11 +203,17 @@ export function RestoreBaseDialog(props: {
       </div>
       <div style={style.field}>
         <label style={style.label}>{props.t('embeddingModel')}</label>
-        <select style={style.input} value={provider} onChange={(e) => setProvider(e.target.value as typeof provider)}>
+        <select style={style.input} value={provider} onChange={(e) => {
+          const next = e.target.value as typeof provider
+          // Auto-fill the well-known local Ollama endpoint when the user
+          // switches to Ollama, so the URL is not retyped by hand.
+          if (next === 'ollama' && baseUrl.trim() === '') setBaseUrl('http://127.0.0.1:11434')
+          setProvider(next)
+        }}>
           <option value="none">{props.t('restoreKeepModel')}</option>
-          <option value="openai">OpenAI 兼容</option>
+          <option value="openai">{props.t('providerOpenAI')}</option>
           <option value="ollama">Ollama</option>
-          <option value="local">本地模型</option>
+          <option value="local">{props.t('providerLocal')}</option>
         </select>
       </div>
       {modelChanged && (
@@ -257,7 +266,7 @@ export function RestoreBaseDialog(props: {
       <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
         <button style={style.button} onClick={props.onClose}>{props.t('cancel')}</button>
         <button
-          style={style.primary}
+          className="kb-primary" style={style.primary}
           disabled={props.busy === true || name.trim().length === 0 || (modelChanged && model.trim().length === 0)}
           onClick={() => props.onRestore(
             name.trim(),
@@ -308,7 +317,7 @@ export function CreateBaseDialog(props: {
       <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
         <button style={style.button} onClick={props.onClose}>{props.t('cancel')}</button>
         <button
-          style={style.primary}
+          className="kb-primary" style={style.primary}
           disabled={props.busy === true || name.trim().length === 0}
           onClick={() => props.onCreate(name.trim(), description.trim(), group.trim() === '' ? undefined : group.trim())}
         >

@@ -58,6 +58,7 @@ import type {
   AddFilesResult,
   AddTextDocumentRequest,
   BaseConfig,
+  BaseSourceInfo,
   BaseStats,
   BaseSummary,
   CreateBaseRequest,
@@ -664,16 +665,20 @@ export class KnowledgeService extends Service {
       const chunkCount = documents.reduce((sum, doc) => sum + doc.chunkCount, 0)
       const charCount = documents.reduce((sum, doc) => sum + doc.charCount, 0)
       const tokenCount = documents.reduce((sum, doc) => sum + (doc.tokenCount ?? 0), 0)
+      const storedDocCount = documents.reduce((sum, doc) => sum + (doc.rawFilePath !== undefined ? 1 : 0), 0)
+      const sourceInfo = baseSourceLines(documents)
       return {
         id: base.id,
         name: base.name,
         description: base.description,
         ...(base.group !== undefined ? { group: base.group } : {}),
         documentCount: documents.length,
+        storedDocCount,
         chunkCount,
         charCount,
         tokenCount,
         ...(base.config !== undefined ? { config: base.config } : {}),
+        ...(sourceInfo.length > 0 ? { sourceInfo } : {}),
         createdAt: base.createdAt,
         updatedAt: base.updatedAt,
       }
@@ -1029,20 +1034,29 @@ export class KnowledgeService extends Service {
           continue
         }
         // Cherry's prepare-root: persist a raw copy (base-relative path) so
-        // the base stays rebuildable if the source disk changes.
+        // the base stays rebuildable if the source disk changes. The stored
+        // path is derived from a fresh uuid (not the source file name) so two
+        // roots containing the same relative path can never collide.
         let rawFilePath: string | undefined
         const store = this.requireStore()
         if (store.raw !== undefined) {
-          rawFilePath = await store.raw.writeRel(job.baseId, basename(file), buffer)
+          rawFilePath = await store.raw.write(job.baseId, crypto.randomUUID(), safeRawExtension(basename(file)), buffer)
         }
-        await this.ingestDocument({
-          baseId: job.baseId,
-          title: basename(file),
-          sourceType: 'file',
-          fileName: basename(file),
-          rawFilePath,
-          text,
-        })
+        try {
+          await this.ingestDocument({
+            baseId: job.baseId,
+            title: basename(file),
+            sourceType: 'file',
+            fileName: basename(file),
+            rawFilePath,
+            text,
+          })
+        } catch (error) {
+          // A rejected item (e.g. duplicate content) must not leave an
+          // orphaned raw copy behind.
+          if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
+          throw error
+        }
         job.imported += 1
       } catch (error) {
         job.errors.push({ file, error: error instanceof Error ? error.message : String(error) })
@@ -1120,22 +1134,30 @@ export class KnowledgeService extends Service {
             const text = await parseDocumentBuffer(buffer, basename(full))
             if (text.trim().length === 0) continue
             // Cherry's prepare-root: the base owns a stable copy of every
-            // imported file under raw/ (tree-relative path), so a later
-            // reindex rebuilds from the base even if the source disk changes.
+            // imported file under raw/, so a later reindex rebuilds from the
+            // base even if the source disk changes. The stored path is a fresh
+            // uuid (not the tree-relative path) so two roots that share a
+            // relative path never collide in raw storage.
             let rawFilePath: string | undefined
             if (store.raw !== undefined) {
-              const relPath = relative(path, full).replace(/\\/g, '/')
-              rawFilePath = await store.raw.writeRel(baseId, relPath, buffer)
+              rawFilePath = await store.raw.write(baseId, crypto.randomUUID(), safeRawExtension(basename(full)), buffer)
             }
-            await this.ingestDocument({
-              baseId,
-              title: basename(full),
-              sourceType: 'file',
-              fileName: basename(full),
-              parentDirectoryId: parentId,
-              rawFilePath,
-              text,
-            })
+            try {
+              await this.ingestDocument({
+                baseId,
+                title: basename(full),
+                sourceType: 'file',
+                fileName: basename(full),
+                parentDirectoryId: parentId,
+                rawFilePath,
+                text,
+              })
+            } catch (error) {
+              // A rejected item (e.g. duplicate content) must not leave an
+              // orphaned raw copy behind.
+              if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
+              throw error
+            }
             imported += 1
           } catch (error) {
             errors.push({ file: full, error: error instanceof Error ? error.message : String(error) })
@@ -1146,6 +1168,123 @@ export class KnowledgeService extends Service {
 
     await walk(path, rootId, 0)
     return { imported, directories, errors }
+  }
+
+  /** Import a single local file by its absolute path (server-side). */
+  async importFileFromPath(baseId: string, filePath: string): Promise<{ imported: boolean; title: string }> {
+    const store = this.requireStore()
+    if (store.getBase(baseId) === undefined) throw new Error(`knowledge base not found: ${baseId}`)
+    const name = basename(filePath)
+    if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(name))) {
+      throw new Error(`Unsupported knowledge file type: ${name}`)
+    }
+    const buffer = await readFile(filePath)
+    const text = await parseDocumentBuffer(buffer, name)
+    if (text.trim().length === 0) throw new Error(`file is empty or unreadable: ${filePath}`)
+    // Persist a stable raw copy (Cherry's "import means copy") so the base
+    // stays rebuildable even if the source file changes or disappears. The
+    // stored path is a fresh uuid so it never collides with another import of
+    // the same file name.
+    let rawFilePath: string | undefined
+    if (store.raw !== undefined) {
+      rawFilePath = await store.raw.write(baseId, crypto.randomUUID(), safeRawExtension(name), buffer)
+    }
+    try {
+      await this.ingestDocument({
+        baseId,
+        title: name,
+        sourceType: 'file',
+        fileName: name,
+        rawFilePath,
+        sourcePath: filePath,
+        text,
+      })
+    } catch (error) {
+      // A rejected item (e.g. duplicate content) must not leave an orphaned
+      // raw copy behind.
+      if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
+      throw error
+    }
+    return { imported: true, title: name }
+  }
+
+  /**
+   * Import a local path (directory tree or single file) by its absolute path,
+   * validating that it exists first. Directories reuse the tree import, which
+   * records `sourcePath` on every container so reindex rescans the disk.
+   */
+  async importFromPath(baseId: string, path: string): Promise<{
+    kind: 'directory' | 'file'
+    imported: number
+    errors: Array<{ file: string; error: string }>
+  }> {
+    const store = this.requireStore()
+    if (store.getBase(baseId) === undefined) throw new Error(`knowledge base not found: ${baseId}`)
+    const trimmed = path.trim()
+    if (trimmed.length === 0) throw new Error('path is required')
+    if (!isAbsolute(trimmed)) throw new Error(`path must be absolute: ${trimmed}`)
+    let st
+    try {
+      st = await stat(trimmed)
+    } catch {
+      throw new Error(`path not found: ${trimmed}`)
+    }
+    if (st.isDirectory()) {
+      const result = await this.importDirectoryTree(baseId, trimmed)
+      return { kind: 'directory', imported: result.imported, errors: result.errors }
+    }
+    if (st.isFile()) {
+      await this.importFileFromPath(baseId, trimmed)
+      return { kind: 'file', imported: 1, errors: [] }
+    }
+    throw new Error(`not a file or directory: ${trimmed}`)
+  }
+
+  /**
+   * Repoint exactly one top-level file or directory source. Source identity is
+   * explicit: a base may contain several independent roots of the same kind,
+   * and editing one must never redirect its siblings.
+   */
+  async setBaseSourcePath(baseId: string, sourceId: string, path: string): Promise<{ set: number }> {
+    const store = this.requireStore()
+    if (store.getBase(baseId) === undefined) throw new Error(`knowledge base not found: ${baseId}`)
+    const source = store.getDocument(sourceId)
+    if (source === undefined) throw new Error(`source document not found: ${sourceId}`)
+    if (source.baseId !== baseId) throw new Error(`source ${sourceId} does not belong to knowledge base ${baseId}`)
+    if (source.parentDirectoryId !== undefined) throw new Error('source path can only be changed for a top-level source')
+    if (source.sourceType !== 'file' && source.sourceType !== 'directory') {
+      throw new Error('source path can only be changed for a file or directory source')
+    }
+    const trimmed = path.trim()
+    if (trimmed.length === 0) throw new Error('path is required')
+    if (!isAbsolute(trimmed)) throw new Error(`path must be absolute: ${trimmed}`)
+    let st
+    try {
+      st = await stat(trimmed)
+    } catch {
+      throw new Error(`path not found: ${trimmed}`)
+    }
+    if (source.sourceType === 'directory') {
+      if (!st.isDirectory()) throw new Error('a directory source must be repointed to a directory')
+      await store.putDocument({ ...source, sourcePath: trimmed, updatedAt: Date.now() })
+    } else {
+      if (!st.isFile()) throw new Error('a file source must be repointed to a file')
+      const nextFileName = basename(trimmed)
+      if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(nextFileName))) {
+        throw new Error(`Unsupported knowledge file type: ${nextFileName}`)
+      }
+      // Drop stale MIME metadata so parser dispatch follows the new source's
+      // extension. Preserve the user-facing title, which may have been renamed.
+      const { mimeType: _staleMimeType, ...withoutMimeType } = source
+      await store.putDocument({
+        ...withoutMimeType,
+        sourcePath: trimmed,
+        fileName: nextFileName,
+        updatedAt: Date.now(),
+      })
+    }
+    await this.touchBase(baseId)
+    return { set: 1 }
   }
 
   async addUrlDocument(request: ImportUrlRequest): Promise<KnowledgeDocument> {
@@ -1325,48 +1464,116 @@ export class KnowledgeService extends Service {
     // Fall back to the persisted text (then to reconstructed chunks) when the
     // file is gone or unreadable — a reindex must never wipe vectors for a
     // source that cannot be rebuilt.
-    const text = await this.sourceTextOf(document)
-    const config = this.getConfigFor(document.baseId)
-    // Mark the document incomplete so a crash mid-reindex is resumed on the
-    // next start (buildChunks persists each embedded batch; hash reuse makes
-    // the resume re-embed only what never landed).
-    await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
-    const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, document.id, document.title, text, config, undefined, batch => store.putChunkBatch(batch))
-    const { embeddingError: _staleError, errorCode: _staleCode, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = document
-    const next: KnowledgeDocument = {
-      ...rest,
-      rawText: text,
-      contentHash: sha256(text),
-      charCount: text.length,
-      tokenCount: estimateTokens(text),
-      chunkCount: chunks.length,
-      ...(embeddingError !== undefined
-        ? { embeddingError, ...(embeddingErrorCode !== undefined ? { errorCode: embeddingErrorCode } : {}) }
-        : {}),
-      updatedAt: Date.now(),
+    const rebuilt = await this.sourceTextOf(document)
+    const discardCandidate = async (): Promise<void> => {
+      if (rebuilt.candidateRawFilePath === undefined) return
+      try {
+        await store.raw?.delete(rebuilt.candidateRawFilePath)
+      } catch (error) {
+        this.ctx.logger.warn(`knowledge: failed to discard uncommitted raw source ${rebuilt.candidateRawFilePath}: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
-    // putChunks overwrites the doc's chunk bundle in one write (legacy per-chunk
-    // rows, if any, stay hidden because a bundle record is authoritative).
-    // A delete that landed mid-reindex must not resurrect rows or chunks
-    // (Cherry's deleting-guard).
-    if (store.getDocument(document.id) === undefined || store.getBase(document.baseId) === undefined) {
-      return document
+    let candidateCommitted = false
+    try {
+      const config = this.getConfigFor(document.baseId)
+      // Mark the document incomplete so a crash mid-reindex is resumed on the
+      // next start (buildChunks persists each embedded batch; hash reuse makes
+      // the resume re-embed only what never landed). The document continues to
+      // reference the previous raw copy until the complete replacement commits.
+      await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
+      const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, document.id, document.title, rebuilt.text, config, undefined, batch => store.putChunkBatch(batch))
+      const { embeddingError: _staleError, errorCode: _staleCode, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = document
+      const next: KnowledgeDocument = {
+        ...rest,
+        ...(rebuilt.rawFilePath !== undefined ? { rawFilePath: rebuilt.rawFilePath } : {}),
+        rawText: rebuilt.text,
+        contentHash: sha256(rebuilt.text),
+        charCount: rebuilt.text.length,
+        tokenCount: estimateTokens(rebuilt.text),
+        chunkCount: chunks.length,
+        ...(embeddingError !== undefined
+          ? { embeddingError, ...(embeddingErrorCode !== undefined ? { errorCode: embeddingErrorCode } : {}) }
+          : {}),
+        updatedAt: Date.now(),
+      }
+      // putChunks overwrites the doc's chunk bundle in one write (legacy
+      // per-chunk rows, if any, stay hidden because a bundle record is
+      // authoritative). A delete that landed mid-reindex must not resurrect
+      // rows, chunks, or the candidate raw source.
+      if (store.getDocument(document.id) === undefined || store.getBase(document.baseId) === undefined) {
+        await discardCandidate()
+        return document
+      }
+      await store.putChunks(chunks)
+      await store.putDocument(next)
+      candidateCommitted = true
+
+      if (rebuilt.previousRawFilePath !== undefined && rebuilt.previousRawFilePath !== rebuilt.rawFilePath) {
+        try {
+          await store.raw?.delete(rebuilt.previousRawFilePath)
+        } catch (error) {
+          // The new document already points at the committed candidate. Leave
+          // an undeleted predecessor for startup orphan reconciliation.
+          this.ctx.logger.warn(`knowledge: failed to remove superseded raw source ${rebuilt.previousRawFilePath}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      await this.touchBase(document.baseId)
+      return next
+    } catch (error) {
+      if (!candidateCommitted) await discardCandidate()
+      throw error
     }
-    await store.putChunks(chunks)
-    await store.putDocument(next)
-    await this.touchBase(document.baseId)
-    return next
   }
 
-  /** Rebuild source text of a document: raw file first, then persisted text, then chunks. */
-  private async sourceTextOf(document: KnowledgeDocument): Promise<string> {
+  /** Rebuild source text of a document. A path-imported single file (sourcePath)
+   *  is re-read from disk first so EDITS and a repointed source (setBaseSourcePath)
+   *  are picked up, refreshing the persisted raw copy; otherwise the raw copy,
+   *  then persisted text, then reconstructed chunks are used. Returns the rebuilt
+   *  text and, when the raw copy was refreshed, its new base-relative path. */
+  private async sourceTextOf(document: KnowledgeDocument): Promise<{
+    text: string
+    rawFilePath?: string
+    candidateRawFilePath?: string
+    previousRawFilePath?: string
+  }> {
+    const store = this.requireStore()
+    // A single-file path import tracks its live source on disk. Reindex re-reads
+    // that path so edits and a repointed source (setBaseSourcePath) are actually
+    // applied — the old behavior rebuilt only from the persisted raw copy and
+    // ignored sourcePath. An unreadable path falls through to the stored copy.
+    if (document.sourceType === 'file' && document.sourcePath !== undefined) {
+      try {
+        const buffer = await readFile(document.sourcePath)
+        if (buffer.byteLength > 0) {
+          const fileName = basename(document.sourcePath)
+          // A repointed source may use a different extension. Dispatch from
+          // the live source identity rather than stale fileName/MIME metadata.
+          const text = await parseDocumentBuffer(buffer, fileName)
+          if (text.trim().length > 0) {
+            if (store.raw !== undefined) {
+              // Always stage to a fresh path. The caller switches the document
+              // reference only after chunks and metadata commit successfully.
+              const nextRaw = await store.raw.write(document.baseId, crypto.randomUUID(), safeRawExtension(fileName), buffer)
+              return {
+                text,
+                rawFilePath: nextRaw,
+                candidateRawFilePath: nextRaw,
+                ...(document.rawFilePath !== undefined ? { previousRawFilePath: document.rawFilePath } : {}),
+              }
+            }
+            return { text }
+          }
+        }
+      } catch (error) {
+        this.ctx.logger.warn(`knowledge: re-reading source path failed, falling back to stored copy: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
     if (document.rawFilePath !== undefined) {
-      const store = this.requireStore()
       const raw = await store.raw?.read(document.rawFilePath)
       if (raw !== null && raw !== undefined && raw.byteLength > 0) {
         try {
           const text = await parseDocumentBuffer(raw, document.fileName ?? document.title, document.mimeType)
-          if (text.trim().length > 0) return text
+          if (text.trim().length > 0) return { text }
         } catch (error) {
           this.ctx.logger.warn(`knowledge: re-parsing raw source failed, falling back to stored text: ${error instanceof Error ? error.message : String(error)}`)
         }
@@ -1376,7 +1583,7 @@ export class KnowledgeService extends Service {
     }
     const text = document.rawText ?? reconstructFromChunks(this.requireStore().listChunksByDoc(document.id))
     if (text.trim().length === 0) throw new Error(`document "${document.title}" has no source text to reindex`)
-    return text
+    return { text }
   }
 
   /**
@@ -1385,7 +1592,9 @@ export class KnowledgeService extends Service {
    * - files/directories removed from disk are deleted from the base,
    * - new supported files are parsed and ingested (raw copy persisted),
    * - new subdirectories become containers (with their own sourcePath),
-   * - existing items are re-indexed (re-chunk + hash-reuse re-embed).
+   * - existing items are re-indexed (re-chunk + hash-reuse re-embed); when
+   *   the on-disk bytes differ from the base's persisted raw copy, the copy
+   *   is refreshed first so EDITS to source files are picked up too.
    * A missing/unreadable source keeps the existing subtree untouched (Cherry
    * skips roots whose source cannot be rebuilt). Failures are isolated per
    * entry and summarized at the end.
@@ -1464,35 +1673,71 @@ export class KnowledgeService extends Service {
         try {
           if (existing !== undefined) {
             if (this.indexing.has(existing.id)) continue
+            // Content sync with the disk: reindex alone rebuilds from the
+            // base's persisted raw copy, so edits to a source file were never
+            // picked up. When the on-disk bytes differ from the stored copy,
+            // refresh the copy and re-index from the NEW content. Equal bytes
+            // fall through to the plain reindex (rebuild from the stored
+            // copy); a failed disk read must never wipe the stored copy or
+            // the existing vectors, so it also falls through unchanged.
+            if (store.raw !== undefined && existing.rawFilePath !== undefined) {
+              try {
+                const buffer = await readFile(full)
+                const stored = await store.raw.read(existing.rawFilePath)
+                const changed = stored === null || stored === undefined || stored.byteLength === 0
+                  || !Buffer.from(stored).equals(buffer)
+                if (changed) {
+                  const text = await parseDocumentBuffer(buffer, entry.name)
+                  // Never replace a good snapshot with empty/unreadable new
+                  // content: keep the stored copy and the old vectors.
+                  if (text.trim().length > 0) {
+                    // rawFilePath already carries the `<baseId>/` prefix (it is
+                    // the full base-relative path), so strip it before writeRel,
+                    // which prepends `<baseId>/` again — otherwise the refreshed
+                    // bytes land at a doubled path and the following reindex still
+                    // rebuilds from the stale stored copy.
+                    const relRaw = existing.rawFilePath.startsWith(`${document.baseId}/`)
+                      ? existing.rawFilePath.slice(document.baseId.length + 1)
+                      : existing.rawFilePath
+                    await store.raw.writeRel(document.baseId, relRaw, buffer)
+                    await this.reindexDocument(existing.id)
+                    continue
+                  }
+                }
+              } catch {
+                // Disk or raw read failed: fall back to the stored-copy
+                // reindex below (the copy and vectors stay intact).
+              }
+            }
             await this.reindexDocument(existing.id)
           } else {
             // New file: parse + ingest like an import, with a persisted raw
-            // copy (tree-relative path) so a later reindex can rebuild from
-            // the base even if the source disk changes.
+            // copy so a later reindex can rebuild from the base even if the
+            // source disk changes. The stored path is a fresh uuid (not the
+            // tree-relative path) so it cannot collide with a sibling root's
+            // file that happens to share the same relative path.
             const buffer = await readFile(full)
             const text = await parseDocumentBuffer(buffer, entry.name)
             if (text.trim().length === 0) continue
             let rawFilePath: string | undefined
             if (store.raw !== undefined) {
-              // Resolve the outermost root's source path so the stored
-              // relative path matches the initial import's layout.
-              let root = document
-              while (root.parentDirectoryId !== undefined) {
-                const parent = store.getDocument(root.parentDirectoryId)
-                if (parent === undefined || parent.sourceType !== 'directory') break
-                root = parent
+              rawFilePath = await store.raw.write(document.baseId, crypto.randomUUID(), safeRawExtension(entry.name), buffer)
+              try {
+                await this.ingestDocument({
+                  baseId: document.baseId,
+                  title: entry.name,
+                  sourceType: 'file',
+                  fileName: entry.name,
+                  parentDirectoryId: document.id,
+                  rawFilePath,
+                  text,
+                })
+              } catch (error) {
+                // A rejected item (e.g. duplicate content) must not leave an
+                // orphaned raw copy behind.
+                await store.raw.delete(rawFilePath)
+                throw error
               }
-              const relPath = relative(root.sourcePath ?? source, full).replace(/\\/g, '/')
-              rawFilePath = await store.raw.writeRel(document.baseId, relPath, buffer)
-              await this.ingestDocument({
-                baseId: document.baseId,
-                title: entry.name,
-                sourceType: 'file',
-                fileName: entry.name,
-                parentDirectoryId: document.id,
-                rawFilePath,
-                text,
-              })
             } else {
               await this.ingestDocument({
                 baseId: document.baseId,
@@ -2213,6 +2458,7 @@ export class KnowledgeService extends Service {
     return {
       ...(baseId !== undefined ? { baseId } : {}),
       documentCount: documents.length,
+      storedDocCount: documents.reduce((sum, doc) => sum + (doc.rawFilePath !== undefined ? 1 : 0), 0),
       chunkCount: chunkStats.count,
       charCount,
       tokenCount,
@@ -2747,6 +2993,8 @@ export class KnowledgeService extends Service {
     text: string
     /** Base-relative path of the persisted original source bytes (file docs). */
     rawFilePath?: string
+    /** Absolute source path the item was imported from (file/path imports). */
+    sourcePath?: string
     /** Pre-created placeholder id (already stored, shown while embedding). */
     placeholderId?: string
   }, signal?: AbortSignal): Promise<KnowledgeDocument> {
@@ -2791,6 +3039,7 @@ export class KnowledgeService extends Service {
         ...(input.url !== undefined ? { url: input.url } : {}),
         ...(input.parentDirectoryId !== undefined ? { parentDirectoryId: input.parentDirectoryId } : {}),
         ...(input.rawFilePath !== undefined ? { rawFilePath: input.rawFilePath } : {}),
+        ...(input.sourcePath !== undefined ? { sourcePath: input.sourcePath } : {}),
         contentHash,
         rawText: input.text,
         charCount: input.text.length,
@@ -3069,6 +3318,40 @@ function effectiveMode(requested: SearchMode, ranked: readonly RankedHit[]): Sea
   if (requested === 'hybrid') return hybrid ? 'hybrid' : 'lexical'
   // auto
   return hybrid ? 'hybrid' : 'lexical'
+}
+
+/** Bounded list of a base's top-level sources (directory roots / files / URLs /
+ *  text nodes), for the detail header. Nested children are covered by their
+ *  root, so only `parentDirectoryId === undefined` items are listed. */
+function baseSourceLines(documents: KnowledgeDocument[]): BaseSourceInfo[] {
+  const MAX = 4
+  const lines: BaseSourceInfo[] = []
+  for (const doc of documents) {
+    if (doc.parentDirectoryId !== undefined) continue
+    let kind: DocumentSourceType
+    let text: string
+    if (doc.sourceType === 'directory') {
+      kind = 'directory'
+      text = doc.sourcePath ?? doc.title
+    } else if (doc.sourceType === 'url') {
+      kind = 'url'
+      text = doc.url ?? doc.title
+    } else if (doc.sourceType === 'file') {
+      kind = 'file'
+      text = doc.sourcePath ?? doc.fileName ?? doc.title
+    } else {
+      kind = 'text'
+      text = 'node'
+    }
+    lines.push({
+      sourceId: doc.id,
+      kind,
+      text,
+      ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
+    })
+    if (lines.length >= MAX) break
+  }
+  return lines
 }
 
 function sha256(text: string): string {

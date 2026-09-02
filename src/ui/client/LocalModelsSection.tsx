@@ -125,7 +125,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const browseCacheDir = useCallback(async (): Promise<void> => {
     setError(null)
     if (props.workspaces === undefined) {
-      setError('文件夹选择不可用（当前环境无目录选择能力）')
+      setError(t('cacheDirPickUnavailable'))
       return
     }
     try {
@@ -134,7 +134,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [props.workspaces])
+  }, [props.workspaces, t])
 
   const openCacheDir = useCallback(async (): Promise<void> => {
     setError(null)
@@ -155,7 +155,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       setCacheDir(result.to)
       setError(null)
       if (result.moved > 0) {
-        setError(`${result.moved} 个模型目录已迁移到 ${result.to}`)
+        setError(t('cacheDirMigrated').replace('{count}', String(result.moved)).replace('{to}', result.to))
       } else {
         // Also silent before: a no-op migration (same dir, or the target
         // already holds the entries) showed nothing at all.

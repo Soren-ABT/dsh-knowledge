@@ -50,11 +50,12 @@ const contextWindowSchema = {
 function aggregateStats(rows: ReadonlyArray<ReturnType<KnowledgeService['stats']>>): ReturnType<KnowledgeService['stats']> {
   return rows.reduce<ReturnType<KnowledgeService['stats']>>((total, row) => ({
     documentCount: total.documentCount + row.documentCount,
+    storedDocCount: total.storedDocCount + row.storedDocCount,
     chunkCount: total.chunkCount + row.chunkCount,
     charCount: total.charCount + row.charCount,
     tokenCount: total.tokenCount + row.tokenCount,
     embedded: total.embedded || row.embedded,
-  }), { documentCount: 0, chunkCount: 0, charCount: 0, tokenCount: 0, embedded: false })
+  }), { documentCount: 0, storedDocCount: 0, chunkCount: 0, charCount: 0, tokenCount: 0, embedded: false })
 }
 
 function clampToolInt(value: number | undefined, min: number, max: number, fallback: number): number {

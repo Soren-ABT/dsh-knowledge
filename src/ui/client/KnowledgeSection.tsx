@@ -13,6 +13,7 @@ import type { CSSProperties, DragEvent } from 'react'
 import { serializeContextWindow } from '../../knowledge/context.js'
 import { KnowledgeApi } from './api.js'
 import type {
+  BaseSourceInfo,
   BaseStats,
   BaseSummary,
   ChunkView,
@@ -35,9 +36,12 @@ import {
 import {
   IconBook,
   IconCheck,
+  IconDoc,
   IconEye,
   IconFlask,
+  IconLink,
   IconMore,
+  IconPencil,
   IconPlus,
   IconRefresh,
   IconSearch,
@@ -139,6 +143,8 @@ type DialogState =
   | { kind: 'renameGroup'; group: string }
   | { kind: 'confirmDeleteGroup'; group: string }
   | { kind: 'addUrl' }
+  | { kind: 'addPath' }
+  | { kind: 'editSourcePath'; sourceId: string; initial: string }
   | { kind: 'addText' }
   | null
 
@@ -193,6 +199,10 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   const [localModelStatus, setLocalModelStatus] = useState<LocalModelStatus | null>(null)
   const [docLimit, setDocLimit] = useState(100)
   const [navWidth, setNavWidth] = useState(272)
+  // Sliding side panels (settings / recall test) are resizable too; the width
+  // is shared between them so the user's preference sticks while the panel is
+  // open.
+  const [sidePanelWidth, setSidePanelWidth] = useState(460)
   const [dragOver, setDragOver] = useState(false)
   const dragDepth = useRef(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -210,9 +220,16 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   const notify = useCallback((kind: Toast['kind'], text: string): void => {
     const id = Date.now() + Math.random()
     setToasts(prev => [...prev, { id, kind, text }])
+    // Errors/warnings carry codes the user may need to copy, so they stay
+    // until dismissed manually; success/info auto-clear after a short delay.
+    if (kind === 'error' || kind === 'warning') return
     window.setTimeout(() => {
       setToasts(prev => prev.filter(toast => toast.id !== id))
     }, 3200)
+  }, [])
+
+  const dismissToast = useCallback((id: number): void => {
+    setToasts(prev => prev.filter(toast => toast.id !== id))
   }, [])
 
   const run = useCallback(async (fn: () => Promise<void>): Promise<void> => {
@@ -261,6 +278,22 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
   }, [navWidth])
+
+  const onSideResizeStart = useCallback((event: React.MouseEvent): void => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = sidePanelWidth
+    const onMove = (ev: MouseEvent): void => {
+      // Panel sits on the right edge; dragging left grows it, right shrinks.
+      setSidePanelWidth(Math.min(680, Math.max(360, startWidth - (ev.clientX - startX))))
+    }
+    const onUp = (): void => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [sidePanelWidth])
 
   // Local embedding readiness, for the empty-state guidance.
   useEffect(() => {
@@ -511,6 +544,56 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       }
     })
   }, [api, run, onImported, notify, selectedBaseId, currentDirectoryId])
+
+  const promptForPath = useCallback((): void => {
+    if (selectedBaseId === null) return
+    setDialog({ kind: 'addPath' })
+  }, [selectedBaseId])
+
+  const addPath = useCallback((path: string): void => {
+    if (selectedBaseId === null) return
+    const trimmed = path.trim()
+    if (trimmed === '') return
+    void run(async () => {
+      try {
+        const result = await api.importFromPath(selectedBaseId, trimmed)
+        setDialog(null)
+        if (result.errors.length > 0) {
+          notify('warning', t('pathImportPartial')
+            .replace('{count}', String(result.imported))
+            .replace('{errors}', String(result.errors.length)))
+        } else {
+          notify('success', `${t('tabPath')}: ${result.kind === 'directory' ? `${result.imported} ${t('docCount')}` : result.imported}`)
+        }
+        await refreshBases()
+        await reloadDocuments()
+      } catch (err) {
+        notify('error', err instanceof Error ? err.message : String(err))
+      }
+    })
+  }, [api, run, refreshBases, reloadDocuments, notify, selectedBaseId, t])
+
+  const promptForSourcePath = useCallback((source: BaseSourceInfo): void => {
+    if (selectedBaseId === null) return
+    if (source.sourcePath === undefined) return
+    setDialog({ kind: 'editSourcePath', sourceId: source.sourceId, initial: source.sourcePath })
+  }, [selectedBaseId])
+
+  const editSourcePath = useCallback((sourceId: string, path: string): void => {
+    if (selectedBaseId === null) return
+    const trimmed = path.trim()
+    if (trimmed === '') return
+    void run(async () => {
+      try {
+        const result = await api.setBaseSourcePath(selectedBaseId, sourceId, trimmed)
+        setDialog(null)
+        notify('success', `${t('sourcePathEdit')}: ${result.set}`)
+        await refreshBases()
+      } catch (err) {
+        notify('error', err instanceof Error ? err.message : String(err))
+      }
+    })
+  }, [api, run, refreshBases, notify, selectedBaseId, t])
 
   const addText = useCallback((title: string, content: string): void => {
     if (selectedBaseId === null) return
@@ -895,7 +978,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
             apiKey: config.apiKey,
           })
         } catch (error) {
-          notify('error', `${t('dimensionProbeFailed')}：${error instanceof Error ? error.message : String(error)}`)
+          notify('error', `${t('dimensionProbeFailed')}: ${error instanceof Error ? error.message : String(error)}`)
           return
         }
       }
@@ -1047,6 +1130,15 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     { key: 'delete', label: t('delete'), danger: true, onSelect: () => setDialog({ kind: 'confirmDeleteGroup', group }) },
   ]
 
+  const baseSourceGlyph = (kind: 'text' | 'file' | 'url' | 'directory'): JSX.Element => {
+    switch (kind) {
+      case 'directory': return <IconFolderOpen size={12} />
+      case 'url': return <IconLink size={12} />
+      case 'file': return <IconDoc size={12} />
+      default: return <IconPencil size={12} />
+    }
+  }
+
   const renderBaseRow = (base: BaseSummary): JSX.Element => (
     <div
       key={base.id}
@@ -1076,6 +1168,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   const addSourceMenu: MenuEntry[] = [
     { key: 'file', label: t('tabFile'), onSelect: () => fileInputRef.current?.click() },
     { key: 'dir', label: t('tabDir'), onSelect: () => dirInputRef.current?.click() },
+    { key: 'path', label: t('tabPath'), onSelect: () => promptForPath() },
     { key: 'url', label: t('tabUrl'), onSelect: () => promptForUrl() },
     { key: 'text', label: t('tabText'), onSelect: () => setDialog({ kind: 'addText' }) },
   ]
@@ -1130,7 +1223,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         </span>
       </div>
 
-      <Toasts toasts={toasts} />
+      <Toasts toasts={toasts} onDismiss={dismissToast} />
 
       <div style={style.body}>
         <aside style={{ ...style.sidebar, width: navWidth }} className="kb-scroll">
@@ -1188,9 +1281,11 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         </aside>
 
         <div
+          className="kb-sash"
           onMouseDown={onNavResizeStart}
-          style={{ width: 5, cursor: 'col-resize', flexShrink: 0, background: 'transparent', borderRight: `1px solid ${C.border}` }}
+          style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: 'transparent', borderRight: `1px solid ${C.border}` }}
           title={t('dragResize')}
+          aria-label={t('dragResize')}
         />
 
         <main style={style.main} className="kb-scroll">
@@ -1249,6 +1344,31 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                 </span>
               </div>
 
+              {/* Base origin(s), between the name and the stats: directory
+                  path / file / URL / node for manually added text. The pencil
+                  repoints the base's source path (validated server-side). */}
+              {(selectedBase.sourceInfo ?? []).length > 0 && (
+                <div style={style.baseSourceRow}>
+                  {selectedBase.sourceInfo!.map(source => (
+                    <span key={source.sourceId} style={style.baseSourceItem}>
+                      <span style={style.baseSourceGlyph}>{baseSourceGlyph(source.kind)}</span>
+                      <span style={style.baseSourceText} title={source.text}>{source.text}</span>
+                      {source.sourcePath !== undefined && (
+                        <button
+                          className="kb-iconbtn"
+                          style={{ ...style.baseSourceEdit, ...style.iconOnlyButton }}
+                          title={t('sourcePathEdit')}
+                          aria-label={`${t('sourcePathEdit')}: ${source.text}`}
+                          onClick={() => promptForSourcePath(source)}
+                        >
+                          <IconPencil size={11} />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {selectedDocId !== null && selectedDoc !== null ? (
                 <DocumentDetailPanel
                   key={selectedDoc.id}
@@ -1265,7 +1385,8 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                 <>
                   {stats !== null && (
                     <div style={style.statsRow}>
-                      <StatChip value={stats.documentCount} label={t('statsDocs')} />
+                      <StatChip value={stats.documentCount} label={t('statsSourceDocs')} title={t('statsSourceDocsTitle')} />
+                      <StatChip value={stats.storedDocCount} label={t('statsStoredDocs')} title={t('statsStoredDocsTitle')} />
                       <StatChip value={stats.chunkCount} label={t('statsChunks')} />
                       <StatChip value={stats.tokenCount} label={t('statsTokens')} />
                       <StatChip value={formatSize(stats.charCount)} label={t('statsChars')} />
@@ -1300,7 +1421,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                         background: 'color-mix(in srgb, var(--dsw-alias-brand-primary, #3b6ef6) 8%, transparent)',
                         borderRadius: 10, pointerEvents: 'none',
                       }}>
-                        <span style={{ fontSize: 14, fontWeight: 600, color: C.accent, background: 'var(--dsw-bg-base, #fff)', padding: '8px 16px', borderRadius: 999, boxShadow: '0 2px 10px rgba(0,0,0,0.12)' }}>
+                        <span style={{ fontSize: 14, fontWeight: 600, color: C.accent, background: C.bg, padding: '8px 16px', borderRadius: 999, boxShadow: '0 2px 10px rgba(0,0,0,0.12)' }}>
                           {t('dragToUpload')}
                         </span>
                       </div>
@@ -1319,7 +1440,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                             <IconRefresh size={13} />{t('bulkReindex')}
                           </button>
                           <button
-                            style={style.primaryDanger}
+                            className="kb-danger-primary" style={style.primaryDanger}
                             disabled={busy}
                             onClick={() => setDialog({ kind: 'confirmBulkDelete', count: checkedDocs.length })}
                           >
@@ -1331,7 +1452,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                           <span style={{ fontSize: 11, color: C.muted }}>
-                            {t('updatedAtText')} {formatRelativeTime(selectedBase.updatedAt)}
+                            {t('updatedAtText')} {formatRelativeTime(selectedBase.updatedAt, t)}
                           </span>
                           {selectedBaseLocalModel !== null && localModelStatus !== null && localModelStatus.status !== 'ready' && (
                             <span
@@ -1360,7 +1481,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                         </span>
                         <PopoverMenu
                           align="end"
-                          trigger={<button style={style.primary} disabled={busy}><IconPlus />{t('addSource')}</button>}
+                          trigger={<button className="kb-primary" style={style.primary} disabled={busy}><IconPlus />{t('addSource')}</button>}
                           entries={addSourceMenu}
                         />
                       </div>
@@ -1382,7 +1503,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                               <div style={{ display: 'flex', justifyContent: 'center' }}>
                                 <PopoverMenu
                                   align="start"
-                                  trigger={<button style={style.primary} disabled={busy}><IconPlus />{t('addSource')}</button>}
+                                  trigger={<button className="kb-primary" style={style.primary} disabled={busy}><IconPlus />{t('addSource')}</button>}
                                   entries={addSourceMenu}
                                 />
                               </div>
@@ -1547,7 +1668,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                         style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, color: C.danger }}
                                         tabIndex={0}
                                         role="img"
-                                        aria-label={`${t('embeddingFailed')}：${reason}`}
+                                        aria-label={`${t('embeddingFailed')}: ${reason}`}
                                         title={reason}
                                       >
                                         ✕ {t('embeddingFailed')}
@@ -1564,7 +1685,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                   )
                                 })()}
                                 <span style={{ fontSize: 11, color: C.muted }}>
-                                  {doc.updatedAt !== undefined ? formatRelativeTime(doc.updatedAt) : ''}
+                                  {doc.updatedAt !== undefined ? formatRelativeTime(doc.updatedAt, t) : ''}
                                 </span>
                                 <PopoverMenu
                                   align="end"
@@ -1576,7 +1697,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                             {hasMoreDocuments && (
                               <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 0 4px' }}>
                                 <button className="kb-row" style={style.button} onClick={() => setDocLimit(v => v + 100)}>
-                                  {t('loadMore')}（{renderedDocuments.length}/{visibleDocuments.length}）
+                                  {t('loadMore')} ({renderedDocuments.length}/{visibleDocuments.length})
                                 </button>
                               </div>
                             )}
@@ -1595,7 +1716,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         </main>
 
         {ragOpen && globalConfig !== null && selectedBase !== null && (
-          <SidePanel title={t('baseSettings')} onClose={() => setRagOpen(false)}>
+          <SidePanel title={t('baseSettings')} onClose={() => setRagOpen(false)} width={sidePanelWidth} onResizeWidth={onSideResizeStart}>
             <RagConfigPanel
               base={selectedBase}
               globalConfig={globalConfig}
@@ -1608,7 +1729,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         )}
 
         {recallOpen && selectedBase !== null && (
-          <SidePanel title={t('recallTest')} onClose={() => setRecallOpen(false)}>
+          <SidePanel title={t('recallTest')} onClose={() => setRecallOpen(false)} width={sidePanelWidth} onResizeWidth={onSideResizeStart}>
             <RecallPanel
               t={t}
               busy={busy}
@@ -1722,6 +1843,24 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
           onClose={() => setDialog(null)}
         />
       )}
+      {dialog?.kind === 'addPath' && (
+        <PromptDialog
+          title={t('tabPath')}
+          label={t('pathDesc')}
+          initial=""
+          onOk={(value) => { setDialog(null); addPath(value) }}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'editSourcePath' && (
+        <PromptDialog
+          title={t('sourcePathEdit')}
+          label={t('sourcePathPrompt')}
+          initial={dialog.initial}
+          onOk={(value) => { setDialog(null); editSourcePath(dialog.sourceId, value) }}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === 'addText' && (
         <TextDocumentDialog
           t={t}
@@ -1758,10 +1897,10 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
               </ul>
             )}
             <div style={{ ...style.actionsRow, justifyContent: 'flex-end' }}>
-              <button style={style.primary} disabled={pendingResolution !== null} onClick={() => resolveConflict('rename')}>
+              <button className="kb-primary" style={style.primary} disabled={pendingResolution !== null} onClick={() => resolveConflict('rename')}>
                 {pendingResolution === 'rename' ? t('resolvingConflict') : t('conflictKeepAll')}
               </button>
-              <button style={style.primaryDanger} disabled={pendingResolution !== null} onClick={() => resolveConflict('replace')}>
+              <button className="kb-danger-primary" style={style.primaryDanger} disabled={pendingResolution !== null} onClick={() => resolveConflict('replace')}>
                 {pendingResolution === 'replace' ? t('resolvingConflict') : t('conflictReplaceAll')}
               </button>
               <button style={style.button} disabled={pendingResolution !== null} onClick={() => resolveConflict('cancel')}>
@@ -1838,11 +1977,11 @@ function failureReasonLabel(doc: DocumentSummary, t: Translate): string {
     case 'interrupted':
       return t('errorInterrupted')
     case 'dimension_mismatch':
-      return `${t('errorDimensionMismatch')}：${doc.embeddingError ?? ''}`
+      return `${t('errorDimensionMismatch')}: ${doc.embeddingError ?? ''}`
     case 'parse_failed':
-      return `${t('errorParseFailed')}：${doc.embeddingError ?? ''}`
+      return `${t('errorParseFailed')}: ${doc.embeddingError ?? ''}`
     case 'embedding_provider':
-      return `${t('errorEmbeddingProvider')}：${doc.embeddingError ?? ''}`
+      return `${t('errorEmbeddingProvider')}: ${doc.embeddingError ?? ''}`
     default:
       return doc.embeddingError ?? t('embeddingFailed')
   }
@@ -1895,7 +2034,7 @@ function RecallPanel(props: {
             >🕘</button>
           )}
         </div>
-        <button style={style.primary} disabled={!canSearch} onClick={() => props.onSearch(props.searchQuery)}>⚡{t('searchButton')}</button>
+        <button className="kb-primary" style={style.primary} disabled={!canSearch} onClick={() => props.onSearch(props.searchQuery)}>⚡{t('searchButton')}</button>
 
         {hasHistory && historyOpen && (
           <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 40, maxHeight: 220, overflowY: 'auto', background: C.overlay, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: '0 10px 32px rgba(0,0,0,0.18)', padding: 4 }}>
@@ -1964,7 +2103,7 @@ function RecallResultCard(props: { hit: SearchHit; index: number; t: Translate }
     try {
       // Copy a full Markdown citation (quote + source) so the excerpt can be
       // pasted into the conversation with its traceable source line.
-      await navigator.clipboard.writeText(citationMarkdown(hit))
+      await navigator.clipboard.writeText(citationMarkdown(hit, t))
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
     } catch {
@@ -1998,23 +2137,47 @@ function RecallResultCard(props: { hit: SearchHit; index: number; t: Translate }
   )
 }
 
-function SidePanel(props: { title: string; onClose: () => void; children: React.ReactNode }): JSX.Element {
+function SidePanel(props: {
+  title: string
+  onClose: () => void
+  children: React.ReactNode
+  width?: number
+  onResizeWidth?: (event: React.MouseEvent) => void
+}): JSX.Element {
+  const resizable = props.onResizeWidth !== undefined
   return (
     <div style={style.sidePanelScrim} onClick={props.onClose}>
-      <div style={style.sidePanel} onClick={(e) => e.stopPropagation()}>
-        <div style={style.sidePanelHeader}>
-          <span style={{ fontSize: 14, fontWeight: 600 }}>{props.title}</span>
-          <button className="kb-row" style={style.closeButton} onClick={props.onClose} aria-label="close">✕</button>
+      <div
+        style={{ ...style.sidePanel, width: props.width ?? 460, flexDirection: 'row' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {resizable && (
+          <div
+            className="kb-sash"
+            onMouseDown={props.onResizeWidth}
+            style={{
+              width: 8, cursor: 'col-resize', flexShrink: 0, alignSelf: 'stretch',
+              position: 'relative', zIndex: 6, borderRight: `1px solid ${C.border}`,
+            }}
+            title="Drag to resize"
+            aria-label="Drag to resize"
+          />
+        )}
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <div style={style.sidePanelHeader}>
+            <span style={{ fontSize: 14, fontWeight: 600 }}>{props.title}</span>
+            <button className="kb-row" style={style.closeButton} onClick={props.onClose} aria-label="close">✕</button>
+          </div>
+          <div style={style.sidePanelBody} className="kb-scroll">{props.children}</div>
         </div>
-        <div style={style.sidePanelBody} className="kb-scroll">{props.children}</div>
       </div>
     </div>
   )
 }
 
-function StatChip(props: { value: string | number; label: string }): JSX.Element {
+function StatChip(props: { value: string | number; label: string; title?: string }): JSX.Element {
   return (
-    <span style={style.statChip}>
+    <span style={style.statChip} title={props.title}>
       <span style={style.statValue}>{props.value}</span>
       <span style={style.statLabel}>{props.label}</span>
     </span>
@@ -2290,7 +2453,7 @@ function DocumentDetailPanel(props: {
                 return (
                   <div key={chunk.id} style={{ border: `1px solid ${C.border}`, borderRadius: 8, marginBottom: 8, background: C.surface }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: `1px solid ${C.border}` }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 20, height: 20, padding: '0 6px', borderRadius: 5, background: C.accent, color: '#fff', fontSize: 11, fontWeight: 600 }}>{chunk.index + 1}</span>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 20, height: 20, padding: '0 6px', borderRadius: 5, background: C.accent, color: 'var(--dsw-alias-label-primary-foreground, #fff)', fontSize: 11, fontWeight: 600 }}>{chunk.index + 1}</span>
                       <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {chunk.heading !== undefined ? chunk.heading : ''}
                       </span>
@@ -2338,12 +2501,12 @@ function scoreColor(score: number, palette: typeof C): string {
 }
 
 /** Markdown citation block for one search hit: quote + source line. */
-function citationMarkdown(hit: SearchHit): string {
+function citationMarkdown(hit: SearchHit, t: Translate): string {
   const quote = hit.text.split('\n').map(line => `> ${line}`).join('\n')
   const source = hit.heading !== undefined && hit.heading.length > 0
     ? `${hit.documentTitle} / ${hit.heading}`
     : hit.documentTitle
-  return `${quote}\n>\n> — ${source}（知识库 ${hit.baseId}）`
+  return `${quote}\n>\n> — ${source}${t('citationSource').replace('{id}', hit.baseId)}`
 }
 
 function highlightMatches(text: string, query: string, markStyle: CSSProperties): JSX.Element {
