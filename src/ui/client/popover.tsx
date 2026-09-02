@@ -5,10 +5,14 @@
  * @module dsh-knowledge/client/popover
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
+import { placePopover, placeSubmenu } from './popover-placement.js'
+import type { ViewportPosition } from './popover-placement.js'
 import { style } from './theme.js'
+
+const MENU_WIDTH = 220
 
 export interface MenuEntry {
   key: string
@@ -32,7 +36,7 @@ export function PopoverMenu(props: {
   // mousedown dismissal unmounts the menu before the item's click fires and
   // every menu action silently dies).
   const menuRef = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ top: number; left?: number; right?: number } | null>(null)
+  const [pos, setPos] = useState<ViewportPosition | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -54,22 +58,31 @@ export function PopoverMenu(props: {
     }
   }, [open])
 
+  // Correct the initial estimate with the rendered menu's actual dimensions.
+  useLayoutEffect(() => {
+    if (!open || ref.current === null || menuRef.current === null) return
+    const trigger = ref.current.getBoundingClientRect()
+    const menu = menuRef.current.getBoundingClientRect()
+    const next = placePopover(
+      trigger,
+      { width: menu.width, height: menu.height },
+      { width: window.innerWidth, height: window.innerHeight },
+      props.align,
+    )
+    setPos(current => current?.top === next.top && current.left === next.left ? current : next)
+  }, [open, props.align, props.entries])
+
   const toggle = (): void => {
     const next = !open
     setOpen(next)
     if (next && ref.current !== null) {
       const rect = ref.current.getBoundingClientRect()
-      // Open below the trigger; flip above when there isn't enough room below
-      // (menu is rendered in a body-level portal so it must stay in the viewport).
-      const est = estimateMenuHeight(props.entries)
-      const below = window.innerHeight - rect.bottom - 8
-      const above = rect.top - 8
-      const top = (below >= est || below >= above) ? rect.bottom + 4 : Math.max(8, rect.top - est - 4)
-      setPos({
-        top,
-        left: props.align === 'end' ? undefined : rect.left,
-        right: props.align === 'end' ? window.innerWidth - rect.right : undefined,
-      })
+      setPos(placePopover(
+        rect,
+        { width: MENU_WIDTH, height: estimateMenuHeight(props.entries) },
+        { width: window.innerWidth, height: window.innerHeight },
+        props.align,
+      ))
     }
   }
 
@@ -89,7 +102,8 @@ export function PopoverMenu(props: {
             position: 'fixed',
             top: pos.top,
             left: pos.left,
-            right: pos.right,
+            width: MENU_WIDTH,
+            maxWidth: 'calc(100vw - 16px)',
             // Body-level portal: sit above the whole panel (zIndex 300) so the
             // menu can never be buried by list rows or clipped by a scrollable
             // sidebar's overflow.
@@ -113,7 +127,7 @@ function estimateMenuHeight(entries: readonly MenuEntry[]): number {
 }
 
 function MenuItems(props: { entries: readonly MenuEntry[]; onCloseAll: () => void }): JSX.Element {
-  const [openSub, setOpenSub] = useState<string | null>(null)
+  const [openSub, setOpenSub] = useState<{ key: string; position: ViewportPosition } | null>(null)
   const closeTimer = useRef<number | null>(null)
   const cancelClose = (): void => {
     if (closeTimer.current !== null) {
@@ -128,6 +142,18 @@ function MenuItems(props: { entries: readonly MenuEntry[]; onCloseAll: () => voi
   useEffect(() => () => {
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
   }, [])
+  const openChildren = (entry: MenuEntry, element: HTMLElement): void => {
+    if (entry.children === undefined) return
+    const rect = element.getBoundingClientRect()
+    setOpenSub({
+      key: entry.key,
+      position: placeSubmenu(
+        rect,
+        { width: MENU_WIDTH, height: estimateMenuHeight(entry.children) },
+        { width: window.innerWidth, height: window.innerHeight },
+      ),
+    })
+  }
   return (
     <>
       {props.entries.map(entry =>
@@ -135,15 +161,16 @@ function MenuItems(props: { entries: readonly MenuEntry[]; onCloseAll: () => voi
           ? <div key={entry.key} style={style.menuSeparator} />
           : (
               <div key={entry.key} style={{ position: 'relative' }}
-                onMouseEnter={() => { if (entry.children !== undefined) { cancelClose(); setOpenSub(entry.key) } }}
-                onMouseLeave={() => { if (openSub === entry.key) scheduleClose() }}
+                onMouseEnter={(event) => { if (entry.children !== undefined) { cancelClose(); openChildren(entry, event.currentTarget) } }}
+                onMouseLeave={() => { if (openSub?.key === entry.key) scheduleClose() }}
               >
                 <button
                   className="kb-row kb-menuitem"
                   style={{ ...style.menuItem, ...(entry.danger === true ? style.menuItemDanger : {}) }}
-                  onClick={() => {
+                  onClick={(event) => {
                     if (entry.children !== undefined) {
-                      setOpenSub(openSub === entry.key ? null : entry.key)
+                      if (openSub?.key === entry.key) setOpenSub(null)
+                      else openChildren(entry, event.currentTarget.parentElement ?? event.currentTarget)
                       return
                     }
                     props.onCloseAll()
@@ -156,8 +183,16 @@ function MenuItems(props: { entries: readonly MenuEntry[]; onCloseAll: () => voi
                   </span>
                   {entry.children !== undefined && <span style={{ color: 'inherit', opacity: 0.55, fontSize: 10 }}>▸</span>}
                 </button>
-                {entry.children !== undefined && openSub === entry.key && (
-                  <div style={{ ...style.menu, top: 'calc(100% + 4px)', left: 0, position: 'absolute' }}
+                {entry.children !== undefined && openSub?.key === entry.key && (
+                  <div style={{
+                    ...style.menu,
+                    position: 'fixed',
+                    top: openSub.position.top,
+                    left: openSub.position.left,
+                    width: MENU_WIDTH,
+                    maxWidth: 'calc(100vw - 16px)',
+                    zIndex: 1001,
+                  }}
                     onMouseEnter={cancelClose}
                     onMouseLeave={scheduleClose}
                   >

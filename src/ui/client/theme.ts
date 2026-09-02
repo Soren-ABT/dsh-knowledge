@@ -160,7 +160,7 @@ export const style = {
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
     fontFamily: "'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace",
   } as CSSProperties,
-  baseSourceEdit: { marginLeft: 'auto', flexShrink: 0 } as CSSProperties,
+  baseSourceEdit: { flexShrink: 0 } as CSSProperties,
   main: { flex: 1, minWidth: 0, overflowY: 'auto', padding: 18, display: 'flex', flexDirection: 'column', gap: 14 } as CSSProperties,
   card: { border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface, padding: 14, position: 'relative' } as CSSProperties,
   cardTitle: { fontSize: 13, fontWeight: 600, margin: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' } as CSSProperties,

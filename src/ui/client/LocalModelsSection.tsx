@@ -181,24 +181,6 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     }
   }, [api, ollamaBase, t])
 
-  // Make the Ollama server used here the global embedding default, so new
-  // bases inherit it (per-base settings only override it). Non-fatal on
-  // error — model management must keep working even if persistence fails.
-  const persistOllamaDefault = useCallback((): void => {
-    const base = ollamaBase.trim()
-    if (base === '') return
-    void api.setConfig({ embeddingProvider: 'ollama', embeddingBaseUrl: base }).catch(() => {})
-    // Also default the embedding model so a fresh base embeds out of the box:
-    // the first installed embedding model (or a recommended one) becomes the
-    // global default only while none is configured yet.
-    void api.getConfig().then(current => {
-      if ((current.embeddingModel ?? '').trim() !== '') return
-      const candidate = [...ollamaSuggestions.ollamaEmbedding, ...ollamaInstalled.map(m => m.name)]
-        .find(name => /embed|bge|mxbai|e5|gte|nomic/i.test(name))
-      if (candidate !== undefined) void api.setConfig({ embeddingModel: candidate }).catch(() => {})
-    }).catch(() => {})
-  }, [api, ollamaBase, ollamaInstalled, ollamaSuggestions])
-
   // Live Ollama pull progress (polled only while a pull is actually running).
   // The moment a pull leaves the `pulling` state its card clears and, on
   // success, an installed-model refresh brings the new model into the list.
@@ -270,14 +252,6 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     setError(null)
     try {
       await api.pullOllamaModel(model, ollamaBase)
-      // Pulling from an Ollama server makes it the global embedding default
-      // (provider + URL), so new bases inherit it instead of reconfiguring.
-      persistOllamaDefault()
-      // If the pulled model is an embedding model, also set it as the global
-      // embedding-model default.
-      if (ollamaSuggestions.ollamaEmbedding.includes(model) || /embed|bge|mxbai|e5|gte|nomic/i.test(model)) {
-        void api.setConfig({ embeddingModel: model }).catch(() => {})
-      }
       setPullingModels(prev => prev.some(p => p.model === model)
         ? prev
         : [...prev, { model, status: 'pulling', progress: 0, message: '' }])
@@ -290,7 +264,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
       setError(`${err instanceof Error ? err.message : String(err)} ${t('ollamaNeedInstall')}`)
       setOllamaBusy(false)
     }
-  }, [api, ollamaModel, ollamaBase, ollamaSuggestions, persistOllamaDefault, t])
+  }, [api, ollamaModel, ollamaBase, t])
 
   const cancelOllama = useCallback(async (model: string): Promise<void> => {
     try {
@@ -585,7 +559,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             value={ollamaBase}
             onChange={(e) => setOllamaBase(e.target.value)}
           />
-          <button className="kb-btn" style={style.button} disabled={ollamaBusy} onClick={() => { persistOllamaDefault(); void refreshOllamaTags() }}>
+          <button className="kb-btn" style={style.button} disabled={ollamaBusy} onClick={() => void refreshOllamaTags()}>
             <IconRefresh size={13} />{t('ollamaRefresh')}
           </button>
         </div>
