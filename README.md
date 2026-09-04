@@ -21,260 +21,447 @@
 
 ---
 
-## 它带来什么
+## 为什么选择 dsh-knowledge
 
-- **知识库与文档**：创建/删除/重命名知识库与文档；**分组管理**（新建/重命名/删除分组，侧边栏按分组折叠导航，知识库可在菜单中「移动到分组」）；**添加文档**（文件 / 网页 / 目录 / **文本（笔记）四入口**，纯文本亦可经模型工具 `knowledge_add_document`）、多文件拖拽上传（单文件 ≤22MB，文件选择器与拖拽均单次最多 20 个并过滤不支持扩展名，**5 路并发后台导入池**）、**目录导入**（递归扫描 txt/md/csv/html/json/pdf/docx/doc/pptx/ppt/xlsx/xls/epub 等，**导入为可下钻的文件夹树**，源文件复制进知识库 raw 存储，源盘变更后仍可重建）、URL 导入；**同名冲突弹窗决议**（服务端权威检测，**列出冲突文件名**，「全部重命名 / 替换 / 取消」+ 解析中锁定）、内容哈希去重；**文档预览**（PDF 内嵌查看器 + 文本/分块预览，超大文件自动截断）；资料行显示 **✓ 就绪状态徽标、实时导入状态（等待中 / 解析中 / 嵌入中 NN%）与相对更新时间**，失败行悬浮显示**本地化原因**（可聚焦、读屏可读），文件夹在任一后代处理时显示「导入中」；全部操作走正式对话框与 Toast 通知（无 window.prompt/confirm）。
-- **扫描件 OCR（本地引擎）**：扫描版 PDF、**矢量绘制的无文本层 PDF** 与图片自动走**整页渲染 + PaddleOCR PP-OCRv5**（约 21MB 模型，含 1.8 万字符中文词典，设置 → 本地模型一键下载；页面用 mupdf WASM 渲染），识别失败自动回退 Tesseract；**1-bit 位图（JBIG2/CCITT 传真式扫描件）也能正确识别**；文本层损坏或逐字符排版的 PDF 会自动切换识别路径；识别文本照常分块、向量化、可检索。
-- **每库独立配置**：每个知识库可单独指定 embedding 提供方/模型（含**本地模型**）、**重排模型**（远程 API 或 **本地 bge-reranker**）、分块大小与 topK、**语义分块**、冲突策略、URL 自动刷新等，未设置字段自动继承全局配置；改配置后一键重建索引（全库或单条资料）。
-- **可选 MinerU 远程文档处理**：PDF 可交给 [MinerU](https://github.com/opendatalab/MinerU) 服务解析（公式、表格、版式还原成 Markdown），知识库设置里填入 MinerU API Key（全局或每库覆盖）即可；未配置时自动走本地解析链路。
-- **向量化与检索**：可插拔 embedding 提供方 —— 任意 OpenAI 兼容 `/embeddings` 端点（OpenAI、DeepSeek、SiliconFlow、本地网关…）、Ollama，或 **进程内本地模型（transformers.js，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX，无需联网服务）**；**混合检索**（BM25 + 向量 + Reciprocal Rank Fusion）、**重排模型（rerank，Jina/SiliconFlow/Cohere v2 风格 API 或本地跨编码器）**、**MMR 结果去重**、检索模式（auto/hybrid/vector/lexical）与相似度阈值、**多查询检索**（主查询 + 最多 3 个去重变体经 RRF 融合，最多重排一次）；每个命中附带按 `before → anchor → after` 排列、受 Token 预算约束的 `ContextWindow`，上下文在查询时动态生成，不把桥接文本重复写入索引；未配置时自动退化关键词（CJK 二元组 + 拉丁词 BM25），零配置即可用；召回测试显示命中来源、相关度、双分数、**耗时**，**复制引用（Markdown 引用块 + 来源行）**，并保留**检索历史**可一键重放。
-- **智能分块**：标题感知分块（保留 Markdown 标题路径，**代码围栏保护**），并将「文档标题 + 标题路径」作为上下文注入 embedding 与检索；分块大小/重叠为 **Token 预算**（按文档实测字符/Token 比换算，与 Cherry Studio 一致），长块按 **Cherry 断点评分模型**切分（标题 100 → 代码边界 80 → 分隔线 60 → 段落 20 → 句读 8 → 列表 5 → 裸换行 1，窗口内距离衰减），CJK/拉丁语混排窗口大小一致；**语义分块**（段落嵌入 + 相邻相似段合并，零额外嵌入开销）与 **Token 上限细化**（超限在句号/逗号/空格边界继续切分）可选开启。
-- **索引管理**：按当前配置**重建索引**（改分块大小 / 换 embedding 后一键重切 + 重向量化）、批量 embedding、统计（文档/分块/字符/Token 数、是否已向量化）。
-- **模型工具**：`knowledge_search`（含 citations、`chunkIndex` 与有序 `ContextWindow`）、`knowledge_list_bases`、`knowledge_create_base`、`knowledge_delete_base`、`knowledge_add_document`、`knowledge_list_documents`、`knowledge_delete_document`、`knowledge_import_url`、`knowledge_refresh_url`、`knowledge_stats`、`knowledge_get_document`（普通分页或围绕 `anchorChunkId` / `anchorIndex` 续读）、`knowledge_read_document`（按字符区间分段阅读 / 正则定位并返回字符偏移）、`knowledge_reindex_document`、`knowledge_reindex_base`（共 14 个）。所有读写工具与自动检索共用严格的“已启用知识库”边界；空/失效选择不会扩大到全库，永久删除需经宿主批准。
-- **管理面板**：**不在设置内** —— 侧边栏底部（设置旁）的「知识库」入口打开工作区整页浮层，布局：左侧搜索框 + **分组折叠导航** + 彩色头像知识库卡片（右键菜单：重命名/移动到分组/新建分组/删除），右侧统计芯片、**「更新于」时间**、添加文档弹窗、**表格化资料列表（勾选列 + 名称/类型/状态/更新时间 + 多选批量重建/批量删除）**、分块/原文预览、重建索引、检索测试（命中高亮 + 向量/关键词双分数 + 历史 + 复制引用）、全局与每库设置弹窗（文档处理 / 图表描述 / 嵌入模型 / 重排模型 / TopK / 高级设置）、Toast 通知、空状态与悬停动效。
-- **本地模型管理（设置内）**：设置 →「本地模型」页面（`settings.section` 插槽），**嵌入、重排与 OCR 模型卡片**：模型名称/说明、**就绪徽标**、**下载 / 重试 / 删除** 按钮、**实时下载进度条**；**模型缓存目录可配置**（原生文件夹选择器 + 打开目录 + **一键迁移**已下载模型到新位置，迁移自动跳过隐藏目录、不会把目标目录复制进自身，不再盲目占满 C 盘）；**Ollama 管理**（拉取/取消/删除、**已装模型卡片列表（含大小）**、下载进度卡片、嵌入与视觉模型推荐）。
-- **持久化**：业务状态（知识库/文档/运行时配置）经 DSH 官方 `storageDomain` seam 落盘（`json` 后端，默认随 `web` profile 提供）；**分块数据存于独立 SQLite 文件**（`<DSH_HOME>/storages/knowledge-chunks.sqlite`，可用 `chunkStorePath` 配置）——每分块一行、每次写入/删除为单条语句，不随数据量恶化；词法检索走 FTS5 三元组全文索引、向量检索使用**常驻内存缓存**（Float32Array，精确失效），启动不再全量载入内存。升级后首次启动自动完成旧数据迁移（幂等、去重）；无存储后端时自动降级为内存模式。
+dsh-knowledge 把文档导入、解析、分块、检索、证据组织和模型续读整合进 DSH。它既可以零向量配置运行，也可以完全使用本地模型，不要求额外部署独立的知识库服务。
 
----
-
-## 0.3.9 本地路径来源追踪与界面改进
-
-- 新增按绝对路径导入单个文件或完整目录树，并记录每个顶层来源的稳定 id、类型和原始路径；目录重扫可同步新增、修改和删除的文件。
-- 修改来源路径时只作用于用户选中的顶层文件或目录。相对路径、跨知识库 id、嵌套子项以及文件/目录类型不匹配会被明确拒绝；跨扩展名切换会采用新文件对应的解析器。
-- 不同目录根即使含有相同相对路径，也使用互不冲突的 raw 缓存。重建失败会保留上一份已提交原始数据，部分目录导入的逐文件错误会返回界面。
-- Ollama embedding 地址留空时默认连接 `http://127.0.0.1:11434`；浏览或拉取 Ollama 模型不会再隐式改变当前 embedding 配置。
-- 统一主题 token，改进根级/嵌套 popover 的视口定位、关闭行为、Toast 交互和中英文案。
-
-本版本为加法兼容升级，不迁移数据库、不自动重建索引、不重新下载模型；0.3.8 的检索证据链和工具契约保持不变。社区 PR #10–#13 的 ThinkForge-core 原作者提交及署名完整保留。
+| 能力 | 说明 |
+|---|---|
+| 文档来源 | 文件、目录、网页和文本笔记；本地路径可持续重扫和重新索引 |
+| 混合检索 | FTS5 BM25、向量召回、RRF 融合、MMR 去重以及可选重排 |
+| 证据上下文 | 按文档顺序动态生成 `ContextWindow`，支持围绕命中位置继续阅读 |
+| 本地运行 | 本地 embedding、本地 rerank、本地 OCR；也支持 OpenAI 兼容接口和 Ollama |
+| 文档处理 | 常见办公格式、扫描 PDF、PaddleOCR、Tesseract 回退及可选 MinerU |
+| 管理界面 | 知识库分组、批量导入、预览、召回测试、模型管理和索引重建 |
 
 ---
 
-## 0.3.8 检索证据链
+## 快速开始
 
-`knowledge_search` 仍保留完整的 `SearchHit.text` 作为规范锚点，同时新增可选、加法兼容的 `contextWindow`：
+### 1. 准备环境
 
-```ts
-interface ContextWindow {
-  anchorChunkId: string
-  anchorIndex: number
-  before: ContextChunkExcerpt[]
-  anchor: ContextChunkExcerpt
-  after: ContextChunkExcerpt[]
-  estimatedTokens: number
-  hasMoreBefore: boolean
-  hasMoreAfter: boolean
-}
+- Node.js：`^22.19.0 || >=24.0.0`
+- pnpm：`>=10`
+- 已安装并初始化 DeepSeek Harness
+
+在安装插件之前，将以下构建许可加入目标 profile 的 `pnpm-workspace.yaml`。这些依赖包含 postinstall；pnpm 10 默认拒绝执行时，`dsh plugin add` 会在登记 bundle 前退出。
+
+```yaml
+allowBuilds:
+  onnxruntime-node: true
+  sharp: true
+  protobufjs: true
+  tesseract.js: true
 ```
 
-- 上下文严格按文档顺序生成，默认不跨标题路径；超长锚点围绕查询命中裁剪，相邻块重叠文本会去重，锚点证据优先保留。
-- `ContextChunkExcerpt.textStart/textEnd` 是相对该 chunk 正文的 UTF-16 偏移，不是原始文件坐标。旧 `siblingContext` 在整个 0.3.x 继续返回，但已弃用；新代码应优先读取 `contextWindow`。
-- `knowledge_get_document` 不传锚点时保持原有 `chunkOffset/chunkLimit` 分页；传入且只传一个 `anchorChunkId` 或 `anchorIndex` 时进入上下文模式，可设置 `before`、`after`（0–10）、`maxTokens`（128–4096，默认 1600）、`focus`（最多 500 字符）与 `crossHeading`。分页参数和锚点参数不能混用。
-- 自动检索先执行不含 service rerank 的词法召回，本地 reranker 不参与首 Token 前路径；远程 rerank 最多一次并共享 4 秒总预算。provider 超时或故障会保留原始召回顺序，外部取消则立即退出且不注入背景、不更新节流或去重状态。
-- `docIds: undefined` 表示不限制；显式空数组表示匹配零文档。关闭自动检索或权重为 0 的命名知识库不会被替换成其他库搜索。
+### 2. 安装插件
 
-0.3.7 的数据库、分块和 embedding 可直接使用：本次升级不迁移数据库、不重建索引、不产生额外 embedding，也不把桥接文本持久化到 chunk。普通分页调用和 `SearchHit.text` 保持兼容。
+```bash
+dsh plugin --profile <name> add dsh-knowledge
+```
+
+插件安装在 profile 层。无论 DSH 来自 npm 还是源码 checkout，都使用同一条命令。安装完成后重启 web 服务，并刷新页面加载管理面板。
+
+### 3. 完成首次配置
+
+1. 点击侧边栏底部、设置旁的“知识库”入口。
+2. 新建知识库并导入文件、目录、网页或文本。
+3. 如需本地向量检索，在“设置 > 本地模型”下载 embedding 模型；也可以配置 OpenAI 兼容服务或 Ollama。
+4. 如需识别扫描件，再下载约 21 MB 的 OCR 模型。
+5. 在“召回测试”中检查结果，再让模型通过 `knowledge_search` 使用知识库。
+
+不下载模型也可以使用关键词检索。扫描件 OCR、本地 embedding 和本地 rerank 只有在对应模型已下载并通过就绪检查后才启用。
+
+<details>
+<summary>其他安装方式</summary>
+
+```bash
+# GitHub Release 或 npm pack 生成的 tarball
+dsh plugin --profile <name> add ./dsh-knowledge-0.3.9.tgz
+
+# 本地源码目录，需要先完成构建
+dsh plugin --profile <name> add file:/path/to/dsh-knowledge
+```
+
+如果第一次安装因 pnpm 构建许可失败，请补全 `allowBuilds` 后重新运行 add。包通常已经进入 `node_modules`，第二次执行会继续完成 bundle 登记。
+
+</details>
+
+---
+
+## 核心能力
+
+### 文档与来源管理
+
+- 创建、重命名、分组和删除知识库；侧边栏支持分组折叠和库间移动。
+- 从文件、绝对路径、目录、URL 或纯文本导入文档。目录来源保留稳定 ID、类型和原始路径，可重新扫描磁盘变化。
+- 批量上传单次最多 20 个文件、单文件最大 22 MB，并使用 5 路后台导入池。
+- 同名冲突由服务端统一检测，可选择重命名、替换或取消；内容哈希用于避免重复导入。
+- 文档列表展示等待、解析、embedding、完成和失败状态；支持 PDF 原文、文本和完整分块预览。
+- 原始文件保存到知识库 raw 存储。不同目录根的同名相对路径互不冲突，失败的替换重建不会破坏上一份已提交内容。
+
+<details>
+<summary>支持的文档格式与目录行为</summary>
+
+目录导入递归扫描 `txt`、`md`、`csv`、`html`、`json`、`pdf`、`docx`、`doc`、`pptx`、`ppt`、`xlsx`、`xls`、`epub` 等格式，并在界面中保留可下钻的文件夹树。
+
+重新扫描目录时会导入新增文件、重建已修改文件并移除已不存在的文件。单个文件失败不会隐藏其他成功结果，服务端和界面都会保留逐文件错误信息。
+
+</details>
+
+### 检索与证据链
+
+- 未配置 embedding 时使用 CJK 二元组和拉丁词 BM25；配置向量后可使用 hybrid、vector、lexical 或 auto 模式。
+- 混合检索通过 Reciprocal Rank Fusion 合并 BM25 与向量结果，并支持相似度阈值、MMR 多样性和多查询融合。
+- 可选远程或本地 cross-encoder 重排。重排失败、超时或返回无效分数时保留原始召回顺序。
+- 每个命中动态生成有序的 `ContextWindow`，按 `before → anchor → after` 组织证据，不把桥接文本写入索引或 embedding。
+- 自动检索默认开启；它在模型回答前注入高相关证据，同时限制延迟、重复内容和单个知识库占用的上下文份额。
+- 召回测试展示来源、相关度、关键词/向量分数、耗时和重排状态，并支持复制引用与重放历史查询。
+
+<details>
+<summary>ContextWindow 与自动检索细节</summary>
+
+`SearchHit.text` 始终保留完整 canonical anchor。`contextWindow` 默认不跨标题路径；超长锚点围绕查询命中按句子边界裁剪，相邻 chunk 的重复前后缀会被移除。旧字段 `siblingContext` 在 0.3.x 中继续兼容，但新调用方应优先使用 `contextWindow`。
+
+`knowledge_get_document` 支持普通 `chunkOffset` / `chunkLimit` 分页，也支持通过 `anchorChunkId` 或 `anchorIndex` 进入锚点模式。锚点模式可控制 `before`、`after`、`maxTokens`、`focus` 和 `crossHeading`。
+
+自动检索的首 Token 路径不会启动本地 reranker；远程 rerank 最多调用一次，并共享 4 秒总预算。取消、超时或 provider 故障不会污染注入记忆，也不会把检索范围扩大到无关知识库。
+
+</details>
+
+### 分块、解析与 OCR
+
+- 标题感知分块保留 Markdown 标题路径和代码围栏，并把文档标题与标题路径作为检索上下文。
+- `chunkSize` 与 `chunkOverlap` 使用 Token 预算；长文本按标题、代码、段落、句读、列表和换行的优先级寻找断点。
+- 可选语义分块会合并相邻的相似段落；可选 Token 上限会继续在句号、逗号或空格附近细分超长块。
+- 扫描 PDF、无文本层矢量 PDF、损坏文本层和逐字符排版 PDF 可自动进入整页 OCR 路径。
+- PaddleOCR PP-OCRv5 为首选本地识别器，识别失败时回退 Tesseract；1-bit JBIG2/CCITT 扫描件也包含在处理路径中。
+- 可选 MinerU 远程处理可将公式、表格和复杂版式恢复为 Markdown；未配置时继续使用本地解析与 OCR。
+
+### 模型与管理界面
+
+- 每个知识库可以覆盖 embedding、rerank、分块、topK、自动检索、冲突策略和文档处理设置；空字段继承全局值。
+- embedding 支持 OpenAI 兼容 `/embeddings`、Ollama 和 transformers.js 本地模型。
+- 本地模型页面管理 embedding、rerank 和 OCR 模型的下载、重试、删除、进度与健康状态。
+- 模型缓存目录支持原生文件夹选择、打开目录和安全迁移，可把较大的本地权重移出系统盘。
+- Ollama 页面支持查看、拉取、取消和删除模型；浏览或拉取不会隐式更改当前 embedding 配置。
+- 管理面板提供知识库导航、资料表格、批量重建/删除、原文与分块预览、召回测试、全局和每库设置及 Toast 反馈。
+
+<details>
+<summary>本地模型运行方式</summary>
+
+默认本地 embedding 模型为 `onnx-community/Qwen3-Embedding-0.6B-ONNX`，约 585 MB、1024 维。它在独立 worker thread 中运行，空闲后可以释放 ONNX session，但 worker 保持存活以避免 Linux 原生绑定重复注册问题。
+
+`rerankModel: local:Xenova/bge-reranker-base` 在独立 child process 中运行，与 embedding worker 隔离。搜索不会隐式下载 rerank 模型；模型必须先在本地模型页面下载并通过健康检查。自定义 Hugging Face ONNX reranker 属于实验性能力，需要通过单 logit 能力验证和正负样例自检。
+
+本地模型默认缓存在 `<DSH_HOME>/cache/dsh-knowledge/local-models`。下载端点可通过界面的 `hfEndpoint` 或环境变量 `HF_ENDPOINT` 调整；OCR 默认使用 `hf-mirror.com`，海外用户可改为 `https://huggingface.co`。
+
+</details>
+
+### 模型工具
+
+插件向模型提供 14 个工具。所有读取、写入和自动检索都遵守“已启用知识库”边界；空或失效选择匹配零个知识库，不会静默扩大到全库。永久删除必须经过宿主确认。
+
+<details>
+<summary>查看全部工具</summary>
+
+- `knowledge_search`
+- `knowledge_list_bases`
+- `knowledge_create_base`
+- `knowledge_delete_base`
+- `knowledge_add_document`
+- `knowledge_list_documents`
+- `knowledge_delete_document`
+- `knowledge_import_url`
+- `knowledge_refresh_url`
+- `knowledge_stats`
+- `knowledge_get_document`
+- `knowledge_read_document`
+- `knowledge_reindex_document`
+- `knowledge_reindex_base`
+
+`knowledge_search` 返回 citations、`chunkIndex` 和有序 `ContextWindow`。`knowledge_read_document` 支持字符区间读取和正则定位，`knowledge_get_document` 支持分页及围绕检索锚点续读。
+
+</details>
+
+### 存储与索引
+
+- 知识库、文档和运行时配置通过 DSH `storageDomain` 持久化。
+- 分块保存在独立 SQLite 文件 `<DSH_HOME>/storages/knowledge-chunks.sqlite`，可通过 `chunkStorePath` 调整。
+- 词法检索使用 SQLite FTS5 trigram 索引；向量使用 Float32Array 常驻缓存并精确失效。
+- 旧 JSON 分块数据在首次启动时执行幂等迁移；没有存储后端时自动退化为内存模式。
+- 修改分块或 embedding 配置后，可以重建单条资料或整个知识库的索引。
+
+---
+
+## v0.3.9 更新重点
+
+- 支持通过绝对路径导入单个文件或完整目录树，并持续追踪顶层来源。
+- 来源重指严格限定到所选顶层文件或目录，跨扩展名时使用新文件对应的解析器。
+- 修复不同目录根下相同相对路径的 raw 缓存冲突，并为替换重建增加失败保护。
+- Ollama embedding 地址为空时回退到 `http://127.0.0.1:11434`；浏览或下载模型不再修改当前配置。
+- 改进主题 token、Popover 视口定位、关闭行为、Toast 交互和中英文本地化。
+
+本次升级不迁移数据库、不自动重建索引、不重新下载模型，也不改变 v0.3.8 的检索证据链契约。社区 PR #10–#13 的 ThinkForge-core 原作者提交和署名保留在 Git 历史中。
+
+[查看 v0.3.9 GitHub Release](https://github.com/Soren-ABT/dsh-knowledge/releases/tag/v0.3.9) · [查看 CHANGELOG](./CHANGELOG.md)
+
+---
+
+## 工作流程
+
+1. **导入**：接收文件、目录、URL 或文本，并保存来源元数据与可恢复的原始内容。
+2. **解析**：按格式提取正文；扫描件或异常 PDF 按需进入本地 OCR，也可选择 MinerU。
+3. **分块**：根据标题、结构和 Token 预算生成带稳定索引的 chunk。
+4. **向量化**：使用远程 API、Ollama、本地模型或纯关键词模式建立检索数据。
+5. **召回**：BM25 与向量检索按配置运行，hybrid 模式通过 RRF 融合。
+6. **整理证据**：可选 rerank 和 MMR 处理候选，Context Composer 生成受预算约束的有序上下文。
+7. **模型续读**：模型可以从 `chunkIndex` 或锚点 ID 继续读取上下文或文档正文。
+
+---
+
+## 技术设计：从查询到可续读证据
+
+dsh-knowledge 的检索目标不只是返回一组 Top K 文本，而是生成一条可解释、可降级、可继续阅读的证据链。显式搜索的主路径如下：
+
+```text
+当前查询
+  └─ Query Planner：主查询 + 可选查询变体
+       ├─ SQLite FTS5 / BM25 词法召回
+       └─ embedding / cosine 向量召回
+            └─ 加权 RRF 融合
+                 └─ 可选 MMR 去冗余
+                      └─ 可选 remote/local cross-encoder rerank
+                           └─ Context Composer
+                                ├─ 有序、限额的模型可见证据
+                                └─ anchorChunkId / chunkIndex 锚点续读
+```
+
+### 召回、融合与排序
+
+| 阶段 | 实现 | 设计目的 |
+|---|---|---|
+| Query Planner | 主查询始终来自当前消息；多查询变体先分别召回，再统一融合 | 避免历史覆盖当前问题，同时提高换说法查询的覆盖率 |
+| 词法召回 | SQLite FTS5 trigram 索引、BM25 排序；查询侧识别 CJK 二元组与拉丁词 | 无 embedding、模型未下载或远程服务不可用时仍可搜索 |
+| 向量召回 | 对查询 embedding 后执行余弦相似度检索，并校验向量维度 | 补充关键词未重合的语义命中 |
+| RRF 融合 | `score(d) = Σᵢ wᵢ / (60 + rankᵢ(d))`，向量路权重由 `rrfVectorWeight` 控制 | 只融合名次，不直接混合量纲不同的 BM25 与 cosine 原始分数 |
+| MMR | 在相关度与已选结果的向量相似度之间取舍 | 减少 Top K 中语义重复的片段 |
+| Rerank | 对有界候选执行远程 API 或本地 cross-encoder；多查询最终只重排一次 | 让成本和延迟与候选池相关，而不是随查询变体重复增长 |
+| 阈值 | 只对可比较的 vector 或 rerank relevance 分数应用 | 避免用同一个阈值错误过滤 BM25/RRF 排名分数 |
+
+同分结果保留原召回顺序。rerank 必须返回与候选一一对应、有限且位于 `[0, 1]` 的分数；缺失、越界、数量不一致或协议不匹配都被视为降级，而不是成功。
+
+### Context Composer：查询时连接上下文
+
+分块负责稳定索引，Context Composer 负责模型实际看到的证据。插件不会把前后块永久拼入每个 chunk，也不会为桥接文本重复生成 embedding；它会在命中发生后批量读取相邻范围，并围绕 anchor 动态组装：
+
+- 顺序固定为 `before → anchor → after`，默认不跨越不同 heading path。
+- anchor 永远优先；超预算时围绕查询命中并尽量在句子边界裁剪。
+- 相邻块存在至少 24 个字符的精确 suffix/prefix 重叠时去重，避免 overlap 被模型重复阅读。
+- `SearchHit.text` 保持完整 canonical anchor；`ContextWindow` 只描述本次查询实际选择的窗口。
+- 搜索结果携带稳定 `anchorChunkId` 和 `chunkIndex`。模型需要更多上下文时，可以围绕同一锚点续读，而不是重新猜测文档位置。
+
+| 使用位置 | 固定预算 |
+|---|---|
+| Rerank pair | query 最多 128 Tokens、evidence 最多 352 Tokens、合计最多 480 Tokens |
+| 显式 `knowledge_search` | 每个 hit 目标 768 Tokens，整次模型可见输出最多 8192 Tokens |
+| 自动检索背景 | 每个 hit 最多 180 Tokens，完整背景最多 640 Tokens |
+| 锚点续读 | 默认 1600 Tokens，可配置 128–4096 Tokens |
+
+<details>
+<summary>自动检索为什么不是“每轮都塞一遍 Top K”</summary>
+
+自动检索采用 current-turn-first 的查询规划：当前消息最长保留 200 字符；只有消息不超过 40 字符，并含有“这个、上述、继续、第 N 步”等指代表达或缺少足够主题词时，才使用最近最多两条用户消息生成第二个历史增强查询。两个查询分别进行词法召回，再以 RRF 融合，历史不会替换当前问题。
+
+整个首 Token 前路径共享 4 秒 wall-clock deadline。service 内部 rerank 被明确跳过，本地 reranker 调用次数固定为零；如果配置了远程 rerank，最多调用一次且不重试。取消立即退出，超时或 provider 错误则保留词法排序并停止注入，不会重复获得新的超时预算。
+
+已经注入的 chunk 会在相关性判断和知识库席位分配前移除。同主题五分钟内最多补充一条新证据，新主题最多注入三条；每库的 `autoRetrieveWeight` 限制它能占用的席位。纯数字 ID 和型号、版本号、错误码走严格 identifier 通道，最终模型可见文本必须包含完整且边界正确的 identifier，否则不注入。
+
+检索内容在注入时明确标记为不可信参考资料，不能覆盖当前用户指令、权限边界或工具规则。只有背景实际折叠成功后，去重和节流状态才会提交。
+
+</details>
+
+---
+
+## 工程可靠性
+
+| 风险 | 处理方式 | 对调用方的结果 |
+|---|---|---|
+| 空或失效的知识库/文档过滤 | `undefined` 才表示不限制；空集合明确匹配零文档，SQLite 词法和向量路均 fail-closed | 不会因过滤错误意外搜索全部资料 |
+| 远程 rerank 超时或响应异常 | 共享 deadline、严格索引和分数校验、结构化 `rerank` 状态 | 返回原始召回结果，不误用 rerank 阈值 |
+| 本地 rerank 卡死或崩溃 | 独立 child process、硬超时终止、按需重建，与 embedding worker 分离 | 当前搜索降级，embedding 生命周期不被连带重启 |
+| 本地模型文件不完整或不兼容 | 检查配置、tokenizer 和非空 ONNX 权重；自检通过后写入带文件指纹和运行时版本的 readiness marker | 搜索不隐式下载，也不会把“目录里有 ONNX”误判为可用 |
+| 连续本地 rerank 故障 | 队列总上限 16；连续 3 次 timeout/crash/runtime/invalid-response 后熔断 5 分钟，并限制半开探测 | 避免故障模型持续占用进程和延迟预算 |
+| 替换重建或目录扫描部分失败 | 新 raw source、解析结果和索引成功后才替换已提交来源；逐文件保留结果 | 单个失败不破坏旧版本，也不掩盖同批成功项 |
+| 插件发布物缺文件或跨平台差异 | Node 22.19/24 质量门槛、Windows/Linux/macOS 原生测试、Windows/Linux tarball 安装启动测试、可选真实本地 rerank smoke | npm tarball 与源码构建均受到自动化发布检查 |
+
+这些约束的共同原则是：范围错误时宁可返回空，排序增强失败时宁可保留基础召回，涉及已提交资料时宁可保留旧版本。降级原因会通过结构化状态或界面提示暴露，而不是静默伪装成成功。
 
 ---
 
 ## 架构
 
-一个 bundle 含三个插件行，另有两个**独立 worker 线程**承载推理（与 Cherry 的 own-worker 姿势一致，原生/WASM 崩溃不会波及 host 进程）：
+一个 bundle 挂载三个插件行。本地 embedding 与 OCR 分别运行在独立 worker thread，本地 rerank 运行在可终止和重建的 child process；本地推理故障不会直接进入 DSH host 的执行空间。
 
-| 插件 / 线程 | 平台 | 职责 |
+| 组件 | 平台 | 职责 |
 |---|---|---|
-| `knowledge`（`ctx.knowledge`） | host | 核心引擎：存储域、分块、embedding、检索、OCR 调度、`/knowledge/*` HTTP 服务 |
-| `tool-knowledge` | host | 14 个模型工具，消费 `ctx.knowledge` |
-| `ui-knowledge` | client | 侧边栏底部入口（`sidebar.footer.action`）+ 工作区整页浮层（`shell.overlay`），Cherry Studio 式布局 |
-| `embed-worker`（worker 线程） | host | transformers.js 本地嵌入推理（模型 ~600MB 不进 host 进程） |
-| `ocr-worker`（worker 线程） | host | 页面渲染（mupdf WASM）+ PaddleOCR / Tesseract 识别（onnxruntime、OpenCV、tesseract worker 全隔离在线程内） |
+| `knowledge`（`ctx.knowledge`） | host | 存储、分块、embedding/解析调度、检索、OCR 调度及 `/knowledge/*` HTTP 服务 |
+| `tool-knowledge` | host | 注册并执行 14 个模型工具 |
+| `ui-knowledge` | client | 侧边栏入口、工作区管理面板及同源 API 调用 |
+| `embed-worker` | worker thread | transformers.js 本地 embedding 推理；大模型不进入 host 进程 |
+| `ocr-worker` | worker thread | mupdf 页面渲染、PaddleOCR、OpenCV 和 Tesseract 识别 |
+| `rerank-process.mjs` | child process | 本地 cross-encoder 重排、超时隔离和进程级恢复 |
 
-数据模型（`storageDomain` 声明领域 `knowledge`，version 0）：
-
-- `bases` 表：知识库元数据
-- `documents` 表：文档元数据
-- `chunks` 表：分块（含可选 `embedding` 向量）
-- global 槽：运行时配置覆盖（embedding 提供方、分块大小、topK 等）
+业务状态中的 `bases`、`documents` 和全局配置位于 `knowledge` storage domain；chunk 与可选 embedding 位于插件自己的 SQLite 存储；文件原始字节位于 SQLite 同级的 `knowledge-raw` 目录。
 
 ---
 
-## 安装
+## 在 DSH 知识库与 RAG 生态中的定位
 
-本包已发布到 [npm](https://www.npmjs.com/package/dsh-knowledge)（声明 `dsh.bundle.patch`），`dsh plugin add` 会自动登记并插入插件行：
+dsh-knowledge 的定位是“一体化文档知识库”，而不是宣称所有场景都优于专项插件。下面的对照用于说明设计边界：截至 **2026-09-04**，内容依据各项目默认分支的公开 README；“未在 README 中公开说明”不等同于该项目绝对不支持，对方项目更新后本表也可能过时。
 
-```bash
-# 从 npm（推荐，无需构建）
-dsh plugin --profile <name> add dsh-knowledge
+<details>
+<summary>查看 DSH 知识库与 RAG 项目对照</summary>
 
-# 从发布 tarball（GitHub Releases 或 npm pack 产物）
-dsh plugin --profile <name> add ./dsh-knowledge-0.3.9.tgz
+| 项目 | 公开定位与主要设计 | 与 dsh-knowledge 的边界差异 |
+|---|---|---|
+| [dsh-knowledge-base](https://github.com/htcqp802/dsh-knowledge-base) | 通用文档库，提供多格式导入、文件夹 UI、FTS5 trigram 与 BM25 | dsh-knowledge 在此基础范围外还覆盖向量/RRF/MMR/rerank、自动证据注入、ContextWindow、本地 OCR 与模型管理；对方更轻量 |
+| [Mindspace Local RAG](https://github.com/Spirtxiaoqi7/mindspace-dsh-local-rag) | 技术完整的本地混合 RAG：BM25+、向量、RRF、父子分块、来源续查、文档修订与 compaction summary | Mindspace 明确坚持模型按需调用、刻意不做 rerank；其修订/回滚和会话摘要治理更专注。dsh-knowledge 更强调完整管理 UI、复杂格式/OCR、本地 cross-encoder 与可选自动注入 |
+| [dsh-plugin-rag](https://github.com/mervyn-teo/dsh-plugin-rag) | 监听 DSH session 事件，增量维护可检索的跨会话语义记忆，向量保存在本地 JSON | 核心对象是会话表面而非用户文档；dsh-knowledge 处理文档来源、解析、重建、引用和锚点阅读，两者可以承担不同层次的记忆 |
+| [dsh-ragflow](https://github.com/staff-os/dsh-ragflow) | 将 DSH 工具连接到已有 RAGFlow dataset，提供清晰的 provider/seam/tool/config 分层 | RAGFlow 负责建库和解析，插件公开说明自身仅做 retrieval；dsh-knowledge 无需另一套知识库服务即可完成导入到证据输出的闭环 |
+| [dsh-plugin-kb4rag](https://github.com/yyang8891/dsh-plugin-kb4rag) | 面向论文写作，使用 Python 离线提取/建库、Ollama embedding 和 Node Float32Array Top K | 设计简单、运行时检索依赖少；dsh-knowledge 提供运行时导入/重建、混合召回、OCR、管理界面和多级证据续读 |
+| [dsh-rag-kb](https://github.com/AlowEnsoul/dsh-rag-kb) | Ollama 向量检索、多知识库、JSON 持久化和可拖拽悬浮 UI | dsh-knowledge 使用 SQLite/FTS5 与多阶段排序，并进一步覆盖来源事务、本地模型健康体系、复杂 PDF OCR 和发布验证 |
 
-# 从本地源码目录（需先构建，见下方「开发」）
-dsh plugin --profile <name> add file:/path/to/dsh-knowledge
-```
+</details>
 
-> **pnpm 10+ 构建脚本白名单（必须）**：插件依赖的 `onnxruntime-node`、`sharp`、`protobufjs`、`tesseract.js` 都带 postinstall，pnpm 默认拒绝运行它们并以非零退出——`dsh plugin add` 会因此**在登记 bundle 前中断，插件不会生效**。请在**安装前**于 profile 的 `pnpm-workspace.yaml` 中加入以下内容，再执行 add：
->
-> ```yaml
-> allowBuilds:
->   onnxruntime-node: true
->   sharp: true
->   protobufjs: true
->   tesseract.js: true
-> ```
->
-> （各平台二进制均已内置在 npm 包内，跳过这些脚本不损害功能；但 pnpm 把拒绝视为错误，授权是最干净的做法。装完后再补上配置、重跑一次 add 也可以——包已在 node_modules，重跑会正常登记。）
+在上述已检查项目中，没有单个项目在公开 README 中同时描述以下组合：
 
-重启 web 服务使 host 侧生效，刷新页面加载 client 面板。
+- 文件、目录、URL、文本的完整来源生命周期，以及可恢复 raw source 和安全重建；
+- 本地复杂文档解析、扫描 PDF OCR、远程 MinerU 和 per-base 处理策略；
+- BM25、向量、加权 RRF、MMR、多查询和本地/远程 rerank 的完整检索链；
+- 查询时动态 ContextWindow、严格 Token 预算、自动证据注入和 anchor 续读；
+- embedding、OCR、rerank 的独立运行单元、模型 readiness/self-test、降级状态和跨平台 tarball 验证。
 
-> 插件安装在 **profile 层**（`dsh plugin` 会在 profile 目录里跑 pnpm），因此无论 DSH 是 npm 安装还是全新源码 clone，上面的安装命令完全一样——不涉及插件源码、checkout 链接或 DSH 构建。
-
-### 零基础：只装了 DSH，怎么装到「和我一样」的功能
-
-一条命令之外，全部功能（本地嵌入、OCR、扫描件识别、混合检索、管理面板）都随插件自带，**没有任何个人配置或外部服务依赖**。只需要满足四个前提：
-
-1. **Node.js ≥ 22 与 pnpm ≥ 10 在 PATH 中**（DSH 本身即以此为前提；`dsh plugin add` 内部直接调用 pnpm，没有 pnpm 会提示你安装）。
-2. **先写好 `allowBuilds` 再执行 add**（见上方黑名单块——这是唯一的「安装前必须」步骤，profile 的 `pnpm-workspace.yaml` 首次初始化时会自动生成，只需往里追加那 4 行）。
-3. **模型下载的网络可达**：
-   - **本地嵌入模型**（约 585MB，Qwen3-Embedding-0.6B）：国内默认走 Hugging Face 镜像；如需自定义镜像，在知识库面板「设置 → 高级设置」或设置 → 本地模型页填 `hfEndpoint`（或设环境变量 `HF_ENDPOINT`）。
-   - **OCR 模型**（约 21MB，PaddleOCR）：默认从 hf-mirror.com 下载；**海外用户**请在同一个 `hfEndpoint` 填 `https://huggingface.co`，OCR 与嵌入模型都会改走该端点。
-   - 不下载也可以正常使用（远程 OpenAI 兼容 / Ollama 嵌入 + 纯文本 PDF），只是本地向量化与扫描件识别不可用。
-4. **平台**：Windows / macOS（Apple Silicon）/ Linux x64 + arm64 全功能；**Intel Mac（macOS x64）本地嵌入与 OCR 不可用**（onnxruntime 无 darwin-x64 二进制），请改用远程嵌入（OpenAI 兼容 / Ollama）。
-
-装好后首次使用：设置 →「本地模型」下载嵌入模型（或直接给知识库配远程 embedding），需要扫描件识别再下载 OCR 模型——之后的功能与本仓库开发机完全一致。
+因此，dsh-knowledge 的主要差异不是“又实现了一个向量搜索”，而是把资料进入系统之后直到模型取得可引用、可续读证据之间的工程环节放在同一个 DSH 原生 bundle 中，并为失败路径定义了可观察的行为。
 
 ---
 
 ## 兼容性
 
-- **DSH 版本**：在 [deepseek-harness](https://github.com/deepseek-ai/DeepSeek-Harness) 提交 `b150a55`（2026.8.21）上开发并验证。插件不再声明 peer 依赖——DSH 宿主以 externals 注入 cordis/zod/存储等运行时；更新的 DSH 源码也能无解析错误安装。若新版 DSH 出现兼容问题，请带上你运行的 DSH 提交号提 issue。
-- **Node.js**：`^22.19.0 || >=24.0.0`（与 DSH 自身要求一致——分块存储使用 Node 内置 `node:sqlite`，DSH 自己的会话存储也在用）。
-- **平台**：Windows / macOS（Apple Silicon）/ Linux x64 + arm64 全功能。旧版 `.doc` / `.ppt` / `.xls` 解析依赖 `@firecrawl/anydoc`（各平台原生二进制）；`@napi-rs/canvas` 的 Windows 平台包声明为 optionalDependencies，非 Windows 平台自动跳过。**Intel Mac（darwin-x64）**：onnxruntime 无该平台二进制，本地嵌入与本地 OCR 不可用，请用远程嵌入（OpenAI 兼容 / Ollama）。
-- **首次运行联网**：启用 `embeddingProvider: local` 后首次使用会从 Hugging Face 下载模型权重（缓存于 `localModelCacheDir`）；OCR 模型（约 21MB）在设置 → 本地模型页下载。两者都可经面板的 `hfEndpoint` 字段或环境变量 `HF_ENDPOINT` 指向镜像（OCR 默认 hf-mirror.com，海外可改为 huggingface.co）。
+- **DSH**：在 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 提交 `b150a55`（2026.8.21）上开发并验证。若更新版本出现问题，请在 Issue 中附上 DSH 提交号。
+- **Node.js**：`^22.19.0 || >=24.0.0`。
+- **平台**：Windows、Linux x64/arm64、macOS Apple Silicon 支持完整功能。
+- **Intel Mac**：onnxruntime 没有 darwin-x64 二进制，本地 embedding 与 OCR 不可用；可改用远程 OpenAI 兼容服务或 Ollama。
+- **旧 Office 格式**：`.doc`、`.ppt`、`.xls` 依赖 `@firecrawl/anydoc` 的平台原生二进制。
+- **首次联网**：本地 embedding 与 OCR 首次使用需要下载模型；纯关键词和远程 provider 不要求下载本地权重。
 
 ---
 
 ## 配置
 
-部署默认值写在 `cordis.patch.yml` 的 `knowledge` 行（可用上层 patch 按 `id` 覆盖）；面板里的「设置」可运行时覆盖，覆盖值持久化在存储域中：
+部署默认值位于 `cordis.patch.yml` 的 `knowledge` 行。管理面板可以在运行时覆盖并持久化这些值；大多数检索和文档设置还可以按知识库覆盖。
+
+<details>
+<summary>查看完整配置字段</summary>
 
 | 字段 | 默认 | 说明 |
-|---|---|---|
-| `embeddingProvider` | `none` | `openai` / `ollama` / `local`（进程内 transformers.js）/ `none` |
-| `embeddingBaseUrl` | `''` | 端点基址，如 `https://api.openai.com/v1` 或 `http://127.0.0.1:11434`（`local` 不需要） |
-| `embeddingModel` | `''` | 如 `text-embedding-3-small`；`local` 时为 Hugging Face 仓库 id（默认 `onnx-community/Qwen3-Embedding-0.6B-ONNX`） |
-| `embeddingApiKey` | `''` | 可选；也可用环境变量 `KNOWLEDGE_API_KEY` |
-| `rerankModel` / `rerankBaseUrl` / `rerankApiKey` | `''` | 重排模型（留空=不启用），Jina / SiliconFlow / Cohere v2 风格接口 |
-| `localRerankTimeoutMs` | `60000` | 本地重排总超时（10,000–300,000 毫秒，包含排队）；超时后保留原始检索顺序 |
-| `smartChunk` | `true` | 智能分段（标题/段落感知）；关闭后仅按 `chunkSeparator` 切分 |
-| `chunkSeparator` | `\n\n` | 智能分段关闭时的段落边界（可写 `\n`） |
-| `chunkSize` | `800` | 分块 Token 预算（按文档实测字符/Token 比换算字符窗口；对齐 Cherry Studio） |
-| `chunkOverlap` | `100` | 相邻分块重叠 Token 数（同上换算） |
-| `topK` | `6` | 检索返回条数（1–50） |
-| `searchMode` | `auto` | `auto` / `hybrid` / `vector` / `lexical` |
-| `similarityThreshold` | `0` | 相似度阈值（0–1），低于该分数的结果被过滤 |
-| `mmrDiversity` | `0` | MMR 结果多样性（0–1，0=关闭） |
-| `rrfVectorWeight` | `1` | RRF 混合时向量路的相对权重（0.1–5，1=均衡） |
-| `embeddingBatchSize` | `32` | 每次 embedding 请求的文本条数 |
-| `siblingChunks` | `1` | `ContextWindow` 在锚点前后尝试附带的块数（±N，0–3）；`0` 仍返回仅含 anchor 的窗口 |
-| `semanticChunk` | `false` | 语义分块：段落嵌入 + 相邻相似段合并（按库可覆盖） |
-| `semanticChunkThreshold` | `0.75` | 语义分块合并阈值（0–1） |
-| `chunkTokenLimit` | `0` | 分块 Token 上限（0=不限制）；超限在句号/逗号/空格边界继续切分 |
-| `conflictStrategy` | `rename` | 同名文件导入策略：`rename`（自动 `_1` 后缀）/ `replace` / `keep` |
-| `urlRefreshHours` | `0` | URL 文档定时自动刷新间隔（小时，0=关闭） |
-| `imageCaptionProvider` | `off` | PDF 图表描述：`off` / `openai`（兼容视觉 API）/ `ollama`（本地 VLM） |
-| `imageCaptionModel` | `''` | 图表描述模型 id（如 `qwen2.5vl`、`gpt-4o-mini`） |
-| `imageCaptionBaseUrl` | `''` | 图表描述 API 地址；留空 = 嵌入基址（openai）或 `http://127.0.0.1:11434`（ollama） |
-| `imageCaptionApiKey` | `''` | 图表描述 API Key（openai 提供方） |
-| `hfEndpoint` | `''` | Hugging Face 端点（嵌入模型与 OCR 模型的下载镜像）；留空 = 嵌入走 transformers 默认、OCR 走 hf-mirror.com |
-| `documentProcessorProvider` | `builtin` | PDF 文档处理：`builtin`（本地解析 + 可选 OCR）/ `mineru`（远程 MinerU 服务） |
-| `mineruApiKey` | `''` | MinerU API Key（`mineru` 模式需要；全局或每库覆盖） |
-| `mineruApiHost` | `''` | MinerU 服务地址；留空 = 官方 `https://mineru.net` |
-| `localModelCacheDir` | `''` | 本地模型缓存根目录；留空 = `<DSH_HOME>/cache/dsh-knowledge/local-models`（`DSH_HOME` 未设则为 `~/.dsh`） |
-| `localWorkerIdleTimeoutMs` | `60000` | 本地嵌入模型空闲卸载时间（毫秒）；worker 保持存活以避免 Linux 原生绑定重载，`0` = 模型常驻 |
-| `chunkStorePath` | `''` | 分块 SQLite 文件；留空 = `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
+|---|---:|---|
+| `embeddingProvider` | `none` | `openai`、`ollama`、`local` 或 `none` |
+| `embeddingBaseUrl` | `''` | embedding API 基址；Ollama 空值回退到本地标准端点 |
+| `embeddingModel` | `''` | 远程模型名或 Hugging Face 本地模型仓库 ID |
+| `embeddingApiKey` | `''` | 也可通过 `KNOWLEDGE_API_KEY` 设置 |
+| `rerankModel` / `rerankBaseUrl` / `rerankApiKey` | `''` | 远程或 `local:` 重排；空模型表示关闭 |
+| `localRerankTimeoutMs` | `60000` | 本地重排总预算，范围 10,000–300,000 ms，包含排队时间 |
+| `smartChunk` | `true` | 标题/段落感知分块；关闭后只使用分隔符 |
+| `chunkSeparator` | `\n\n` | `smartChunk` 关闭时的分隔符 |
+| `chunkSize` | `800` | 分块 Token 目标预算 |
+| `chunkOverlap` | `100` | 相邻分块重叠 Token 预算 |
+| `topK` | `4` | 默认检索结果数，允许 1–50 |
+| `searchMode` | `auto` | `auto`、`hybrid`、`vector` 或 `lexical` |
+| `similarityThreshold` | `0` | 结果最低相似度，范围 0–1 |
+| `mmrDiversity` | `0` | MMR 多样性，`0` 表示关闭 |
+| `rrfVectorWeight` | `1` | hybrid 模式中向量召回的 RRF 权重 |
+| `embeddingBatchSize` | `32` | 每批 embedding 文本数 |
+| `siblingChunks` | `1` | 每侧相邻 chunk 数，范围 0–3；`0` 仍生成 anchor-only 窗口 |
+| `semanticChunk` | `false` | 合并相邻相似语义段落 |
+| `semanticChunkThreshold` | `0.75` | 语义分块余弦阈值 |
+| `chunkTokenLimit` | `0` | 分块 Token 硬上限；`0` 表示不限制 |
+| `conflictStrategy` | `rename` | 同名导入使用 `keep`、`replace` 或 `rename` |
+| `urlRefreshHours` | `0` | URL 自动刷新间隔；`0` 表示关闭 |
+| `imageCaptionProvider` | `off` | `off`、`openai` 或 `ollama` |
+| `imageCaptionModel` | `''` | 图表描述使用的视觉模型 ID |
+| `imageCaptionBaseUrl` | `''` | 图表描述 API 基址 |
+| `imageCaptionApiKey` | `''` | OpenAI 兼容视觉服务密钥 |
+| `hfEndpoint` | `''` | Hugging Face 下载端点或镜像 |
+| `documentProcessorProvider` | `builtin` | `builtin` 本地解析或 `mineru` 远程处理 |
+| `mineruApiKey` | `''` | MinerU 模式需要的 API Key |
+| `mineruApiHost` | `''` | 空值使用 `https://mineru.net` |
+| `resumeInterruptedOnStartup` | `true` | 启动时恢复中断的导入 |
+| `autoRetrieve` | `true` | 用户消息进入时自动检索并注入相关背景 |
+| `autoRetrieveWeight` | `3` | 每库自动注入席位上限，范围 0–5；`0` 表示排除 |
+| `localModelCacheDir` | `''` | 空值使用 `<DSH_HOME>/cache/dsh-knowledge/local-models` |
+| `localWorkerIdleTimeoutMs` | `60000` | 本地 embedding worker 空闲释放模型的时间；`0` 表示常驻 |
+| `chunkStorePath` | `''` | 空值使用 `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
 
-分块数据不放在存储域 KV 里，而是独立 SQLite 文件：`web` profile 的 JSON 后端每次写记录都会重写整个单元文件，数据增长后删除/导入会变慢到秒级甚至分钟级；SQLite 让每次写入/删除都是单条语句，并提供 FTS5 三元组全文检索（BM25）与查询时向量扫描、有界读取——常驻内存不随语料增长。升级后首次启动会自动把旧 JSON 单元里的分块迁入 SQLite（幂等，中断产生的重复行自动去重）。
+按库设置中的空字段继承全局配置。`localModelCacheDir`、`localWorkerIdleTimeoutMs` 和 `chunkStorePath` 是进程级设置。API Key 以明文保存在本地机器，请保护 profile 数据目录。
 
-> 检索、分块与模型选择字段可在**每个知识库的设置面板**中单独覆盖（留空继承全局）；`localModelCacheDir`、`localWorkerIdleTimeoutMs` 和 `chunkStorePath` 属于进程级全局设置。API Key 以明文保存在本地存储。
-
-### 本地模型（embedding、rerank 与 OCR）
-
-选择 `embeddingProvider: local` 时，插件在**独立 worker 线程**里用 `@huggingface/transformers`（+ onnxruntime）跑 embedding，**无需任何外部服务**。默认模型 `onnx-community/Qwen3-Embedding-0.6B-ONNX`（1024 维），`embeddingModel` 可换成任意 Hugging Face 上的 ONNX embedding 仓库 id。首次使用会从 Hugging Face Hub 下载模型权重（默认缓存到 `$DSH_HOME/cache/dsh-knowledge/local-models`）；空闲后只卸载模型 session，worker 保持存活，下一次请求从磁盘重载，避免 Linux 上重复注册 onnxruntime 原生绑定。**在设置 →「本地模型」页面可提前下载 / 取消 / 删除 / 重试并调整空闲超时**，并实时查看下载进度；知识库设置面板也会显示模型下载进度（下载中 % / 就绪 / 失败）。
-
-`rerankModel: local:Xenova/bge-reranker-base` 使用独立子进程运行 cross-encoder，与 embedding worker 隔离。搜索不会隐式下载模型：请先在「设置 → 本地模型」下载并通过自动健康检查。超时、进程崩溃、输出数量/数值异常时检索会保留原始排序，并在召回测试和 `knowledge_search` 结果中返回结构化降级原因。高级区域可登记自定义 Hugging Face ONNX reranker；自定义模型属于实验性支持，必须通过单-logit能力校验和正负样例自检。
-
-**OCR（扫描件识别）**：下载 OCR 模型后，扫描版 / 矢量无文本层 / 文本层损坏的 PDF 在导入时自动**渲染整页**（mupdf WASM）并识别（PaddleOCR PP-OCRv5 优先，失败回退 Tesseract，全部在 `ocr-worker` 线程内）。模型约 21MB，默认从 hf-mirror.com 下载；海外用户可在同一 `hfEndpoint` 字段填 `https://huggingface.co`。
+</details>
 
 ---
 
-## 召回效果评测（自带工具，可对任意库复跑）
+## 召回效果评测
 
-仓库自带无网络、无模型下载的双语确定性基准（24 份合成文档、40 个问题），schema v2 同时检查 Hit/Recall/MRR、模型实际可见证据、自动检索背景、Bridge@1、`ContextWindow` 顺序与硬预算：
-
-```bash
-pnpm benchmark                 # 构建并执行全部质量门槛
-pnpm benchmark:json            # 输出含兼容能力与诊断值的 JSON
-pnpm benchmark:update-baseline # 仅刷新 observed；不会降低 thresholds
-```
-
-这些门槛只针对仓库内可复现的合成夹具，用于防止代码回归，不代表真实私有语料上的准确率承诺。独立 Bridge@1 夹具要求 top1 锚点本身不含答案、模型可见 `ContextWindow` 含答案，并验证一次真实 `getDocumentContext(anchorChunkId)` 续读仍能取得答案；它仍不等同于真实模型已自主完成整条工具轨迹。重复 Token 比率与 p50/p95 延迟只报告、不设跨机器硬阈值。
-
-`scripts/` 内置两套评估脚本，对**你自己的知识库**运行，无需任何外部服务：
+仓库提供两个无额外依赖的脚本，可针对自己的知识库复跑检索和 RAG 上下文指标：
 
 ```bash
-# 检索质量：Hit@k / Recall@k / MRR（示例集见 scripts/eval-questions.example.json）
+# Hit@k、Recall@k、MRR
 node scripts/eval-retrieval.mjs --file scripts/eval-questions.example.json --base <baseId> --mode hybrid
 
-# RAG 上下文质量：Hit@k + 句子级 Context Recall（RAGAS 风格近似，无需 LLM）+ MRR
-# （示例集见 scripts/eval-rag.example.json，需带 groundTruth 参考答案）
+# Hit@k、句子级 Context Recall（RAGAS 风格近似，无需 LLM）、MRR
 node scripts/eval-rag.mjs --file scripts/eval-rag.example.json --base <baseId> --topK 5
 ```
 
-把 `*.example.json` 复制为 `eval-questions.json` / `eval-rag.json` 并替换成你的问题（`expect` 为期望命中的文档标题子串）即可复跑。开发期间用内部评测集（覆盖库内文档主题的数学建模问题）测得：直答型问题纯词法 Hit@5 0.929；换说法型（问题不含主题词）纯词法 0.600 → 混合/向量 0.900（MRR 0.575 → 0.628）——向量检索的价值主要体现在换说法型问题。该内部评测集已随隐私清理从仓库移除（含个人文档标题），故分数仅供参比，请用你自己的数据复测。
+复制示例 JSON，替换成自己的问题、预期文档标题和参考答案后运行。仓库内固定合成语料用于防止版本回归，其结果不代表所有私有文档、语言或模型配置都能获得相同准确率。
 
 ---
 
-## 使用
+## 开发与验证
 
-1. 点击**侧边栏底部「知识库」按钮**（设置旁），打开整页面板 —— 不在设置内。
-2. 点「新建知识库」，拖拽上传 txt/md/pdf/docx，或导入网页 URL；扫描版 PDF 也可直接拖入（设置 → 本地模型下载 OCR 模型后自动识别）。
-3. 在「检索测试」里验证召回（可切换混合/向量/关键词模式与阈值）；点右上角「设置」配置向量化。
-4. 对 agent 说 *"用知识库里的内容回答…"*，模型会调用 `knowledge_search` 等 14 个工具。
-
----
-
-## 开发
-
-依赖公开的 DeepSeek Harness monorepo 作为 sibling checkout（`package.json` 的 `devDependencies` 用 `link:../dsh/...` 指向它，peer 依赖由该 checkout 提供）：
+源码开发依赖同级目录中的公开 DeepSeek Harness monorepo，`devDependencies` 使用 `link:../dsh/...`：
 
 ```bash
-# 建立 sibling 链接（Windows 可用 junction，指向你的 DSH 安装目录）
-#   mklink /J ..\dsh "<你的 DSH 安装目录>"
 pnpm install --config.auto-install-peers=false
-pnpm run check    # typecheck + test + build
-pnpm run build    # esbuild → lib/（含 client bundle）
+pnpm run check
+pnpm run build
 ```
 
-## 验证
-
-- `pnpm test`：分块、检索、配置、存储、服务级单测。
-- `pnpm run typecheck`：tsc --noEmit。
-- `pnpm run build`：host ESM 条目 + 浏览器 factory-form client bundle + 类型声明。
+- `pnpm test`：分块、检索、配置、存储和服务测试。
+- `pnpm run typecheck`：执行 `tsc --noEmit`。
+- `pnpm run build`：构建 host ESM、浏览器 client bundle 和类型声明。
+- `npm run release:check -- --expected-version <version>`：执行发布前完整门槛。
 
 ---
 
 ## 已知局限
 
-- **0.3.8 未处理跨 embedding 空间融合**：跨多个知识库做向量检索时，仍应确保它们使用兼容的 embedding 模型与向量空间；本版本没有实现逐库向量检索后的跨空间排名融合。
-- **0.3.8 未修复 stale-vector 签名或语义分块 centroid**：本版本不改变旧向量签名策略，也不改变语义分块以段落向量质心代表最终“标题 + 正文”chunk 的现有行为；两者需要后续版本的独立实现，本次升级不会自动重建索引。
-- **Issue #6 分块聚合不在本次范围**：普通智能分块、`chunkOverlap` 和 PDF 空行碎片化行为保持不变；`ContextWindow` 是查询时的动态上下文，不是对既有 chunk 的全局合并。
-- **模型下拉为建议式组合框，而非 provider 实时列表**：DSH 的 `ctx.llm` 只暴露对话模型（`listModels` 无 embedding 维度标记，且本插件的 embedding 端点/模型是独立配置）。设置面板因此用「内置精选建议 + 可输入自定义 id」的原生 datalist 组合框（嵌入 / 本地 / 重排三组建议）。
-- **嵌入在导入流程内联执行**：解析与分块有实时逐文件状态（解析中 / 嵌入中 NN%），向量化以批次内联运行（推理在独立 worker 线程，不阻塞 UI，但同一知识库的导入按 5 路并发池排队）；本地模型首次下载会阻塞到缓存完成（设置面板实时显示进度）。
-- **MinerU 需 API Key**：`documentProcessorProvider: mineru` 依赖 MinerU 官方服务（或自托管 host），需要注册获取 Key；未配置时 PDF 自动走本地解析 + OCR。
-- **轻量文本（笔记）入口**：添加菜单中的「文本」可粘贴标题 + 内容直接入库（无内置富文本编辑器，笔记编辑请使用 DSH 自身）。
+- 模型选择器是带建议的可编辑组合框，不是 provider 的实时模型列表；可以手动输入自定义 ID。
+- embedding 按批次运行在导入流程内；本地模型第一次下载会阻塞对应导入，但管理页面会显示进度。
+- MinerU 需要官方或自托管服务的 API Key；未配置时使用本地解析与 OCR。
+- 文本入口适合轻量笔记，不提供富文本编辑器。
+- Intel Mac 无法运行基于 onnxruntime 的本地 embedding 和 OCR。
+
+---
+
+## 安全
+
+安全问题请按照 [SECURITY.md](./SECURITY.md) 通过 GitHub 私密漏洞报告通道提交。不要在公开 Issue 中发布利用细节、凭据、私人文档或未脱敏日志。
+
+普通功能缺陷和使用问题可以通过 [GitHub Issues](https://github.com/Soren-ABT/dsh-knowledge/issues) 报告。
 
 ---
 
 ## 许可
 
-[AGPL-3.0](LICENSE)。本项目采用 AGPL-3.0 许可——PDF 整页渲染依赖 [mupdf](https://mupdf.com/)（AGPL-3.0），AGPL 许可对包含该组件的发行物具有传染性；选择 AGPL-3.0 使整个项目在法律上自洽，也与设计灵感 [Cherry Studio](https://github.com/CherryHQ/cherry-studio)（AGPL-3.0）的许可一致。代码为独立实现，未包含 Cherry Studio 源码。另参考并致谢社区项目：[dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness)、[dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor)、[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)。
+[AGPL-3.0](LICENSE)。项目的 PDF 页面渲染依赖 [mupdf](https://mupdf.com/)（AGPL-3.0），因此采用 AGPL-3.0 以保持分发许可一致。项目也与设计参考 [Cherry Studio](https://github.com/CherryHQ/cherry-studio) 使用相同许可证，但代码为独立实现，不包含 Cherry Studio 源码。
+
+感谢 [dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness)、[dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor)、[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 以及为项目提交代码和问题报告的社区贡献者。
