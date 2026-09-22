@@ -390,6 +390,9 @@ class DomainStore implements Store {
     const resume: string[] = []
     for (const [id, doc] of [...this.documents.entries()]) {
       if (doc.sourceType === 'directory') continue
+      // Parsing failed in a completed import. Keep its raw source for an
+      // explicit retry, but never re-run a potentially paid processor at boot.
+      if (doc.errorCode === 'parse_failed') continue
       // An `incomplete` document holds persisted rawText and (probably) some
       // embedded batches — a crash mid-ingest. Recovery re-runs the embed:
       // hash reuse (decision A4) re-embeds only the missing batches, so the
@@ -684,6 +687,7 @@ class MemoryStore implements Store {
     const resume: string[] = []
     for (const [id, doc] of [...this.documents.entries()]) {
       if (doc.sourceType === 'directory') continue
+      if (doc.errorCode === 'parse_failed') continue
       if (doc.incomplete === true) {
         if (doc.rawText !== undefined || doc.rawFilePath !== undefined) resume.push(id)
         continue

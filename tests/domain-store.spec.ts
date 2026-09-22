@@ -11,7 +11,7 @@ import { openStore, StorageUnavailableError } from '../src/knowledge/store.js'
 import type { StorageDomainFacility, Store } from '../src/knowledge/store.js'
 import { KnowledgeService } from '../src/knowledge/index.js'
 import type { Config } from '../src/knowledge/config.js'
-import type { KnowledgeChunk } from '../src/knowledge/types.js'
+import type { KnowledgeChunk, KnowledgeDocument } from '../src/knowledge/types.js'
 
 const TEST_CONFIG: Config = {
   embeddingProvider: 'none',
@@ -519,6 +519,23 @@ describe('ChunkDatabase (per-chunk SQL layout)', () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+
+  it('keeps explicitly failed parser imports out of automatic recovery', async () => {
+    const store = await openStore(undefined)
+    const failed: KnowledgeDocument = {
+      id: 'failed', baseId: 'b1', title: 'scan.pdf', sourceType: 'file',
+      rawFilePath: 'b1/scan.pdf', errorCode: 'parse_failed',
+      charCount: 0, chunkCount: 0, createdAt: 1, updatedAt: 1,
+    }
+    await store.putDocument(failed)
+    const { errorCode: _failedCode, ...resumable } = failed
+    await store.putDocument({ ...resumable, id: 'interrupted', incomplete: true })
+
+    const recovery = await store.recoverInterruptedImports(Date.now())
+    expect(recovery.resume).toEqual(['interrupted'])
+    expect(store.getDocument('failed')).toBeDefined()
+    await store.close()
   })
 })
 
