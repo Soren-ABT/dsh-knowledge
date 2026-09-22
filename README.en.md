@@ -76,7 +76,7 @@ Lexical retrieval works without downloading a model. Scanned-document OCR, local
 
 ```bash
 # Tarball from GitHub Releases or npm pack
-dsh plugin --profile <name> add ./dsh-knowledge-0.4.0.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.4.1.tgz
 
 # Local source directory; build it first
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -223,6 +223,18 @@ The plugin exposes 14 tools. Reads, writes, and proactive retrieval all obey the
 - Lexical retrieval uses a SQLite FTS5 trigram index; vectors use a resident Float32Array cache with precise invalidation.
 - Legacy JSON chunk data is migrated idempotently on first start. The service falls back to memory storage when no persistent backend is available.
 - After changing chunk or embedding settings, rebuild one document or the entire base from the panel or model tools.
+
+---
+
+## v0.4.1 highlights
+
+- **A failed MinerU import is no longer a dead end** (issue #30). When MinerU extraction failed and the local fallback failed too, the document was left as a placeholder row holding the raw PDF but no text and no chunks, and rebuilding it only reported `has no source text to reindex` — with no way out from the panel or the API. Import, single-document rebuild and crash recovery now share one extraction chain, so a rebuild retries MinerU. A double failure reports both reasons instead of writing MinerU's real reason only to the log.
+- **Five deferred audit items closed**: `rawTextLimit` is clamped, an unknown knowledge base answers 404 from the statistics route, chunking no longer emits empty chunks, `context.ts` is no longer bundled twice, and the stress script is inside the typecheck. The retrieval benchmark also runs against a throwaway `DSH_HOME` instead of the developer's real profile.
+- This is a patch release. The main 0.4.0 changes — directory source identity, truthful reporting, the delete-cascade guard, the local model lifecycle — are in the section below and in the v0.4.0 release notes.
+
+0.4.1 needs no database migration, no forced reindex and no model redownload. The one behaviour change a client can notice is that the statistics route now answers 404 for an unknown knowledge base instead of a zero-filled 200.
+
+[Read the v0.4.1 GitHub Release](https://github.com/Soren-ABT/dsh-knowledge/releases/tag/v0.4.1) · [Read the changelog](./CHANGELOG.md) · [v0.4.1 release notes](./docs/releases/v0.4.1.md)
 
 ---
 
