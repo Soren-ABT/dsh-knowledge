@@ -78,7 +78,7 @@ dsh plugin --profile <name> add dsh-knowledge
 
 ```bash
 # GitHub Release 或 npm pack 生成的 tarball
-dsh plugin --profile <name> add ./dsh-knowledge-0.4.0.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.4.1.tgz
 
 # 本地源码目录，需要先完成构建
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -225,6 +225,18 @@ allowBuilds:
 - 词法检索使用 SQLite FTS5 trigram 索引；向量使用 Float32Array 常驻缓存并精确失效。
 - 旧 JSON 分块数据在首次启动时执行幂等迁移；没有存储后端时自动退化为内存模式。
 - 修改分块或 embedding 配置后，可以重建单条资料或整个知识库的索引。
+
+---
+
+## v0.4.1 更新重点
+
+- **MinerU 失败的导入不再走进死路**（issue #30）：MinerU 提取失败、退回本地解析也失败时，文档会留下一条只有原始 PDF、没有正文和分块的占位行，点「重建」只会报 `has no source text to reindex`，从界面和 API 都无法脱困。现在导入、单文档重建与启动恢复走同一条提取链，重建会重新尝试 MinerU；双重失败时同时报出 MinerU 与本地解析两个原因，而不是只把 MinerU 的真实原因写进日志。
+- **关闭 0.4.0 审计中推迟的 5 项**：`rawTextLimit` 钳制、未知知识库的统计接口返回 404、不再产生空分块、`context.ts` 不再被重复打包、stress 脚本纳入类型检查；检索基准改用临时 `DSH_HOME`，不再读写开发者真实 profile。
+- 这是一个补丁版本。0.4.0 的主要改动（目录来源身份、诚实上报、删除级联护栏、本地模型生命周期等）见下方小节与 v0.4.0 发布说明。
+
+0.4.1 不迁移数据库、不强制重建索引、不重新下载模型。唯一可感知的行为变化是：未知知识库的统计接口现在返回 404，而不是一个全 0 的 200。
+
+[查看 v0.4.1 GitHub Release](https://github.com/Soren-ABT/dsh-knowledge/releases/tag/v0.4.1) · [查看 CHANGELOG](./CHANGELOG.md) · [v0.4.1 发布说明](./docs/releases/v0.4.1.md)
 
 ---
 

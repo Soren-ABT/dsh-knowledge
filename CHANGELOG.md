@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.1 — 2026-09-22
+
+### MinerU failures are recoverable (issue #30)
+
+- **A failed MinerU import can be rebuilt.** A scanned PDF whose MinerU extraction failed *and* whose local fallback failed left a placeholder row holding the raw PDF but no `rawText` and no chunks; rebuilding that row then reported `has no source text to reindex`, with no way out of the state. Import, single-document rebuild and crash recovery now all go through one extraction chain, so rebuilding such a row retries MinerU and can recover. A PDF configured for MinerU keeps using MinerU on rebuild instead of silently degrading to local parsing, an aborted (deleted) document passes the abort through instead of pointlessly running the local parser, and a MinerU import interrupted by a crash can be resumed at startup.
+- **Both failure reasons are reported.** MinerU's own failure was only written to the log, while the row showed the local parser's complaint — which is why a runtime MinerU problem (key, quota, network, API response) looked like a parser defect. A double failure now raises `MinerU extraction failed (...); local parsing failed (...)`, so the actionable reason reaches the user. Neither the MinerU client nor the import pipeline changed behaviourally since it was introduced; what was missing was a way out after a runtime failure.
+- Recovery retries are bounded, so a permanently failing source cannot be retried forever.
+
+### Deferred audit items closed
+
+The 0.4.0 audit recorded six smaller findings as deliberately deferred. Five of them are fixed in this release:
+
+- `rawTextLimit` is clamped. A negative value used to reach `rawText.slice(0, rawTextLimit)` and silently drop the tail of the document instead of capping the payload.
+- `GET /knowledge/stats?baseId=<unknown>` answers **404** instead of a plausible-looking all-zero summary.
+- Chunking no longer emits an empty chunk when a window boundary lands on whitespace.
+- `src/knowledge/context.ts` is no longer bundled twice: the shared part lives in `context-protocol.ts`, which both host entries import.
+- `scripts/stress-auto-retrieve.mts` is inside the typecheck.
+- The retrieval benchmark runs against a throwaway `DSH_HOME` rather than the developer's real profile.
+
+`docs/audit-0.4-deferred-findings.md` is updated to match; the one remaining deferred item is moving mupdf page rendering off the host thread.
+
+### Quality
+
+- 353 tests across 26 files, including a new `tests/mineru-recovery.spec.ts`; the preflight (typecheck, retrieval benchmark, deterministic build, package verification, production audit policy, worker-bundle protocol smoke) and CI on Node 22.19 / 24 / 26 across Ubuntu, Windows and macOS all pass.
+- Thanks to [InfiniteScope](https://github.com/InfiniteScope) for PRs #27–#29 and #31.
+
 ## 0.4.0 — 2026-09-15
 
 ### One directory source, one sync path (issue #20)
