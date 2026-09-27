@@ -1,5 +1,6 @@
 import type { ContextChunkExcerpt, ContextWindow, KnowledgeChunk } from './types.js'
 import { estimateContextTokens, serializeContextWindow, serializeExcerpt } from './context-protocol.js'
+import { sliceSourceSpans } from './source-spans.js'
 
 // The public surface of this module is unchanged: the protocol helpers are
 // re-exported from the pure module both host bundles share (see
@@ -48,7 +49,8 @@ export function composeContextWindow(
 
   const byIndex = new Map<number, KnowledgeChunk>()
   for (const chunk of chunks) {
-    if (chunk.docId === anchor.docId && chunk.baseId === anchor.baseId) byIndex.set(chunk.index, chunk)
+    if (chunk.docId === anchor.docId && chunk.baseId === anchor.baseId
+      && chunk.processingRevision === anchor.processingRevision) byIndex.set(chunk.index, chunk)
   }
   byIndex.set(anchor.index, anchor)
   const ordered = [...byIndex.values()].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id))
@@ -118,6 +120,7 @@ function excerptOf(chunk: KnowledgeChunk): ContextChunkExcerpt {
     textEnd: chunk.text.length,
     truncatedStart: false,
     truncatedEnd: false,
+    ...(chunk.sourceSpans !== undefined ? { sourceSpans: sliceSourceSpans(chunk.sourceSpans, 0, chunk.text.length) } : {}),
   }
 }
 
@@ -312,6 +315,7 @@ function sliceExcerpt(excerpt: ContextChunkExcerpt, start: number, end: number):
     textEnd: excerpt.textStart + safeEnd,
     truncatedStart: excerpt.truncatedStart || safeStart > 0,
     truncatedEnd: excerpt.truncatedEnd || safeEnd < excerpt.text.length,
+    ...(excerpt.sourceSpans !== undefined ? { sourceSpans: sliceSourceSpans(excerpt.sourceSpans, safeStart, safeEnd) } : {}),
   }
 }
 

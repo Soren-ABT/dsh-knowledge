@@ -8,6 +8,9 @@
 /** Supported embedding backends. `local` runs in-process (transformers.js); `none` keeps the base lexical-only. */
 export type EmbeddingProvider = 'openai' | 'ollama' | 'local' | 'none'
 
+import type { DocumentProcessor, DocumentProcessingInfo, DocumentSourceSpan, MineruTier } from './processing-types.js'
+export type * from './processing-types.js'
+
 /** Search strategy. `auto` picks hybrid when vectors exist, else lexical. */
 export type SearchMode = 'auto' | 'hybrid' | 'vector' | 'lexical'
 
@@ -57,9 +60,14 @@ export interface BaseConfig {
   readonly embeddingBatchSize?: number
   /** How many neighbouring chunks (±) to attach to each search hit as context (0–3, 0 = off). */
   readonly siblingChunks?: number
-  readonly documentProcessorProvider?: 'builtin' | 'mineru'
+  readonly documentProcessorProvider?: DocumentProcessor
   readonly mineruApiKey?: string
   readonly mineruApiHost?: string
+  readonly mineruLocalUrl?: string
+  readonly mineruLocalApiKey?: string
+  readonly mineruTier?: MineruTier
+  readonly documentProcessingTimeoutMs?: number
+  readonly structuredChunking?: boolean
   readonly semanticChunk?: boolean
   readonly semanticChunkThreshold?: number
   readonly chunkTokenLimit?: number
@@ -175,6 +183,7 @@ export interface DeleteImpact {
 
 /** One imported document inside a knowledge base. */
 export interface KnowledgeDocument {
+  readonly processing?: DocumentProcessingInfo
   readonly id: string
   readonly baseId: string
   readonly title: string
@@ -229,6 +238,8 @@ export interface KnowledgeDocument {
 
 /** One chunk of a document, with its optional embedding vector. */
 export interface KnowledgeChunk {
+  readonly sourceSpans?: readonly DocumentSourceSpan[]
+  readonly processingRevision?: string
   readonly id: string
   readonly docId: string
   readonly baseId: string
@@ -275,7 +286,12 @@ export interface KnowledgeConfig {
   /** Hugging Face endpoint override (mirror); empty = official hub / `HF_ENDPOINT` env. */
   readonly hfEndpoint: string
   /** Document processor: `builtin` (local parsers + OCR) or `mineru` (remote MinerU API). */
-  readonly documentProcessorProvider: 'builtin' | 'mineru'
+  readonly documentProcessorProvider: DocumentProcessor
+  readonly mineruLocalUrl?: string
+  readonly mineruLocalApiKey?: string
+  readonly mineruTier?: MineruTier
+  readonly documentProcessingTimeoutMs?: number
+  readonly structuredChunking?: boolean
   /** MinerU API key (required when provider is `mineru`). */
   readonly mineruApiKey: string
   /** MinerU API host; empty = https://mineru.net */
@@ -336,6 +352,8 @@ export type AddFilesResult =
 /** One bounded excerpt from a canonical document chunk. Character offsets are
  * relative to {@link KnowledgeChunk.text}, never to the original source file. */
 export interface ContextChunkExcerpt {
+  /** Ranges relative to this excerpt's text, clipped from canonical chunk spans. */
+  readonly sourceSpans?: readonly DocumentSourceSpan[]
   readonly chunkId: string
   readonly index: number
   readonly heading?: string
@@ -362,6 +380,8 @@ export interface ContextWindow {
 
 /** One ranked search result. */
 export interface SearchHit {
+  readonly sourceSpans?: readonly DocumentSourceSpan[]
+  readonly processingRevision?: string
   readonly chunkId: string
   readonly docId: string
   readonly baseId: string
@@ -384,6 +404,7 @@ export interface SearchHit {
 
 /** Summary of one document, for listing UIs. */
 export interface DocumentSummary {
+  readonly processing?: DocumentProcessingInfo
   readonly id: string
   readonly baseId: string
   readonly title: string
@@ -468,6 +489,7 @@ export interface BaseStats {
 
 /** Full document view: metadata, raw text, and every chunk. */
 export interface DocumentDetail {
+  readonly processing?: DocumentProcessingInfo
   readonly id: string
   readonly baseId: string
   readonly title: string

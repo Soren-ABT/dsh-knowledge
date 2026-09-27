@@ -50,7 +50,14 @@ const base: Config = {
 describe('resolveConfig', () => {
   it('uses deployment defaults with empty overrides', () => {
     const { chunkStorePath: _chunkStorePath, ...expected } = base
-    expect(resolveConfig(base, {})).toEqual(expected)
+    expect(resolveConfig(base, {})).toEqual({
+      ...expected,
+      mineruLocalUrl: 'http://127.0.0.1:8000',
+      mineruLocalApiKey: '',
+      mineruTier: 'basic',
+      documentProcessingTimeoutMs: 1_800_000,
+      structuredChunking: true,
+    })
   })
   it('applies runtime overrides', () => {
     const resolved = resolveConfig(base, { embeddingProvider: 'openai', chunkSize: 1000, searchMode: 'hybrid', rerankModel: 'jina-reranker-v2-base-multilingual' })

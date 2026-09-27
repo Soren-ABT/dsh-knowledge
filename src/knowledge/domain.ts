@@ -8,6 +8,7 @@
 
 import { z } from 'zod'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
+import type { MineruTier } from './processing-types.js'
 import type {
   KnowledgeBase,
   KnowledgeConfig,
@@ -37,9 +38,14 @@ export const baseConfigSchema = z.object({
   siblingChunks: z.number().int().gte(0).lte(3).optional(),
   // Mirrors BaseConfig: every base-settable field must survive the durable
   // boundary — a missing key here makes zod strip the override on save.
-  documentProcessorProvider: z.enum(['builtin', 'mineru']).optional(),
+  documentProcessorProvider: z.enum(['builtin', 'mineru', 'mineru-local']).optional(),
   mineruApiKey: z.string().optional(),
   mineruApiHost: z.string().optional(),
+  mineruLocalUrl: z.string().optional(),
+  mineruLocalApiKey: z.string().optional(),
+  mineruTier: z.enum(['flash', 'basic', 'standard', 'advanced']).optional(),
+  documentProcessingTimeoutMs: z.number().int().gte(10_000).lte(7_200_000).optional(),
+  structuredChunking: z.boolean().optional(),
   semanticChunk: z.boolean().optional(),
   semanticChunkThreshold: z.number().gte(0).lte(1).optional(),
   chunkTokenLimit: z.number().int().gte(0).optional(),
@@ -67,6 +73,21 @@ const baseSchema = z.object({
   updatedAt: z.number(),
 })
 
+export const documentProcessingInfoSchema = z.object({
+  revision: z.string().min(1),
+  artifactId: z.string().min(1),
+  sourceHash: z.string(),
+  provider: z.enum(['builtin', 'mineru', 'mineru-local']),
+  processorVersion: z.string().optional(),
+  optionsFingerprint: z.string(),
+  parsedAt: z.number(),
+  completeness: z.enum(['complete', 'partial', 'unknown']),
+  pageCount: z.number().int().gte(0).optional(),
+  processedPages: z.array(z.number().int().gte(0)).optional(),
+  warnings: z.array(z.object({ code: z.string(), message: z.string() })),
+  reused: z.boolean().optional(),
+})
+
 const documentSchema = z.object({
   id: z.string(),
   baseId: z.string(),
@@ -83,6 +104,7 @@ const documentSchema = z.object({
   contentHash: z.string().optional(),
   rawFilePath: z.string().optional(),
   rawText: z.string().optional(),
+  processing: documentProcessingInfoSchema.optional(),
   charCount: z.number().int().gte(0),
   tokenCount: z.number().int().gte(0).optional(),
   chunkCount: z.number().int().gte(0),
@@ -115,9 +137,14 @@ export const configOverridesSchema = z.object({
   embeddingBatchSize: z.number().int().gt(0).optional(),
   siblingChunks: z.number().int().gte(0).lte(3).optional(),
   hfEndpoint: z.string().optional(),
-  documentProcessorProvider: z.enum(['builtin', 'mineru']).optional(),
+  documentProcessorProvider: z.enum(['builtin', 'mineru', 'mineru-local']).optional(),
   mineruApiKey: z.string().optional(),
   mineruApiHost: z.string().optional(),
+  mineruLocalUrl: z.string().optional(),
+  mineruLocalApiKey: z.string().optional(),
+  mineruTier: z.enum(['flash', 'basic', 'standard', 'advanced']).optional(),
+  documentProcessingTimeoutMs: z.number().int().gte(10_000).lte(7_200_000).optional(),
+  structuredChunking: z.boolean().optional(),
   semanticChunk: z.boolean().optional(),
   semanticChunkThreshold: z.number().gte(0).lte(1).optional(),
   chunkTokenLimit: z.number().int().gte(0).optional(),
@@ -159,6 +186,11 @@ export interface ConfigOverrides {
   documentProcessorProvider?: KnowledgeConfig['documentProcessorProvider']
   mineruApiKey?: string
   mineruApiHost?: string
+  mineruLocalUrl?: string
+  mineruLocalApiKey?: string
+  mineruTier?: MineruTier
+  documentProcessingTimeoutMs?: number
+  structuredChunking?: boolean
   semanticChunk?: boolean
   semanticChunkThreshold?: number
   chunkTokenLimit?: number

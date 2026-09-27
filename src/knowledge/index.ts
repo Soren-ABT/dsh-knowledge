@@ -13,6 +13,14 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 
 import { isIP } from 'node:net'
 import { chunkText, mergeSemanticSegments, refineChunksByTokenLimit, splitSemanticSegments } from './chunk.js'
 import type { ChunkPiece } from './chunk.js'
+import { chunkParsedDocument } from './structured-chunk.js'
+import { ArtifactRepository } from './artifacts.js'
+import { processDocumentFile, processorErrorCode, processorErrorMessage, type ProcessedFile } from './document-processing.js'
+import { probeMineruLocal } from './mineru-local.js'
+import type { DocumentEvidence, ProcessingProgress } from './processing-types.js'
+import { composeDocumentEvidence } from './evidence.js'
+import { ProcessingQueue } from './processing-queue.js'
+import { processingBudget } from './processor-transport.js'
 import { composeContextWindow, estimateContextTokens, serializeContextWindow } from './context.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
 import type { ConfigOverrides } from './domain.js'
@@ -37,12 +45,12 @@ import { disposeLocalRerankProcess, localRerankChildIsWarm, setLocalRerankIdleTi
 import { downloadOcrModels, disposeOcrWorker, getOcrModelStatus, removeOcrModels, type OcrModelStatus } from './ocr.js'
 import { httpFetch } from './net.js'
 import { knowledgeRoute } from './http.js'
-import { SUPPORTED_DOCUMENT_EXTENSIONS, extractHtmlDocument, extractFromHtml, extensionOf, parseDocumentBuffer } from './parse.js'
+import { SUPPORTED_DOCUMENT_EXTENSIONS, extractHtmlDocument, extractFromHtml, extensionOf } from './parse.js'
 import { rank } from './retrieval.js'
 import { maximalMarginalRelevance, reciprocalRankFusion, RRF_K } from './retrieval.js'
 import type { RankedHit } from './retrieval.js'
 import { rerankCandidates, rerankErrorDetail, rerankTechnicalMessage } from './rerank.js'
-import { hashEmbeddingText } from './chunkdb.js'
+import { hashEmbeddingText, resolveChunkStorePath } from './chunkdb.js'
 import { openStore, StorageUnavailableError } from './store.js'
 import type { StorageDomainFacility, Store } from './store.js'
 import {
@@ -98,6 +106,7 @@ export { Config } from './config.js'
 export { openStore, StorageUnavailableError } from './store.js'
 export { knowledgeDomainSpec } from './domain.js'
 export { chunkText } from './chunk.js'
+export { extractWithMineruLocal, probeMineruLocal } from './mineru-local.js'
 export { composeContextWindow, estimateContextTokens, serializeContextWindow } from './context.js'
 export { embedTexts, getLocalModelStatus, DEFAULT_LOCAL_MODEL } from './embed.js'
 export { tokenize, cosineSimilarity, rank } from './retrieval.js'
@@ -292,6 +301,10 @@ export class KnowledgeService extends Service {
   private readonly baseWriteChains = new Map<string, Promise<unknown>>()
   /** Last rerank failure code per model; only state transitions are logged. */
   private readonly rerankLogState = new Map<string, string>()
+  private artifacts = new ArtifactRepository()
+  private readonly processingQueue = new ProcessingQueue()
+  private readonly processingProgress = new Map<string, ProcessingProgress>()
+  private readonly processingControllers = new Map<string, AbortController>()
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'knowledge')
@@ -314,7 +327,6 @@ export class KnowledgeService extends Service {
       this.storageError = error instanceof Error ? error : new Error(String(error))
       this.ctx.logger.error(`knowledge: ${this.storageError.message}`)
     }
-    this.resolveStore()
     const store = this.store
     // Teardown is registered unconditionally: without a store the plugin still
     // answers status/model calls, so a local model worker it started must not
@@ -325,7 +337,24 @@ export class KnowledgeService extends Service {
     this.ctx.effect(() => () => { void disposeLocalModelWorker() }, 'knowledge: dispose local model worker')
     this.ctx.effect(() => () => { void disposeLocalRerankProcess() }, 'knowledge: dispose local rerank process')
     this.ctx.effect(() => () => { void disposeOcrWorker() }, 'knowledge: dispose OCR worker')
-    if (store === undefined) return
+    if (store === undefined) { this.resolveStore(); return }
+    this.artifacts = new ArtifactRepository(store.raw !== undefined
+      ? join(dirname(resolveChunkStorePath(this.baseConfig.chunkStorePath)), 'knowledge-artifacts')
+      : undefined)
+    for (const base of store.listBases()) {
+      for (const doc of store.listDocuments(base.id)) {
+        const staged = store.getStagedDocumentGeneration(doc.id)
+        const pinned = [doc.processing?.revision, staged?.document.processing?.revision].filter((value): value is string => value !== undefined)
+        await this.artifacts.collectDocument(base.id, doc.id, pinned).catch(() => {
+          this.ctx.logger.warn('knowledge: artifact cleanup deferred (artifact_io)')
+        })
+      }
+    }
+    this.resolveStore()
+    this.ctx.effect(() => () => {
+      for (const controller of this.processingControllers.values()) controller.abort()
+      for (const active of this.indexing.values()) active.controller?.abort()
+    }, 'knowledge: cancel document processors')
     // Reapply the RUNTIME overrides persisted in the domain (they survive
     // restarts): without this, a saved localModelCacheDir / hfEndpoint was
     // only live after the next explicit save — model downloads/checks and the
@@ -453,12 +482,15 @@ export class KnowledgeService extends Service {
           // Same processor chain as the import: a crash during a MinerU import
           // is resumed through MinerU instead of failing on a local parser that
           // cannot read the scanned source.
-          const { text } = await this.extractDocumentText({
+          const processed = await this.extractDocumentText({
             baseId: doc.baseId,
+            documentId: doc.id,
             fileName: doc.fileName ?? doc.title,
             ...(doc.mimeType !== undefined ? { mimeType: doc.mimeType } : {}),
             bytes,
+            resume: true,
           })
+          const { text } = processed
           if (text.trim().length === 0) throw new Error('parsed document is empty')
           await this.ingestDocument({
             baseId: doc.baseId,
@@ -468,16 +500,44 @@ export class KnowledgeService extends Service {
             ...(doc.mimeType !== undefined ? { mimeType: doc.mimeType } : {}),
             ...(doc.parentDirectoryId !== undefined ? { parentDirectoryId: doc.parentDirectoryId } : {}),
             placeholderId: doc.id,
+            ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
             rawFilePath: doc.rawFilePath,
             text,
+            processed,
           })
         } else {
-          await this.reindexDocument(id)
+          const staged = store.getStagedDocumentGeneration(id)
+          if (staged?.document.processing !== undefined) {
+            const parsed = await this.artifacts.load(doc.baseId, id, staged.document.processing)
+            await this.finishRecoveredGeneration(doc, staged.document, { text: parsed.text, parsed, processing: staged.document.processing })
+          } else {
+            await this.reindexDocument(id, { mode: doc.processing === undefined ? undefined : 'rechunk' })
+          }
         }
       } catch (error) {
-        this.ctx.logger.warn(`knowledge: resume of interrupted import failed for "${doc.title}": ${error instanceof Error ? error.message : String(error)}`)
+        this.ctx.logger.warn(`knowledge: interrupted import recovery failed (${processorErrorCode(error)})`)
       }
     }
+  }
+
+  /** Resume the persisted candidate without paying for a second parse. */
+  private async finishRecoveredGeneration(previous: KnowledgeDocument, candidate: KnowledgeDocument, processed: ProcessedFile): Promise<void> {
+    const store = this.requireStore()
+    const controller = new AbortController()
+    this.indexing.set(previous.id, { baseId: previous.baseId, title: previous.title, phase: 'embedding', total: 0, progress: 0, controller })
+    try {
+      const config = this.getConfigFor(previous.baseId)
+      const result = await this.buildChunks(previous.baseId, previous.id, candidate.title, processed.text, config,
+        this.processingChunks(processed, config), batch => store.stageDocumentGeneration(candidate, batch), controller.signal, processed.processing.revision)
+      controller.signal.throwIfAborted()
+      if (result.embeddingError !== undefined && previous.chunkCount > 0) throw new Error('embedding recovery failed; previous generation preserved')
+      const { incomplete: _incomplete, embeddingError: _error, errorCode: _code, ...rest } = candidate
+      await store.commitDocumentGeneration({ ...rest, processing: processed.processing, rawText: processed.text,
+        contentHash: sha256(processed.text), charCount: processed.text.length, tokenCount: estimateTokens(processed.text),
+        chunkCount: result.chunks.length, updatedAt: Date.now(),
+        ...(result.embeddingError !== undefined ? { embeddingError: result.embeddingError, errorCode: result.embeddingErrorCode } : {}),
+      }, result.chunks)
+    } finally { this.indexing.delete(previous.id); this.processingProgress.delete(previous.id) }
   }
 
   /** Wait until the durable store is ready; the HTTP route awaits this. */
@@ -657,6 +717,10 @@ export class KnowledgeService extends Service {
   async deleteBase(id: string): Promise<void> {
     const store = this.requireStore()
     if (store.getBase(id) === undefined) throw new Error(`knowledge base not found: ${id}`)
+    for (const doc of store.listDocuments(id)) {
+      this.processingControllers.get(doc.id)?.abort()
+      this.processingProgress.delete(doc.id)
+    }
     // Cancel in-flight imports/reindexes under the deleted base (Cherry cancels
     // active jobs before purging): their finishing writes must not recreate
     // rows or chunks under the removed base, and their paid requests abort.
@@ -670,6 +734,7 @@ export class KnowledgeService extends Service {
     await store.deleteChunksByBase(id)
     await store.raw?.deleteBase(id)
     await store.deleteBase(id)
+    await this.artifacts.deleteBase(id)
     // A whole-base delete frees a large chunk of pages; hand them back to the
     // OS (threshold-gated, so a small base never pays for a VACUUM).
     await this.reconcileAfterDelete()
@@ -955,37 +1020,17 @@ export class KnowledgeService extends Service {
         // the local pipeline. A double failure reports BOTH reasons, so the
         // row shows why the remote processor rejected the file (log-only
         // before) instead of just the local parser's complaint.
-        const config = this.getConfigFor(request.baseId)
         const extracted = await this.extractDocumentText({
           baseId: request.baseId,
+          documentId: docId,
           fileName,
           ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
           bytes,
           signal: taskController.signal,
         })
-        let text = extracted.text
+        const text = extracted.text
         if (text.trim().length === 0) {
-          throw new Error(extracted.remoteError !== undefined
-            ? `parsed document is empty; MinerU extraction had failed (${extracted.remoteError})`
-            : 'parsed document is empty')
-        }
-        // Image/table captioning (NexusRAG-style visual intelligence): embedded
-        // PDF figures get VLM descriptions appended so charts become searchable.
-        // Best-effort — a provider failure leaves the parsed text untouched.
-        if (extensionOf(fileName) === 'pdf' && config.imageCaptionProvider !== 'off') {
-          try {
-            const { captionPdfImages } = await import('./caption.js')
-            const captioned = await captionPdfImages(bytes, {
-              provider: config.imageCaptionProvider,
-              model: config.imageCaptionModel,
-              baseUrl: config.imageCaptionBaseUrl,
-              apiKey: config.imageCaptionApiKey,
-              embeddingBaseUrl: config.embeddingBaseUrl,
-            })
-            if (captioned !== '') text = `${text}\n${captioned}`
-          } catch (error) {
-            this.ctx.logger.warn(`knowledge: captioning failed, importing text only: ${error instanceof Error ? error.message : String(error)}`)
-          }
+          throw new Error('parsed document is empty')
         }
         await this.ingestDocument({
           baseId: request.baseId,
@@ -997,11 +1042,13 @@ export class KnowledgeService extends Service {
           placeholderId: docId,
           rawFilePath,
           text,
+          processed: extracted,
         }, taskController.signal)
       } catch (error) {
         this.indexing.delete(docId)
         taskController.abort()
-        const message = error instanceof Error ? error.message : String(error)
+        if ((error as { published?: boolean }).published === true) return
+        const message = processorErrorMessage(error)
         // The row may have been deleted (or its base removed) while the task
         // was queued or running — never resurrect it (Cherry's deleting-guard).
         const current = store.getDocument(docId)
@@ -1019,6 +1066,9 @@ export class KnowledgeService extends Service {
         } catch {
           // best-effort: the row already exists; the status flip is cosmetic
         }
+      } finally {
+        this.processingProgress.delete(docId)
+        this.indexing.delete(docId)
       }
     })
     return stored
@@ -1118,36 +1168,7 @@ export class KnowledgeService extends Service {
       if (job.cancelled) break
       job.current = file
       try {
-        const buffer = await readFile(file)
-        const text = await parseDocumentBuffer(buffer, basename(file))
-        if (text.trim().length === 0) {
-          job.skipped += 1
-          continue
-        }
-        // Cherry's prepare-root: persist a raw copy (base-relative path) so
-        // the base stays rebuildable if the source disk changes. The stored
-        // path is derived from a fresh uuid (not the source file name) so two
-        // roots containing the same relative path can never collide.
-        let rawFilePath: string | undefined
-        const store = this.requireStore()
-        if (store.raw !== undefined) {
-          rawFilePath = await store.raw.write(job.baseId, crypto.randomUUID(), safeRawExtension(basename(file)), buffer)
-        }
-        try {
-          await this.ingestDocument({
-            baseId: job.baseId,
-            title: basename(file),
-            sourceType: 'file',
-            fileName: basename(file),
-            rawFilePath,
-            text,
-          })
-        } catch (error) {
-          // A rejected item (e.g. duplicate content) must not leave an
-          // orphaned raw copy behind.
-          if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
-          throw error
-        }
+        await this.ingestPathFile(job.baseId, file, basename(file))
         job.imported += 1
       } catch (error) {
         job.errors.push({ file, error: error instanceof Error ? error.message : String(error) })
@@ -1319,33 +1340,7 @@ export class KnowledgeService extends Service {
     if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(name))) {
       throw new Error(`Unsupported knowledge file type: ${name}`)
     }
-    const buffer = await readFile(filePath)
-    const text = await parseDocumentBuffer(buffer, name)
-    if (text.trim().length === 0) throw new Error(`file is empty or unreadable: ${filePath}`)
-    // Persist a stable raw copy (Cherry's "import means copy") so the base
-    // stays rebuildable even if the source file changes or disappears. The
-    // stored path is a fresh uuid so it never collides with another import of
-    // the same file name.
-    let rawFilePath: string | undefined
-    if (store.raw !== undefined) {
-      rawFilePath = await store.raw.write(baseId, crypto.randomUUID(), safeRawExtension(name), buffer)
-    }
-    try {
-      await this.ingestDocument({
-        baseId,
-        title: name,
-        sourceType: 'file',
-        fileName: name,
-        rawFilePath,
-        sourcePath,
-        text,
-      })
-    } catch (error) {
-      // A rejected item (e.g. duplicate content) must not leave an orphaned
-      // raw copy behind.
-      if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
-      throw error
-    }
+    await this.ingestPathFile(baseId, sourcePath, name)
     return { imported: true, title: name }
   }
 
@@ -1606,6 +1601,8 @@ export class KnowledgeService extends Service {
     // resurrect the row or write chunks under the deleted item, and its
     // paid embedding/MinerU requests must be aborted.
     const active = this.indexing.get(id)
+    this.processingControllers.get(id)?.abort()
+    this.processingProgress.delete(id)
     active?.controller?.abort()
     this.indexing.delete(id)
     // Deleting a directory container also removes its descendants.
@@ -1617,6 +1614,7 @@ export class KnowledgeService extends Service {
     if (existing.rawFilePath !== undefined) await store.raw?.delete(existing.rawFilePath)
     await store.deleteChunks(id, existing.baseId)
     await store.deleteDocument(id)
+    await this.artifacts.deleteDocument(existing.baseId, id)
   }
 
   /**
@@ -1641,7 +1639,7 @@ export class KnowledgeService extends Service {
     return next
   }
 
-  async reindexDocument(id: string): Promise<ReindexDocumentResult> {
+  async reindexDocument(id: string, options: { mode?: 'reparse' | 'rechunk'; strictSource?: boolean } = {}): Promise<ReindexDocumentResult> {
     const store = this.requireStore()
     const document = store.getDocument(id)
     if (document === undefined) throw new Error(`document not found: ${id}`)
@@ -1655,7 +1653,7 @@ export class KnowledgeService extends Service {
       // ingested, files removed from disk are deleted from the base, and
       // everything else is re-chunked/re-embedded. Legacy containers without
       // a source path fall back to re-indexing the existing children only.
-      if (document.sourcePath !== undefined) {
+      if (document.sourcePath !== undefined && options.mode === undefined) {
         return await this.rescanDirectory(document)
       }
       // One bad leaf must not abort the rest of the subtree (Cherry's
@@ -1668,7 +1666,7 @@ export class KnowledgeService extends Service {
         if (child.parentDirectoryId !== document.id) continue
         if (this.indexing.has(child.id)) continue
         try {
-          await this.reindexDocument(child.id)
+          await this.reindexDocument(child.id, options)
         } catch (error) {
           failed += 1
           if (firstError === '') firstError = error instanceof Error ? error.message : String(error)
@@ -1691,7 +1689,25 @@ export class KnowledgeService extends Service {
     // Fall back to the persisted text (then to reconstructed chunks) when the
     // file is gone or unreadable — a reindex must never wipe vectors for a
     // source that cannot be rebuilt.
-    const rebuilt = await this.sourceTextOf(document)
+    const controller = new AbortController()
+    this.indexing.set(id, { baseId: document.baseId, title: document.title, phase: 'parsing', total: 0, progress: 0, controller })
+    let rebuilt: Awaited<ReturnType<KnowledgeService['sourceTextOf']>>
+    try {
+      if (options.mode === 'rechunk') {
+        const parsed = document.processing !== undefined
+          ? await this.artifacts.load(document.baseId, document.id, document.processing) : undefined
+        rebuilt = { text: parsed?.text ?? document.rawText ?? reconstructFromChunks(store.listChunksByDoc(id)),
+          ...(parsed !== undefined && document.processing !== undefined ? { processed: { text: parsed.text, parsed, processing: { ...document.processing, reused: true } } } : {}),
+        }
+      } else {
+        rebuilt = await this.sourceTextOf(document, controller.signal, options.strictSource)
+      }
+      controller.signal.throwIfAborted()
+      if (!rebuilt.text.trim()) throw new Error('parsed document is empty')
+    } catch (error) {
+      this.indexing.delete(id)
+      throw error
+    }
     const discardCandidate = async (): Promise<void> => {
       if (rebuilt.candidateRawFilePath === undefined) return
       try {
@@ -1708,8 +1724,16 @@ export class KnowledgeService extends Service {
       // the resume re-embed only what never landed). The document continues to
       // reference the previous raw copy until the complete replacement commits.
       await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
-      const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, document.id, document.title, rebuilt.text, config, undefined, batch => store.putChunkBatch(batch))
-      const { embeddingError: _staleError, errorCode: _staleCode, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = document
+      const candidate: KnowledgeDocument = { ...document, rawText: rebuilt.text,
+        ...(rebuilt.rawFilePath !== undefined ? { rawFilePath: rebuilt.rawFilePath } : {}),
+        processing: rebuilt.processed?.processing,
+      }
+      const pieces = this.processingChunks(rebuilt.processed, config)
+      await store.stageDocumentGeneration(candidate, [])
+      const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, document.id, document.title, rebuilt.text, config, pieces, batch => store.stageDocumentGeneration(candidate, batch), controller.signal, candidate.processing?.revision)
+      controller.signal.throwIfAborted()
+      if (embeddingError !== undefined && document.chunkCount > 0) throw Object.assign(new Error('embedding failed; the previous document generation was preserved'), { code: embeddingErrorCode })
+      const { embeddingError: _staleError, errorCode: _staleCode, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = candidate
       const next: KnowledgeDocument = {
         ...rest,
         ...(rebuilt.rawFilePath !== undefined ? { rawFilePath: rebuilt.rawFilePath } : {}),
@@ -1731,8 +1755,7 @@ export class KnowledgeService extends Service {
         await discardCandidate()
         return document
       }
-      await store.putChunks(chunks)
-      await store.putDocument(next)
+      await store.commitDocumentGeneration(next, chunks)
       candidateCommitted = true
 
       if (rebuilt.previousRawFilePath !== undefined && rebuilt.previousRawFilePath !== rebuilt.rawFilePath) {
@@ -1747,8 +1770,15 @@ export class KnowledgeService extends Service {
       await this.touchBase(document.baseId)
       return next
     } catch (error) {
-      if (!candidateCommitted) await discardCandidate()
+      if (!candidateCommitted && (error as { published?: boolean }).published !== true) {
+        await store.discardStagedDocumentGeneration(id)
+        await discardCandidate()
+        if (store.getDocument(id) !== undefined) await store.putDocument(document)
+      }
       throw error
+    } finally {
+      this.indexing.delete(id)
+      this.processingProgress.delete(id)
     }
   }
 
@@ -1769,37 +1799,29 @@ export class KnowledgeService extends Service {
    */
   private async extractDocumentText(input: {
     baseId: string
+    documentId: string
     fileName: string
     mimeType?: string
     bytes: Uint8Array
     signal?: AbortSignal
-  }): Promise<{ text: string; remoteError?: string }> {
+    resume?: boolean
+  }): Promise<ProcessedFile> {
+    const controller = new AbortController()
+    this.processingControllers.set(input.documentId, controller)
+    const signal = input.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, input.signal])
     const config = this.getConfigFor(input.baseId)
-    let remoteError: string | undefined
-    if (config.documentProcessorProvider === 'mineru' && config.mineruApiKey.trim() !== ''
-      && extensionOf(input.fileName) === 'pdf') {
-      try {
-        const { extractPdfWithMineru } = await import('./mineru.js')
-        const text = await extractPdfWithMineru(input.bytes, input.fileName, {
-          apiKey: config.mineruApiKey,
-          apiHost: config.mineruApiHost,
-        }, input.signal)
-        return { text }
-      } catch (error) {
-        if (input.signal?.aborted === true) throw error
-        remoteError = error instanceof Error ? error.message : String(error)
-        this.ctx.logger.warn(`knowledge: mineru extract failed, falling back to local: ${remoteError}`)
-      }
-    }
+    const budget = processingBudget(config.documentProcessingTimeoutMs ?? 1_800_000, signal)
+    this.processingProgress.set(input.documentId, { stage: 'queued' })
     try {
-      const text = await parseDocumentBuffer(input.bytes, input.fileName, input.mimeType)
-      return { text, ...(remoteError !== undefined ? { remoteError } : {}) }
+      return await this.processingQueue.run(() => processDocumentFile({ ...input, config, artifacts: this.artifacts, signal: budget.signal,
+        onProgress: progress => { this.processingProgress.set(input.documentId, progress) },
+      }), budget.signal)
     } catch (error) {
-      const localError = error instanceof Error ? error.message : String(error)
-      if (remoteError !== undefined) {
-        throw new Error(`MinerU extraction failed (${remoteError}); local parsing failed (${localError})`)
-      }
+      this.ctx.logger.warn(`knowledge: document processor ${processorErrorCode(error)}`)
       throw error
+    } finally {
+      budget.dispose()
+      if (this.processingControllers.get(input.documentId) === controller) this.processingControllers.delete(input.documentId)
     }
   }
 
@@ -1809,8 +1831,9 @@ export class KnowledgeService extends Service {
    *  (parsed through the base's configured processor: MinerU first when set),
    *  then persisted text, then reconstructed chunks are used. Returns the rebuilt
    *  text and, when the raw copy was refreshed, its new base-relative path. */
-  private async sourceTextOf(document: KnowledgeDocument): Promise<{
+  private async sourceTextOf(document: KnowledgeDocument, signal?: AbortSignal, strictSource = false): Promise<{
     text: string
+    processed?: ProcessedFile
     rawFilePath?: string
     candidateRawFilePath?: string
     previousRawFilePath?: string
@@ -1831,12 +1854,16 @@ export class KnowledgeService extends Service {
           // A repointed source may use a different extension. Dispatch from
           // the live source identity rather than stale fileName/MIME metadata.
           let text: string
+          let processed: ProcessedFile
           try {
             const extracted = await this.extractDocumentText({
               baseId: document.baseId,
+              documentId: document.id,
               fileName,
               bytes: buffer,
+              signal,
             })
+            processed = extracted
             text = extracted.text
             if (text.trim().length === 0) throw new Error('parsed document is empty')
           } catch (error) {
@@ -1850,14 +1877,17 @@ export class KnowledgeService extends Service {
             const nextRaw = await store.raw.write(document.baseId, crypto.randomUUID(), safeRawExtension(fileName), buffer)
             return {
               text,
+              processed,
               rawFilePath: nextRaw,
               candidateRawFilePath: nextRaw,
               ...(document.rawFilePath !== undefined ? { previousRawFilePath: document.rawFilePath } : {}),
             }
           }
-          return { text }
+          return { text, processed }
         }
       } catch (error) {
+        signal?.throwIfAborted()
+        if (strictSource) throw error
         const reason = error instanceof Error ? error.message : String(error)
         sourceFailures.push(`source path: ${reason}`)
         this.ctx.logger.warn(`knowledge: re-reading source path failed, falling back to stored copy: ${reason}`)
@@ -1874,15 +1904,19 @@ export class KnowledgeService extends Service {
         } else {
           try {
             // A distinct cached source is still a valid recovery candidate.
-            const { text } = await this.extractDocumentText({
+            const processed = await this.extractDocumentText({
               baseId: document.baseId,
+              documentId: document.id,
               fileName: document.fileName ?? document.title,
               ...(document.mimeType !== undefined ? { mimeType: document.mimeType } : {}),
               bytes: raw,
+              signal,
             })
-            if (text.trim().length > 0) return { text }
+            const { text } = processed
+            if (text.trim().length > 0) return { text, processed }
             throw new Error('parsed document is empty')
           } catch (error) {
+            signal?.throwIfAborted()
             const reason = error instanceof Error ? error.message : String(error)
             sourceFailures.push(`stored raw source: ${reason}`)
             this.ctx.logger.warn(`knowledge: re-parsing raw source failed, falling back to stored text: ${reason}`)
@@ -1900,6 +1934,16 @@ export class KnowledgeService extends Service {
         ? sourceFailures.join('; ')
         : 'its source could not be parsed — check the document processor settings, or re-import the file'
       throw new Error(`document "${document.title}" has no source text to reindex (${detail})`)
+    }
+    if (document.processing !== undefined) {
+      try {
+        const parsed = await this.artifacts.load(document.baseId, document.id, document.processing)
+        if (parsed.text === text) return { text, processed: { text, parsed, processing: {
+          ...document.processing, reused: true,
+          warnings: [...document.processing.warnings.filter(warning => warning.code !== 'source_unavailable'),
+            { code: 'source_unavailable', message: 'Could not reparse the source; previous evidence was retained.' }],
+        } } }
+      } catch { /* Legacy text remains readable even when an artifact is lost. */ }
     }
     return { text }
   }
@@ -2151,27 +2195,44 @@ export class KnowledgeService extends Service {
   }
 
   private async ingestDirectoryFile(baseId: string, parentDirectoryId: string, sourcePath: string, fileName: string): Promise<KnowledgeDocument> {
+    return this.ingestPathFile(baseId, sourcePath, fileName, parentDirectoryId)
+  }
+
+  /** Persist source/placeholder before parsing, so path imports recover just
+   * like uploads if the host stops during a long-running processor call. */
+  private async ingestPathFile(baseId: string, sourcePath: string, fileName: string, parentDirectoryId?: string): Promise<KnowledgeDocument> {
     const store = this.requireStore()
     const buffer = await readFile(sourcePath)
-    const text = await parseDocumentBuffer(buffer, fileName)
-    if (text.trim().length === 0) throw new Error(`file is empty or unreadable: ${fileName}`)
-    let rawFilePath: string | undefined
-    if (store.raw !== undefined) rawFilePath = await store.raw.write(baseId, crypto.randomUUID(), safeRawExtension(fileName), buffer)
+    const documentId = crypto.randomUUID()
+    const rawFilePath = await store.raw?.write(baseId, documentId, safeRawExtension(fileName), buffer)
+    const controller = new AbortController()
     try {
+      if (store.getBase(baseId) === undefined) throw new NotFoundError('knowledge base no longer exists')
+      await store.putDocument({ id: documentId, baseId, title: fileName, fileName, sourceType: 'file',
+        sourcePath, rawFilePath, parentDirectoryId, charCount: 0, chunkCount: 0, createdAt: Date.now(), incomplete: true })
+      this.indexing.set(documentId, { baseId, title: fileName, phase: 'parsing', total: 0, progress: 0, controller })
+      const processed = await this.extractDocumentText({ baseId, documentId, bytes: buffer, fileName, signal: controller.signal })
       return await this.ingestDocument({
         baseId,
         title: fileName,
         sourceType: 'file',
         fileName,
         parentDirectoryId,
+        placeholderId: documentId,
+        processed,
         rawFilePath,
         sourcePath,
-        text,
-      })
+        text: processed.text,
+      }, controller.signal)
     } catch (error) {
-      if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
+      // A published SQLite generation is authoritative even if DomainKV needs
+      // startup reconciliation. Never delete its referenced raw source.
+      if ((error as { published?: boolean }).published !== true) {
+        if (store.getDocument(documentId) !== undefined) await this.deleteDocumentRecursive(documentId)
+        else if (rawFilePath !== undefined) await store.raw?.delete(rawFilePath)
+      }
       throw error
-    }
+    } finally { this.indexing.delete(documentId); this.processingProgress.delete(documentId) }
   }
 
   /** Returns unchanged only when the live bytes exactly match the stored raw
@@ -2186,9 +2247,9 @@ export class KnowledgeService extends Service {
     const stored = bound.rawFilePath !== undefined ? await store.raw?.read(bound.rawFilePath) : undefined
     const unchanged = stored !== undefined && stored !== null && stored.byteLength > 0 && Buffer.from(stored).equals(buffer)
     if (unchanged) return bound === document ? 'unchanged' : 'updated'
-    const text = await parseDocumentBuffer(buffer, fileName)
-    if (text.trim().length === 0) throw new Error(`file is empty or unreadable: ${fileName}`)
-    await this.reindexDocument(bound.id)
+    // The unified source reader validates and parses once. A changed live
+    // source must not silently fall back to the previous snapshot.
+    await this.reindexDocument(bound.id, { mode: 'reparse', strictSource: true })
     return 'updated'
   }
 
@@ -2506,6 +2567,7 @@ export class KnowledgeService extends Service {
         url: doc.url,
         ...(doc.parentDirectoryId !== undefined ? { parentDirectoryId: doc.parentDirectoryId } : {}),
         ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
+        ...(doc.processing !== undefined ? { processing: doc.processing } : {}),
         charCount: doc.charCount,
         tokenCount: doc.tokenCount,
         chunkCount: doc.chunkCount,
@@ -2558,16 +2620,18 @@ export class KnowledgeService extends Service {
 
   /** Live progress plus recent terminal failures for client-side recovery. */
   indexingStatus(): Array<
-    | { docId: string; baseId: string; title: string; phase: 'parsing' | 'embedding'; progress: number; status?: 'running' }
+    | { docId: string; baseId: string; title: string; phase: 'parsing' | 'embedding'; progress: number; status?: 'running'; processingProgress?: ProcessingProgress }
     | { docId: string; baseId: string; title: string; phase: 'parsing' | 'embedding'; progress: number; status: 'failed'; error: { code: string; message: string } }
   > {
     const now = Date.now()
     const out: Array<
-      | { docId: string; baseId: string; title: string; phase: 'parsing' | 'embedding'; progress: number; status?: 'running' }
+      | { docId: string; baseId: string; title: string; phase: 'parsing' | 'embedding'; progress: number; status?: 'running'; processingProgress?: ProcessingProgress }
       | { docId: string; baseId: string; title: string; phase: 'parsing' | 'embedding'; progress: number; status: 'failed'; error: { code: string; message: string } }
     > = []
     for (const [docId, entry] of this.indexing) {
-      out.push({ docId, baseId: entry.baseId, title: entry.title, phase: entry.phase, progress: entry.progress })
+      out.push({ docId, baseId: entry.baseId, title: entry.title, phase: entry.phase, progress: entry.progress,
+        ...(this.processingProgress.has(docId) ? { processingProgress: this.processingProgress.get(docId)! } : {}),
+      })
     }
     // Linger entries (finished jobs) keep the last percentage for a short
     // window; expired ones are collected lazily.
@@ -2594,6 +2658,39 @@ export class KnowledgeService extends Service {
       })
     }
     return out
+  }
+
+  /** Probe only the saved endpoint: never accept an arbitrary caller URL. */
+  async checkProcessor(baseId?: string) {
+    if (baseId !== undefined && this.requireStore().getBase(baseId) === undefined) throw new NotFoundError('knowledge base not found')
+    const config = baseId === undefined ? this.getConfig() : this.getConfigFor(baseId)
+    return probeMineruLocal({ apiUrl: config.mineruLocalUrl ?? 'http://127.0.0.1:8000', apiKey: config.mineruLocalApiKey, tier: config.mineruTier, timeoutMs: 10_000 })
+  }
+
+  cancelProcessing(id: string): { cancelled: boolean } {
+    if (this.requireStore().getDocument(id) === undefined) throw new NotFoundError('document not found')
+    const parsing = this.processingControllers.get(id)
+    const indexing = this.indexing.get(id)?.controller
+    parsing?.abort()
+    indexing?.abort()
+    return { cancelled: parsing !== undefined || indexing !== undefined }
+  }
+
+  async readDocumentEvidence(id: string, options: { revision?: string; pageIndex?: number; blockId?: string; blockOffset?: number; maxTokens?: number } = {}): Promise<DocumentEvidence> {
+    const doc = this.requireStore().getDocument(id)
+    if (doc === undefined) throw new NotFoundError('document not found')
+    if (options.revision !== undefined && doc.processing?.revision !== options.revision) throw new NotFoundError('evidence revision is no longer current; search again')
+    if (doc.processing === undefined) return { documentId: id, title: doc.title, blocks: [], assets: [], estimatedTokens: 0, truncated: false }
+    const parsed = await this.artifacts.load(doc.baseId, id, doc.processing)
+    return composeDocumentEvidence(doc, parsed, options)
+  }
+
+  async getEvidenceAsset(id: string, assetId: string, revision: string) {
+    const doc = this.requireStore().getDocument(id)
+    if (doc?.processing === undefined || doc.processing.revision !== revision) throw new NotFoundError('evidence revision is no longer current; refresh the document')
+    const asset = await this.artifacts.readAsset(doc.baseId, id, doc.processing, assetId)
+    if (asset === undefined) throw new NotFoundError('evidence asset not found')
+    return { ...asset, fileName: assetId }
   }
 
   /** Current download/load state of an in-process embedding model. */
@@ -2877,6 +2974,7 @@ export class KnowledgeService extends Service {
       ...(doc.url !== undefined ? { url: doc.url } : {}),
       ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
       ...(doc.rawFilePath !== undefined ? { rawFilePath: doc.rawFilePath } : {}),
+      ...(doc.processing !== undefined ? { processing: doc.processing } : {}),
       rawText: truncated ? rawText.slice(0, rawTextLimit) : rawText,
       ...(truncated ? { rawTextTruncated: true } : {}),
       charCount: doc.charCount,
@@ -3622,6 +3720,8 @@ export class KnowledgeService extends Service {
     url?: string
     parentDirectoryId?: string
     text: string
+    documentId?: string
+    processed?: ProcessedFile
     /** Base-relative path of the persisted original source bytes (file docs). */
     rawFilePath?: string
     /** Absolute source path the item was imported from (file/path imports). */
@@ -3651,7 +3751,7 @@ export class KnowledgeService extends Service {
           throw new Error(`duplicate document: "${doc.title}" already contains identical content`)
         }
       }
-      const docId = input.placeholderId ?? crypto.randomUUID()
+      const docId = input.placeholderId ?? input.documentId ?? crypto.randomUUID()
       const prior = input.placeholderId !== undefined ? store.getDocument(docId) : undefined
       const createdAt = prior?.createdAt ?? Date.now()
       // Persist the document (with its source text) BEFORE embedding starts and
@@ -3665,6 +3765,7 @@ export class KnowledgeService extends Service {
         baseId: input.baseId,
         title: input.title,
         sourceType: input.sourceType,
+        ...(input.processed !== undefined ? { processing: input.processed.processing } : {}),
         ...(input.fileName !== undefined ? { fileName: input.fileName } : {}),
         ...(input.mimeType !== undefined ? { mimeType: input.mimeType } : {}),
         ...(input.url !== undefined ? { url: input.url } : {}),
@@ -3686,7 +3787,9 @@ export class KnowledgeService extends Service {
     this.indexingFailures.delete(half.id)
     // Chunking (regular or semantic) happens inside buildChunks; passing no
     // pieces lets the configured semanticChunk path run.
-    const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(input.baseId, half.id, input.title, input.text, config, undefined, batch => store.putChunkBatch(batch), signal)
+    const pieces = this.processingChunks(input.processed, config)
+    const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(input.baseId, half.id, input.title, input.text, config, pieces, batch => store.stageDocumentGeneration(half, batch), signal, half.processing?.revision)
+    signal?.throwIfAborted()
     // A delete that landed mid-embedding must not resurrect the row nor write
     // chunks under a deleted base (Cherry's deleting-guard).
     if (store.getDocument(half.id) === undefined || store.getBase(input.baseId) === undefined) {
@@ -3712,11 +3815,20 @@ export class KnowledgeService extends Service {
         : {}),
       updatedAt: Date.now(),
     }
-    await store.putDocument(document)
-    await store.putChunks(chunks)
+    await store.commitDocumentGeneration(document, chunks)
     this.indexing.delete(half.id)
     await this.touchBase(input.baseId)
     return document
+  }
+
+  private processingChunks(processed: ProcessedFile | undefined, config: KnowledgeConfig): readonly ChunkPiece[] | undefined {
+    // Keep legacy/plain-text segmentation exactly as before. Only a structured
+    // processor result introduces structural boundaries and source mapping.
+    if (processed === undefined || processed.parsed.provider !== 'mineru-local' || processed.parsed.blocks.length === 0) return undefined
+    return chunkParsedDocument(processed.parsed, processed.processing.revision, config.chunkSize, config.chunkOverlap, {
+      structured: config.structuredChunking !== false, smartChunk: config.smartChunk,
+      separator: config.chunkSeparator, tokenLimit: config.chunkTokenLimit,
+    })
   }
 
   private async buildChunks(
@@ -3728,6 +3840,7 @@ export class KnowledgeService extends Service {
     pieces?: readonly ChunkPiece[],
     onBatch?: (chunks: KnowledgeChunk[]) => Promise<void>,
     signal?: AbortSignal,
+    processingRevision?: string,
   ): Promise<{ chunks: KnowledgeChunk[]; embeddingError?: string; embeddingErrorCode?: 'dimension_mismatch' | 'embedding_provider' }> {
     let slices: ReadonlyArray<ChunkPiece & { embedding?: number[] }>
     if (pieces !== undefined) {
@@ -3785,6 +3898,8 @@ export class KnowledgeService extends Service {
       baseId,
       index,
       text: piece.text,
+      ...(piece.sourceSpans !== undefined ? { sourceSpans: piece.sourceSpans } : {}),
+      ...(processingRevision !== undefined ? { processingRevision } : {}),
       ...(piece.heading !== undefined ? { heading: piece.heading } : {}),
       ...(piece.embedding !== undefined ? { embedding: piece.embedding } : {}),
       context: piece.heading !== undefined ? `${title} > ${piece.heading}` : title,
@@ -3793,7 +3908,8 @@ export class KnowledgeService extends Service {
     let embeddingErrorCode: 'dimension_mismatch' | 'embedding_provider' | undefined
     if (config.embeddingProvider !== 'none' && chunks.length > 0) {
       const key = embeddingKey(config)
-      this.indexing.set(docId, { baseId, title, phase: 'embedding', total: chunks.length, progress: 0 })
+      const taskController = this.indexing.get(docId)?.controller
+      this.indexing.set(docId, { baseId, title, phase: 'embedding', total: chunks.length, progress: 0, controller: taskController })
       try {
         // Library-wide vector reuse (Cherry's decision A4): chunks whose search
         // text is byte-identical to a chunk already stored under the SAME
@@ -3863,7 +3979,7 @@ export class KnowledgeService extends Service {
             done.push(chunks[index])
           }
           if (guardedOnBatch !== undefined) await guardedOnBatch(done)
-          this.indexing.set(docId, { baseId, title, phase: 'embedding', total: need.length, progress: Math.round((Math.min(i + batch.length, need.length) / need.length) * 100) })        }
+          this.indexing.set(docId, { baseId, title, phase: 'embedding', total: need.length, progress: Math.round((Math.min(i + batch.length, need.length) / need.length) * 100), controller: taskController })        }
       } catch (error) {
         embeddingError = error instanceof Error ? error.message : String(error)
         embeddingErrorCode ??= 'embedding_provider'
@@ -3889,7 +4005,6 @@ export class KnowledgeService extends Service {
         }
       } finally {
         const active = this.indexing.get(docId)
-        this.indexing.delete(docId)
         // Cherry's linger: keep the final percentage visible for ~60s so the
         // UI does not blank it while the row still reads processing.
         if (active !== undefined) {
@@ -4199,6 +4314,8 @@ function searchHitOf(store: Store, chunk: KnowledgeChunk | undefined, hit: Ranke
     ...(chunk.heading !== undefined ? { heading: chunk.heading } : {}),
     index: chunk.index,
     text: chunk.text,
+    ...(chunk.sourceSpans !== undefined ? { sourceSpans: chunk.sourceSpans } : {}),
+    ...(chunk.processingRevision !== undefined ? { processingRevision: chunk.processingRevision } : {}),
     score: hit.score,
     ...(hit.vectorScore !== undefined ? { vectorScore: hit.vectorScore } : {}),
     ...(hit.lexicalScore !== undefined ? { lexicalScore: hit.lexicalScore } : {}),
@@ -4236,6 +4353,8 @@ function attachContextWindows(
       baseId: hit.baseId,
       index: hit.index,
       text: hit.text,
+      ...(hit.sourceSpans !== undefined ? { sourceSpans: hit.sourceSpans } : {}),
+      ...(hit.processingRevision !== undefined ? { processingRevision: hit.processingRevision } : {}),
       ...(hit.heading !== undefined ? { heading: hit.heading } : {}),
     }
     const neighbours = byDoc.get(hit.docId) ?? [anchor]

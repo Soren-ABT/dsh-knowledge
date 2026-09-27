@@ -14,8 +14,8 @@ import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, relative } from 'node:path'
 import { knowledgeDomainSpec, TABLES } from './domain.js'
 import type { ConfigOverrides } from './domain.js'
-import { ChunkDatabase, hashEmbeddingText, legacyChunkFilePath, migrateLegacyChunkFile, resolveChunkStorePath, searchTextOf } from './chunkdb.js'
-import type { RetrievalLane } from './chunkdb.js'
+import { ChunkDatabase, hashEmbeddingText, legacyChunkFilePath, migrateLegacyChunkFile, resolveChunkStorePath, searchTextOf, validateDocumentGeneration } from './chunkdb.js'
+import type { RetrievalLane, StagedDocumentGeneration } from './chunkdb.js'
 import type {
   KnowledgeBase,
   KnowledgeChunk,
@@ -134,6 +134,13 @@ export interface Store {
   getDocument(id: string): KnowledgeDocument | undefined
   putDocument(doc: KnowledgeDocument): Promise<void>
   deleteDocument(id: string): Promise<void>
+  /** Incremental candidate batches, invisible until commit; same revision upserts. */
+  stageDocumentGeneration(doc: KnowledgeDocument, chunks: KnowledgeChunk[]): Promise<void>
+  discardStagedDocumentGeneration(docId: string): Promise<void>
+  getStagedDocumentGeneration(docId: string): StagedDocumentGeneration | undefined
+  /** Publish complete chunks + recovery metadata, then reconcile DomainKV. */
+  commitDocumentGeneration(doc: KnowledgeDocument, chunks: KnowledgeChunk[]): Promise<void>
+  recoverDocumentGenerations(): Promise<number>
 
   listChunks(baseId: string): KnowledgeChunk[]
   getChunk(id: string): KnowledgeChunk | undefined
@@ -231,6 +238,15 @@ export class StorageUnavailableError extends Error {
   }
 }
 
+/** SQL publication succeeded. Do not roll back sources or overwrite metadata. */
+export class DocumentGenerationCommitError extends Error {
+  readonly published = true
+  constructor(options?: { cause?: unknown }) {
+    super('document generation published; metadata recovery is pending', options)
+    this.name = 'DocumentGenerationCommitError'
+  }
+}
+
 /**
  * Open a durable store. Business state comes from the domain facility; chunks
  * live in a plugin-owned SQLite file (`chunkStorePath`, defaulted under
@@ -259,6 +275,7 @@ export async function openStore(
     // material store): `<chunkStoreDir>/knowledge-raw`.
     const raw = new RawFileStorage(join(dirname(chunkStorePath), 'knowledge-raw'))
     const store = new DomainStore(domain, chunkDb, raw)
+    await store.recoverDocumentGenerations()
     // Startup self-healing: drop documents a crashed import left behind
     // (pure placeholders with no recoverable text), then reconcile stale
     // chunkCount metadata. Resume candidates (rawText present, chunks
@@ -287,6 +304,7 @@ export async function openStore(
 }
 
 class DomainStore implements Store {
+  private documentWriteChain: Promise<void> = Promise.resolve()
   constructor(
     private readonly domain: Domain<typeof knowledgeDomainSpec>,
     private readonly chunkDb: ChunkDatabase,
@@ -314,23 +332,119 @@ class DomainStore implements Store {
   }
 
   deleteBase(id: string): Promise<void> {
-    return this.bases.delete(id).then(() => {})
+    return this.writeDocuments(async () => {
+      await this.bases.delete(id)
+      for (const [, doc] of this.documents.entries()) {
+        if (doc.baseId === id) this.chunkDb.discardDocumentGenerations(doc.id)
+      }
+    })
   }
 
   listDocuments(baseId: string): KnowledgeDocument[] {
-    return [...this.documents.entries()].map(([, value]) => value).filter(doc => doc.baseId === baseId)
+    const pending = new Map(this.chunkDb.pendingDocumentGenerations().map(item => [item.document.id, item]))
+    return [...this.documents.entries()].map(([, value]) => {
+      const next = pending.get(value.id)
+      return next !== undefined && next.previousCreatedAt === value.createdAt && next.document.baseId === value.baseId
+        ? next.document : value
+    }).filter(doc => doc.baseId === baseId)
   }
 
   getDocument(id: string): KnowledgeDocument | undefined {
-    return this.documents.get(id)
+    const current = this.documents.get(id)
+    if (current === undefined) return undefined
+    const pending = this.chunkDb.pendingDocumentGeneration(id)
+    return pending !== undefined && pending.previousCreatedAt === current.createdAt && pending.document.baseId === current.baseId
+      ? pending.document : current
   }
 
   putDocument(doc: KnowledgeDocument): Promise<void> {
-    return this.documents.put(doc.id, doc)
+    return this.writeDocuments(async () => {
+      const pending = this.chunkDb.pendingDocumentGeneration(doc.id)
+      if (pending !== undefined && doc.processing?.revision !== pending.document.processing?.revision) {
+        throw new Error('stale_document_generation')
+      }
+      await this.documents.put(doc.id, doc)
+      if (pending !== undefined) this.chunkDb.acknowledgeDocumentGeneration(doc.id)
+    })
   }
 
   deleteDocument(id: string): Promise<void> {
-    return this.documents.delete(id).then(() => {})
+    return this.writeDocuments(async () => {
+      // Delete the authoritative object first. A crash before journal cleanup
+      // is safe: recovery never recreates a missing object.
+      await this.documents.delete(id)
+      this.chunkDb.discardDocumentGenerations(id)
+    })
+  }
+
+  private writeDocuments<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.documentWriteChain.then(operation)
+    this.documentWriteChain = next.then(() => {}, () => {})
+    return next
+  }
+
+  stageDocumentGeneration(doc: KnowledgeDocument, chunks: KnowledgeChunk[]): Promise<void> {
+    return this.writeDocuments(async () => {
+      const current = this.documents.get(doc.id)
+      if (current === undefined || current.baseId !== doc.baseId || current.createdAt !== doc.createdAt || this.getBase(doc.baseId) === undefined) {
+        throw new Error('document_generation_target_missing')
+      }
+      this.chunkDb.stageDocumentGeneration(doc, chunks)
+    })
+  }
+
+  getStagedDocumentGeneration(docId: string): StagedDocumentGeneration | undefined {
+    const current = this.getDocument(docId)
+    if (current === undefined || this.getBase(current.baseId) === undefined) return undefined
+    const staged = this.chunkDb.getStagedDocumentGeneration(docId)
+    return staged?.document.createdAt === current.createdAt && staged.document.baseId === current.baseId ? staged : undefined
+  }
+
+  discardStagedDocumentGeneration(docId: string): Promise<void> {
+    return this.writeDocuments(async () => { this.chunkDb.discardStagedDocumentGeneration(docId) })
+  }
+
+  commitDocumentGeneration(doc: KnowledgeDocument, chunks: KnowledgeChunk[]): Promise<void> {
+    return this.writeDocuments(async () => {
+      const current = this.documents.get(doc.id)
+      if (current === undefined || current.baseId !== doc.baseId || current.createdAt !== doc.createdAt || this.getBase(doc.baseId) === undefined) {
+        throw new Error('document_generation_target_missing')
+      }
+      this.chunkDb.stageDocumentGeneration(doc, chunks)
+      this.chunkDb.publishDocumentGeneration(doc, chunks, current.createdAt)
+      try {
+        await this.documents.put(doc.id, doc)
+        this.chunkDb.acknowledgeDocumentGeneration(doc.id)
+      } catch (error) { throw new DocumentGenerationCommitError({ cause: error }) }
+    })
+  }
+
+  recoverDocumentGenerations(): Promise<number> {
+    return this.writeDocuments(async () => {
+      let recovered = 0
+      for (const pending of this.chunkDb.pendingDocumentGenerations()) {
+        const doc = pending.document
+        const current = this.documents.get(doc.id)
+        if (current === undefined || this.getBase(doc.baseId) === undefined) {
+          await this.chunkDb.deleteChunks(doc.id, doc.baseId)
+          this.chunkDb.discardDocumentGenerations(doc.id)
+          continue
+        }
+        if (current.baseId !== doc.baseId || current.createdAt !== pending.previousCreatedAt) {
+          this.chunkDb.discardPublishedGeneration(doc)
+          continue
+        }
+        await this.documents.put(doc.id, doc)
+        this.chunkDb.acknowledgeDocumentGeneration(doc.id)
+        recovered += 1
+      }
+      for (const staged of this.chunkDb.stagedDocumentHeaders()) {
+        const current = this.documents.get(staged.id)
+        if (current === undefined || this.getBase(staged.baseId) === undefined
+          || current.baseId !== staged.baseId || current.createdAt !== staged.createdAt) this.chunkDb.discardDocumentGenerations(staged.id)
+      }
+      return recovered
+    })
   }
 
   listChunks(baseId: string): KnowledgeChunk[] {
@@ -450,6 +564,8 @@ class DomainStore implements Store {
     for (const base of this.listBases()) {
       for (const doc of this.listDocuments(base.id)) {
         if (doc.rawFilePath !== undefined) referenced.add(doc.rawFilePath)
+        const staged = this.getStagedDocumentGeneration(doc.id)
+        if (staged?.document.rawFilePath !== undefined) referenced.add(staged.document.rawFilePath)
       }
     }
     let removed = 0
@@ -555,6 +671,7 @@ class DomainStore implements Store {
   }
 
   async close(): Promise<void> {
+    await this.documentWriteChain
     this.chunkDb.close()
     await this.domain.close()
   }
@@ -564,6 +681,7 @@ class MemoryStore implements Store {
   private readonly bases = new Map<string, KnowledgeBase>()
   private readonly documents = new Map<string, KnowledgeDocument>()
   private readonly chunks = new Map<string, KnowledgeChunk>()
+  private readonly staged = new Map<string, StagedDocumentGeneration>()
   private overrides: ConfigOverrides = {}
   private groups: string[] = []
   private enabled = true
@@ -583,6 +701,7 @@ class MemoryStore implements Store {
 
   async deleteBase(id: string): Promise<void> {
     this.bases.delete(id)
+    for (const [docId, generation] of this.staged) if (generation.document.baseId === id) this.staged.delete(docId)
   }
 
   listDocuments(baseId: string): KnowledgeDocument[] {
@@ -599,7 +718,45 @@ class MemoryStore implements Store {
 
   async deleteDocument(id: string): Promise<void> {
     this.documents.delete(id)
+    this.staged.delete(id)
   }
+
+  async stageDocumentGeneration(doc: KnowledgeDocument, chunks: KnowledgeChunk[]): Promise<void> {
+    this.assertGenerationTarget(doc)
+    validateDocumentGeneration(doc, chunks)
+    const previous = this.staged.get(doc.id)
+    const same = previous?.document.processing?.revision === doc.processing?.revision
+      && (doc.processing !== undefined || previous?.document.updatedAt === doc.updatedAt)
+    const byId = new Map((same ? previous?.chunks ?? [] : []).map(chunk => [chunk.id, chunk]))
+    for (const chunk of chunks) byId.set(chunk.id, chunk)
+    this.staged.set(doc.id, { document: doc, chunks: [...byId.values()].sort((a, b) => a.index - b.index) })
+  }
+
+  getStagedDocumentGeneration(docId: string): StagedDocumentGeneration | undefined {
+    const doc = this.documents.get(docId)
+    return doc !== undefined && this.bases.has(doc.baseId) ? this.staged.get(docId) : undefined
+  }
+
+  async commitDocumentGeneration(doc: KnowledgeDocument, chunks: KnowledgeChunk[]): Promise<void> {
+    this.assertGenerationTarget(doc)
+    validateDocumentGeneration(doc, chunks)
+    if (doc.chunkCount !== chunks.length) throw new Error('document generation chunk count mismatch')
+    // No await between replacing rows and the document: one observable write.
+    for (const [id, chunk] of this.chunks) if (chunk.docId === doc.id && chunk.baseId === doc.baseId) this.chunks.delete(id)
+    for (const chunk of chunks) this.chunks.set(chunk.id, chunk)
+    this.documents.set(doc.id, doc)
+    this.staged.delete(doc.id)
+  }
+
+  private assertGenerationTarget(doc: KnowledgeDocument): void {
+    const current = this.documents.get(doc.id)
+    if (current === undefined || current.baseId !== doc.baseId || current.createdAt !== doc.createdAt || !this.bases.has(doc.baseId)) {
+      throw new Error('document_generation_target_missing')
+    }
+  }
+
+  async recoverDocumentGenerations(): Promise<number> { return 0 }
+  async discardStagedDocumentGeneration(docId: string): Promise<void> { this.staged.delete(docId) }
 
   listChunks(baseId: string): KnowledgeChunk[] {
     return [...this.chunks.values()].filter(chunk => chunk.baseId === baseId)
@@ -662,7 +819,7 @@ class MemoryStore implements Store {
   listEmbeddingVectorsByHashes(hashes: readonly string[], embeddingModel: string): Map<string, number[]> {
     const wanted = new Set(hashes)
     const vectors = new Map<string, number[]>()
-    for (const chunk of this.chunks.values()) {
+    for (const chunk of [...this.chunks.values(), ...[...this.staged.values()].flatMap(item => item.chunks)]) {
       if (chunk.embedding === undefined || chunk.embeddingModel !== embeddingModel) continue
       const hash = hashEmbeddingText(searchTextOf(chunk))
       if (wanted.has(hash)) vectors.set(hash, chunk.embedding)

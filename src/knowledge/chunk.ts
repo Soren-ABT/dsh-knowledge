@@ -5,11 +5,14 @@
  * that introduces it, so retrieval can inject it as context.
  * @module dsh-knowledge/knowledge/chunk
  */
+import type { DocumentSourceSpan } from './processing-types.js'
+import { sliceSourceSpans } from './source-spans.js'
 
 /** One chunk: its text plus the markdown heading path introducing it. */
 export interface ChunkPiece {
   readonly text: string
   readonly heading?: string
+  readonly sourceSpans?: readonly DocumentSourceSpan[]
 }
 
 /** Normalize line endings and collapse excessive blank lines. */
@@ -224,15 +227,15 @@ export function refineChunksByTokenLimit(
       return
     }
     const heading = piece.heading !== undefined ? { heading: piece.heading } : {}
-    refine({ text: split[0], ...heading })
-    refine({ text: split[1], ...heading })
+    refine({ text: split[0], ...heading, ...(piece.sourceSpans !== undefined ? { sourceSpans: sliceSourceSpans(piece.sourceSpans, split[2], split[2] + split[0].length) } : {}) })
+    refine({ text: split[1], ...heading, ...(piece.sourceSpans !== undefined ? { sourceSpans: sliceSourceSpans(piece.sourceSpans, split[3], split[3] + split[1].length) } : {}) })
   }
   for (const chunk of chunks) refine(chunk)
   return out
 }
 
 /** Split `text` at the last preferred boundary within ±25% of the midpoint. */
-function splitAtPreferredBoundary(text: string): [string, string] | null {
+function splitAtPreferredBoundary(text: string): [string, string, number, number] | null {
   const mid = Math.floor(text.length / 2)
   const radius = Math.max(1, Math.floor(text.length * 0.25))
   const lo = Math.max(0, mid - radius)
@@ -244,7 +247,9 @@ function splitAtPreferredBoundary(text: string): [string, string] | null {
     const cut = lo + idx + separator.length
     const left = text.slice(0, cut).trim()
     const right = text.slice(cut).trim()
-    if (left.length > 0 && right.length > 0) return [left, right]
+    if (left.length > 0 && right.length > 0) return [left, right,
+      text.slice(0, cut).length - text.slice(0, cut).trimStart().length,
+      cut + text.slice(cut).length - text.slice(cut).trimStart().length]
   }
   return null
 }

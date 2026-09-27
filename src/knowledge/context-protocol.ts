@@ -12,6 +12,7 @@
  */
 
 import type { ContextChunkExcerpt, ContextWindow } from './types.js'
+import { sourceSpanLabel } from './source-spans.js'
 
 /** CJK-heavy text costs about 1.5 chars/token and other text about 4.
  * This intentionally mirrors the service/chunker estimate and is deterministic
@@ -40,5 +41,5 @@ export function serializeContextWindow(window: ContextWindow): string {
 export function serializeExcerpt(excerpt: ContextChunkExcerpt, anchor: boolean): string {
   const heading = excerpt.heading?.trim()
   const prefix = `${anchor ? '>>> ' : ''}${heading !== undefined && heading.length > 0 ? `[${heading}] ` : ''}`
-  return `${prefix}${excerpt.text}`
+  return `${prefix}${sourceSpanLabel(excerpt.sourceSpans)}${excerpt.text}`
 }

@@ -1117,11 +1117,12 @@ describe('local-path import source tracking', () => {
         const previousRaw = doc.rawFilePath!
         await service.setBaseSourcePath(base.id, doc.id, replacement)
 
-        const putChunks = vi.spyOn(store, 'putChunks').mockRejectedValueOnce(new Error('simulated chunk commit failure'))
+        const putChunks = vi.spyOn(store, 'commitDocumentGeneration').mockRejectedValueOnce(new Error('simulated chunk commit failure'))
         await expect(service.reindexDocument(doc.id)).rejects.toThrow('simulated chunk commit failure')
         putChunks.mockRestore()
 
         const failed = store.getDocument(doc.id)!
+        expect(store.getStagedDocumentGeneration(doc.id)).toBeUndefined()
         expect(failed.rawFilePath).toBe(previousRaw)
         expect(decode(await store.raw!.read(previousRaw))).toContain('stable original bytes')
         expect(await store.raw!.listAll()).toEqual([previousRaw])

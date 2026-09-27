@@ -9,6 +9,7 @@
 import Schema from '@deepseek-ai/schemastery'
 import type { ConfigOverrides } from './domain.js'
 import type { BaseConfig, EmbeddingProvider, KnowledgeConfig, SearchMode } from './types.js'
+import type { DocumentProcessor, MineruTier } from './processing-types.js'
 
 export interface Config {
   embeddingProvider: EmbeddingProvider
@@ -39,12 +40,17 @@ export interface Config {
   hfEndpoint: string
   /** Chunk SQLite file; empty = `<DSH_HOME>/storages/knowledge-chunks.sqlite`. */
   chunkStorePath: string
-  /** Document processor: `builtin` (local parsers + OCR) or `mineru` (remote MinerU API). */
-  documentProcessorProvider: 'builtin' | 'mineru'
+  /** Built-in parsing, legacy MinerU cloud, or an independently deployed V1 service. */
+  documentProcessorProvider: DocumentProcessor
   /** MinerU API key (required when provider is `mineru`). */
   mineruApiKey: string
   /** MinerU API host; empty = https://mineru.net */
   mineruApiHost: string
+  mineruLocalUrl?: string
+  mineruLocalApiKey?: string
+  mineruTier?: MineruTier
+  documentProcessingTimeoutMs?: number
+  structuredChunking?: boolean
   /** Semantic chunking: embed paragraph-level segments and merge similar adjacent ones. */
   semanticChunk: boolean
   /** Cosine threshold below which adjacent segments start a new chunk (0–1). */
@@ -115,9 +121,14 @@ export const Config: Schema<Config> = Schema.object({
   localModelCacheDir: Schema.string().default(''),
   hfEndpoint: Schema.string().default(''),
   chunkStorePath: Schema.string().default(''),
-  documentProcessorProvider: Schema.union(['builtin', 'mineru']).default('builtin'),
+  documentProcessorProvider: Schema.union(['builtin', 'mineru', 'mineru-local']).default('builtin'),
   mineruApiKey: Schema.string().default(''),
   mineruApiHost: Schema.string().default(''),
+  mineruLocalUrl: Schema.string().default('http://127.0.0.1:8000'),
+  mineruLocalApiKey: Schema.string().default(''),
+  mineruTier: Schema.union(['flash', 'basic', 'standard', 'advanced']).default('basic'),
+  documentProcessingTimeoutMs: Schema.number().default(1_800_000),
+  structuredChunking: Schema.boolean().default(true),
   semanticChunk: Schema.boolean().default(false),
   semanticChunkThreshold: Schema.number().default(0.75),
   chunkTokenLimit: Schema.number().default(0),
@@ -171,6 +182,11 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     documentProcessorProvider: overrides.documentProcessorProvider ?? config.documentProcessorProvider,
     mineruApiKey: overrides.mineruApiKey ?? config.mineruApiKey,
     mineruApiHost: overrides.mineruApiHost ?? config.mineruApiHost,
+    mineruLocalUrl: overrides.mineruLocalUrl ?? config.mineruLocalUrl ?? 'http://127.0.0.1:8000',
+    mineruLocalApiKey: overrides.mineruLocalApiKey ?? config.mineruLocalApiKey ?? '',
+    mineruTier: overrides.mineruTier ?? config.mineruTier ?? 'basic',
+    documentProcessingTimeoutMs: clampInt(overrides.documentProcessingTimeoutMs ?? config.documentProcessingTimeoutMs ?? 1_800_000, 10_000, 7_200_000, 1_800_000),
+    structuredChunking: overrides.structuredChunking ?? config.structuredChunking ?? true,
     semanticChunk: overrides.semanticChunk ?? config.semanticChunk,
     semanticChunkThreshold: clampNumber(overrides.semanticChunkThreshold ?? config.semanticChunkThreshold, 0, 1, 0.75),
     chunkTokenLimit: clampInt(overrides.chunkTokenLimit ?? config.chunkTokenLimit, 0, 1_000_000, 0),
@@ -223,6 +239,11 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     documentProcessorProvider: baseConfig.documentProcessorProvider ?? resolved.documentProcessorProvider,
     mineruApiKey: baseConfig.mineruApiKey ?? resolved.mineruApiKey,
     mineruApiHost: baseConfig.mineruApiHost ?? resolved.mineruApiHost,
+    mineruLocalUrl: baseConfig.mineruLocalUrl ?? resolved.mineruLocalUrl,
+    mineruLocalApiKey: baseConfig.mineruLocalApiKey ?? resolved.mineruLocalApiKey,
+    mineruTier: baseConfig.mineruTier ?? resolved.mineruTier,
+    documentProcessingTimeoutMs: clampInt(baseConfig.documentProcessingTimeoutMs ?? resolved.documentProcessingTimeoutMs ?? 1_800_000, 10_000, 7_200_000, 1_800_000),
+    structuredChunking: baseConfig.structuredChunking ?? resolved.structuredChunking,
     semanticChunk: baseConfig.semanticChunk ?? resolved.semanticChunk,
     semanticChunkThreshold: clampNumber(baseConfig.semanticChunkThreshold ?? resolved.semanticChunkThreshold, 0, 1, 0.75),
     chunkTokenLimit: clampInt(baseConfig.chunkTokenLimit ?? resolved.chunkTokenLimit, 0, 1_000_000, 0),
