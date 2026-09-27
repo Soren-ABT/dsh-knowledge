@@ -10,6 +10,7 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { ConflictError, DirectorySourceError, NotFoundError, StorageUnavailableError, type KnowledgeService } from './index.js'
 import type { ConfigOverrides } from './domain.js'
+import { EvidenceRequestError } from './evidence.js'
 import type {
   AddFileDocumentRequest,
   AddFilesItem,
@@ -75,6 +76,10 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
     }
     writeJson(res, 200, { ok: true, value })
   } catch (error) {
+    if (error instanceof EvidenceRequestError) {
+      writeJson(res, error.code === 'not_found' ? 404 : 400, { ok: false, error: { code: error.code, message: error.message } })
+      return
+    }
     // Same-name conflicts surface as 409 so callers can re-submit with a
     // conflict strategy instead of treating the import as a server error.
     if (error instanceof ConflictError) {

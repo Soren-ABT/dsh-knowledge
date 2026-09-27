@@ -32,3 +32,10 @@ Still required before release: configured MinerU real inference, representative
 PDF gold cases, actual browser acceptance, Windows/Linux packed-host smoke and
 cross-platform CI. No `dsh` executable was found on this session's PATH; no
 MinerU endpoint has been supplied for real inference.
+
+Follow-up: evidence cursors now return HTTP 400 for invalid continuation inputs
+and 404 for missing blocks, with a loopback HTTP regression test. Typecheck,
+394 tests across 32 files, build and package verification passed. The user has
+no local MinerU service and prefers retaining the existing API-input workflow;
+local deployment is not a prerequisite. Real inference remains unverified, and
+the legacy cloud adapter's text output does not imply page/bbox provenance.

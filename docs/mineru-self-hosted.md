@@ -4,6 +4,19 @@ This integration is optional. The npm plugin does not install Python, CUDA,
 MinerU, or model weights. Existing built-in parsing and explicitly configured
 MinerU cloud API settings continue to work.
 
+### Keep the existing cloud API / 继续使用现有云 API
+
+You do not need to deploy a local service to keep using MinerU. Select the
+existing cloud provider (`mineru`) and save its API host and API key in settings.
+Do not paste cloud credentials into the local-service token field. Cloud parsing
+uploads the selected document; local/self-hosted parsing is a separate opt-in.
+
+The legacy cloud adapter currently returns text. Artifact reuse and revision-bound
+reading apply to it, but page geometry and structured table/image provenance are
+only available when a provider actually returns those fields. The new local V1
+adapter's structural capabilities must not be advertised as verified cloud API
+capabilities. No real inference endpoint was available during local validation.
+
 ## Configure / 配置
 
 Deploy a MinerU **4.x V1 HTTP service**, then select **local/self-hosted MinerU**
