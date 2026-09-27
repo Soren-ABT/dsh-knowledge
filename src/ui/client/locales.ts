@@ -5,6 +5,15 @@
  */
 
 export type KnowledgeKey =
+  | 'mineruLocalOption' | 'mineruLocalDesc' | 'mineruLocalUrl' | 'mineruLocalKey'
+  | 'mineruTier' | 'mineruFlash' | 'mineruBasic' | 'mineruStandard' | 'mineruAdvanced'
+  | 'processorCheck' | 'processorChecking' | 'processorCheckSaved' | 'processorCheckSuccess'
+  | 'processingTimeout' | 'structuredChunking' | 'structuredChunkingHint'
+  | 'processingInfo' | 'processingComplete' | 'processingPartial' | 'processingUnknown' | 'processingReused'
+  | 'reparseDocument' | 'rechunkDocument' | 'evidence' | 'evidenceEmpty' | 'evidenceNext'
+  | 'sourcePage' | 'sourceBlock' | 'sourceRegion' | 'sourceAsset' | 'sourceUnavailable'
+  | 'stageQueued' | 'stageChecking' | 'stageUploading' | 'stageParsing' | 'stageDownloading'
+  | 'stageNormalizing' | 'stageIndexing' | 'stageCompleted' | 'stageFailed' | 'stageCanceled'
   | 'nav'
   | 'newBase'
   | 'baseName'
@@ -343,6 +352,21 @@ export type KnowledgeKey =
 export type Translate = (key: KnowledgeKey) => string
 
 export const zh: Record<KnowledgeKey, string> = {
+  mineruLocalOption: 'MinerU（本地 / 自部署 V1）',
+  mineruLocalDesc: '文件只发送到此自部署地址。服务需独立安装；此插件不下载模型，也不会自动转到云端。由 MinerU 提供解析。',
+  mineruLocalUrl: '服务地址', mineruLocalKey: '服务密钥（可选）', mineruTier: '解析档位',
+  mineruFlash: '极速 flash · 原生文档 / 预览', mineruBasic: '基础 basic · CPU OCR、表格、公式',
+  mineruStandard: '标准 standard · 小模型 + VLM', mineruAdvanced: '高级 advanced · 更多推理计算',
+  processorCheck: '测试已保存配置', processorChecking: '正在连接…',
+  processorCheckSaved: '先保存处理器配置，再测试连接。测试只检查服务能力，不上传文件。',
+  processorCheckSuccess: '连接成功', processingTimeout: '文档处理总超时（毫秒）',
+  structuredChunking: '按文档结构切块', structuredChunkingHint: '仅对含结构信息的文档保留表格、公式和图注单元；普通文本沿用原切块方式。',
+  processingInfo: '解析来源', processingComplete: '完整', processingPartial: '部分解析', processingUnknown: '完整性未知',
+  processingReused: '复用了已有证据', reparseDocument: '重新解析源文件', rechunkDocument: '复用解析结果重新切块',
+  evidence: '结构证据', evidenceEmpty: '此文档没有可用的结构证据。', evidenceNext: '继续读取',
+  sourcePage: '原文第 {page} 页', sourceBlock: '块', sourceRegion: '块区域（归一化坐标）', sourceAsset: '查看附件', sourceUnavailable: '原文位置未知',
+  stageQueued: '排队中', stageChecking: '检查服务', stageUploading: '上传至配置服务', stageParsing: '解析中',
+  stageDownloading: '下载解析结果', stageNormalizing: '整理结构证据', stageIndexing: '建立索引', stageCompleted: '处理完成', stageFailed: '处理失败', stageCanceled: '已取消',
   nav: '知识库',
   newBase: '新建知识库',
   baseName: '名称',
@@ -391,7 +415,7 @@ export const zh: Record<KnowledgeKey, string> = {
   ocrDownload: '下载 OCR 模型',
   ocrRemove: '删除 OCR 模型',
   processorBuiltinDesc: '内置处理器：本地解析全部支持格式；扫描件 PDF 在下载 OCR 模型后自动识别（设置 → 本地模型）',
-  processorMineruDesc: 'PDF 优先经 MinerU 远程 API 解析（版面/表格/扫描件质量最高），失败自动回退本地解析。在 mineru.net 获取 API Key。',
+  processorMineruDesc: 'PDF 会上传到配置的 MinerU 云服务，失败可回退本地解析并记录警告。在 mineru.net 获取 API Key。',
   perBaseHint: '留空则使用全局设置',
   uploadFile: '上传文件',
   uploadButton: '点击选择文件或拖拽到此处',
@@ -669,7 +693,7 @@ export const zh: Record<KnowledgeKey, string> = {
   timeDays: '{n} 天前',
   cacheDirPickUnavailable: '文件夹选择不可用（当前环境无目录选择能力）',
   cacheDirMigrated: '模型缓存已迁移到 {to}（移动条目：{count}）',
-  mineruOption: 'MinerU（远程，扫描件/复杂版面）',
+  mineruOption: 'MinerU（云 API，文件将上传）',
   mineruHostPlaceholder: 'API Host（默认 https://mineru.net）',
   visionModelPlaceholder: '视觉模型（如 qwen-vl-plus、gpt-4o-mini）',
   captionBaseUrlOllamaPlaceholder: 'Ollama 地址（默认 http://127.0.0.1:11434）',
@@ -679,6 +703,21 @@ export const zh: Record<KnowledgeKey, string> = {
 }
 
 export const en: Record<KnowledgeKey, string> = {
+  mineruLocalOption: 'MinerU (local / self-hosted V1)',
+  mineruLocalDesc: 'Files are sent only to this self-hosted address. Install the service separately; this plugin does not download models or switch to cloud automatically. Parsing powered by MinerU.',
+  mineruLocalUrl: 'Service URL', mineruLocalKey: 'Service key (optional)', mineruTier: 'Parsing tier',
+  mineruFlash: 'Flash · native documents / preview', mineruBasic: 'Basic · CPU OCR, tables and formulas',
+  mineruStandard: 'Standard · small models + VLM', mineruAdvanced: 'Advanced · more inference compute',
+  processorCheck: 'Test saved configuration', processorChecking: 'Connecting…',
+  processorCheckSaved: 'Save processor changes before testing. This checks capabilities without uploading a file.',
+  processorCheckSuccess: 'Connected', processingTimeout: 'Document processing timeout (ms)',
+  structuredChunking: 'Structure-aware chunking', structuredChunkingHint: 'Preserve tables, formulas and captions in structured documents; ordinary text keeps its existing chunking behavior.',
+  processingInfo: 'Parsing provenance', processingComplete: 'Complete', processingPartial: 'Partially parsed', processingUnknown: 'Completeness unknown',
+  processingReused: 'Existing evidence reused', reparseDocument: 'Reparse source', rechunkDocument: 'Rechunk saved parsing result',
+  evidence: 'Structured evidence', evidenceEmpty: 'No structured evidence is available for this document.', evidenceNext: 'Continue reading',
+  sourcePage: 'Source page {page}', sourceBlock: 'Block', sourceRegion: 'Block region (normalized coordinates)', sourceAsset: 'View asset', sourceUnavailable: 'Source location unknown',
+  stageQueued: 'Queued', stageChecking: 'Checking service', stageUploading: 'Uploading to configured service', stageParsing: 'Parsing',
+  stageDownloading: 'Downloading results', stageNormalizing: 'Normalizing evidence', stageIndexing: 'Indexing', stageCompleted: 'Completed', stageFailed: 'Failed', stageCanceled: 'Canceled',
   nav: 'Knowledge',
   newBase: 'New base',
   baseName: 'Name',
@@ -727,7 +766,7 @@ export const en: Record<KnowledgeKey, string> = {
   ocrDownload: 'Download OCR models',
   ocrRemove: 'Remove OCR models',
   processorBuiltinDesc: 'Built-in processor: parses every supported format locally; scanned PDFs are OCRed automatically once the OCR models are downloaded (Settings → Local Models)',
-  processorMineruDesc: 'PDFs go through the MinerU remote API first (best quality for scans/complex layouts); failures fall back to local parsing. Get an API key at mineru.net.',
+  processorMineruDesc: 'PDFs are uploaded to the configured MinerU cloud service. Failures may fall back to local parsing with a recorded warning. Get an API key at mineru.net.',
   perBaseHint: 'Leave empty to use global settings',
   uploadFile: 'Upload file',
   uploadButton: 'Click to select files or drag them here',
@@ -1005,7 +1044,7 @@ export const en: Record<KnowledgeKey, string> = {
   timeDays: '{n} d ago',
   cacheDirPickUnavailable: 'Folder picking is unavailable (this environment has no directory picker)',
   cacheDirMigrated: 'Model cache migrated to {to} ({count} entries moved)',
-  mineruOption: 'MinerU (remote, scans/complex layouts)',
+  mineruOption: 'MinerU (cloud API, uploads files)',
   mineruHostPlaceholder: 'API Host (default https://mineru.net)',
   visionModelPlaceholder: 'Vision model (e.g. qwen-vl-plus, gpt-4o-mini)',
   captionBaseUrlOllamaPlaceholder: 'Ollama URL (default http://127.0.0.1:11434)',

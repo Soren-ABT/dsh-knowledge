@@ -5,6 +5,9 @@
  * @module dsh-knowledge/client/api
  */
 
+import type { DocumentProcessingInfo, DocumentSourceSpan, MineruTier, ParsedAsset, ParsedBlock, ProcessingProgress, ProcessorCapabilities } from '../../knowledge/processing-types.js'
+export type { DocumentProcessingInfo, DocumentSourceSpan, MineruTier, ParsedAsset, ParsedBlock, ProcessingProgress, ProcessorCapabilities }
+
 export type EmbeddingProvider = 'openai' | 'ollama' | 'local' | 'none'
 export type SearchMode = 'auto' | 'hybrid' | 'vector' | 'lexical'
 
@@ -28,6 +31,14 @@ export interface BaseConfig {
   rrfVectorWeight?: number
   embeddingBatchSize?: number
   siblingChunks?: number
+  documentProcessorProvider?: 'builtin' | 'mineru' | 'mineru-local'
+  mineruApiKey?: string
+  mineruApiHost?: string
+  mineruLocalUrl?: string
+  mineruLocalApiKey?: string
+  mineruTier?: MineruTier
+  documentProcessingTimeoutMs?: number
+  structuredChunking?: boolean
   semanticChunk?: boolean
   semanticChunkThreshold?: number
   chunkTokenLimit?: number
@@ -128,6 +139,8 @@ export interface DocumentSummary {
   status?: 'pending' | 'processing' | 'completed' | 'failed'
   indexingProgress?: number
   indexingPhase?: 'parsing' | 'embedding'
+  processing?: DocumentProcessingInfo
+  processingProgress?: ProcessingProgress
   createdAt: number
   updatedAt?: number
 }
@@ -171,6 +184,7 @@ export interface ChunkView {
   text: string
   heading?: string
   context?: string
+  sourceSpans?: readonly DocumentSourceSpan[]
 }
 
 export interface KnowledgeConfig {
@@ -204,9 +218,14 @@ export interface KnowledgeConfig {
   localModelCacheDir: string
   siblingChunks: number
   hfEndpoint: string
-  documentProcessorProvider: 'builtin' | 'mineru'
+  documentProcessorProvider: 'builtin' | 'mineru' | 'mineru-local'
   mineruApiKey: string
   mineruApiHost: string
+  mineruLocalUrl?: string
+  mineruLocalApiKey?: string
+  mineruTier?: MineruTier
+  documentProcessingTimeoutMs?: number
+  structuredChunking?: boolean
   resumeInterruptedOnStartup: boolean
   autoRetrieve: boolean
   autoRetrieveWeight: number
@@ -231,6 +250,7 @@ export interface SearchHit {
   score: number
   vectorScore?: number
   lexicalScore?: number
+  sourceSpans?: readonly DocumentSourceSpan[]
 }
 
 export interface ContextChunkExcerpt {
@@ -243,6 +263,7 @@ export interface ContextChunkExcerpt {
   textEnd: number
   truncatedStart: boolean
   truncatedEnd: boolean
+  sourceSpans?: readonly DocumentSourceSpan[]
 }
 
 export interface ContextWindow {
@@ -318,6 +339,18 @@ export interface DocumentDetail {
   chunkCount: number
   createdAt: number
   chunks?: ChunkView[]
+  processing?: DocumentProcessingInfo
+}
+
+export interface DocumentEvidence {
+  documentId: string
+  title: string
+  processing?: DocumentProcessingInfo
+  blocks: ParsedBlock[]
+  assets: ParsedAsset[]
+  estimatedTokens: number
+  truncated: boolean
+  next?: { blockId: string; blockOffset: number }
 }
 
 export interface DirectoryImportStatus {
@@ -364,6 +397,10 @@ export class KnowledgeApi {
 
   getConfig(): Promise<KnowledgeConfig> {
     return this.call('GET', '/config')
+  }
+
+  checkProcessor(baseId?: string): Promise<ProcessorCapabilities> {
+    return this.call('POST', '/processors/check', baseId === undefined ? {} : { baseId })
   }
 
   getLocalModelStatus(model?: string): Promise<LocalModelStatus> {
@@ -622,6 +659,7 @@ export class KnowledgeApi {
     phase: 'parsing' | 'embedding'
     progress: number
     status?: 'running' | 'failed'
+    processingProgress?: ProcessingProgress
     error?: { code: string; message: string }
   }>> {
     return this.call('GET', '/indexing-status')
@@ -638,8 +676,18 @@ export class KnowledgeApi {
     return this.call('PATCH', `/documents/${encodeURIComponent(documentId)}`, { title })
   }
 
-  reindexDocument(documentId: string): Promise<{ id: string; chunkCount: number; sync?: DirectorySyncResult }> {
-    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/reindex`, undefined, 30 * 60_000)
+  reindexDocument(documentId: string, mode?: 'reparse' | 'rechunk'): Promise<{ id: string; chunkCount: number; sync?: DirectorySyncResult }> {
+    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/reindex`, mode === undefined ? undefined : { mode }, 2 * 60 * 60_000 + 30_000)
+  }
+
+  cancelProcessing(documentId: string): Promise<{ cancelled: boolean }> {
+    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/cancel`)
+  }
+
+  readDocumentEvidence(documentId: string, options: { revision?: string; pageIndex?: number; blockId?: string; blockOffset?: number; maxTokens?: number } = {}): Promise<DocumentEvidence> {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(options)) if (value !== undefined) params.set(key, String(value))
+    return this.call('GET', `/documents/${encodeURIComponent(documentId)}/evidence?${params}`)
   }
 
   refreshUrlDocument(documentId: string): Promise<{ changed: boolean; title: string; chunkCount: number }> {

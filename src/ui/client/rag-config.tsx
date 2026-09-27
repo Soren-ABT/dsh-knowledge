@@ -46,6 +46,9 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   const [saveError, setSaveError] = useState<string | null>(null)
   /** Cherry's dimension probe is running (save button shows a pending state). */
   const [probing, setProbing] = useState(false)
+  const [processorChecking, setProcessorChecking] = useState(false)
+  const [processorCheckResult, setProcessorCheckResult] = useState<string | null>(null)
+  const [processorCheckError, setProcessorCheckError] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -143,6 +146,22 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   }), [globalConfig, base.config])
 
   const dirty = JSON.stringify(values) !== JSON.stringify(initial)
+  const processorDirty = (['documentProcessorProvider', 'mineruLocalUrl', 'mineruLocalApiKey', 'mineruTier'] as const)
+    .some(key => values[key] !== initial[key])
+  const checkProcessor = async (): Promise<void> => {
+    setProcessorChecking(true)
+    setProcessorCheckResult(null)
+    try {
+      const result = await api.checkProcessor(base.id)
+      setProcessorCheckError(false)
+      setProcessorCheckResult(`${t('processorCheckSuccess')} · MinerU ${result.version} · ${result.tiers.join(', ')}`)
+    } catch (error) {
+      setProcessorCheckError(true)
+      setProcessorCheckResult(error instanceof Error ? error.message : String(error))
+    } finally {
+      setProcessorChecking(false)
+    }
+  }
 
   // Cherry semantics: switching the embedding model of a NON-EMPTY base that
   // already HAS vectors is refused by the host (the user must rebuild via
@@ -177,6 +196,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
     rrfVectorWeight: { min: 0.1, max: 5 },
     semanticChunkThreshold: { min: 0, max: 1 },
     localRerankTimeoutMs: { min: 10_000, max: 300_000, int: true },
+    documentProcessingTimeoutMs: { min: 10_000, max: 7_200_000, int: true },
     localWorkerIdleTimeoutMs: { min: 0, int: true },
   }
 
@@ -250,9 +270,11 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
           <select
             style={style.input}
             value={values.documentProcessorProvider}
-            onChange={(e) => patch({ documentProcessorProvider: e.target.value as 'builtin' | 'mineru' })}
+            aria-label={t('docProcessing')}
+            onChange={(e) => { patch({ documentProcessorProvider: e.target.value as KnowledgeConfig['documentProcessorProvider'] }); setProcessorCheckResult(null) }}
           >
             <option value="builtin">{t('processorBuiltin')}</option>
+            <option value="mineru-local">{t('mineruLocalOption')}</option>
             <option value="mineru">{t('mineruOption')}</option>
           </select>
           {values.documentProcessorProvider === 'mineru' && (
@@ -275,6 +297,32 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
               </div>
             </div>
           )}
+          {values.documentProcessorProvider === 'mineru-local' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+              <label style={{ fontSize: 12 }}>{t('mineruLocalUrl')}
+                <input style={style.input} value={values.mineruLocalUrl ?? 'http://127.0.0.1:8000'} onChange={e => patch({ mineruLocalUrl: e.target.value })} spellCheck={false} />
+              </label>
+              <label style={{ fontSize: 12 }}>{t('mineruLocalKey')}
+                <input style={style.input} type="password" autoComplete="new-password" value={values.mineruLocalApiKey ?? ''} onChange={e => patch({ mineruLocalApiKey: e.target.value })} />
+              </label>
+              <label style={{ fontSize: 12 }}>{t('mineruTier')}
+                <select style={style.input} value={values.mineruTier ?? 'basic'} onChange={e => patch({ mineruTier: e.target.value as KnowledgeConfig['mineruTier'] })}>
+                  <option value="flash">{t('mineruFlash')}</option><option value="basic">{t('mineruBasic')}</option>
+                  <option value="standard">{t('mineruStandard')}</option><option value="advanced">{t('mineruAdvanced')}</option>
+                </select>
+              </label>
+              <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>{t('mineruLocalDesc')} <a href="https://github.com/opendatalab/MinerU/blob/mineru-4.0.6-released/LICENSE.md" target="_blank" rel="noreferrer">MinerU license</a></div>
+              <button type="button" style={style.button} disabled={busy || processorChecking || processorDirty} onClick={() => void checkProcessor()}>{t(processorChecking ? 'processorChecking' : 'processorCheck')}</button>
+              <div style={{ fontSize: 12, color: C.muted }}>{t('processorCheckSaved')}</div>
+              {!processorDirty && processorCheckResult !== null && <div role="status" style={{ fontSize: 12, color: processorCheckError ? C.danger : C.success }}>{processorCheckResult}</div>}
+            </div>
+          )}
+          <FieldRow label={t('processingTimeout')}>
+            <input type="number" style={style.input} min={10000} max={7200000} step={1000} value={values.documentProcessingTimeoutMs ?? 1_800_000} onChange={e => patchNumber('documentProcessingTimeoutMs', e.target.value)} />
+          </FieldRow>
+          <FieldRow label={t('structuredChunking')} hint={t('structuredChunkingHint')}>
+            <Switch checked={values.structuredChunking ?? true} onChange={v => patch({ structuredChunking: v })} />
+          </FieldRow>
           {/* 图表描述（VLM） */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
             <div style={{ fontSize: 12, color: C.muted }}>{t('imageCaptionHint')}</div>

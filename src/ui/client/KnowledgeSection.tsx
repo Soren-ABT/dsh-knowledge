@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { CSSProperties, DragEvent } from 'react'
 import { serializeContextWindow } from '../../knowledge/context.js'
 import { KnowledgeApi } from './api.js'
+import { EvidenceInspector, ProcessingSummary, SourceReferences, processingStageLabel } from './processing-evidence.js'
 import type {
   BaseSourceInfo,
   BaseStats,
@@ -359,6 +360,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       setChunks(chunkList)
       setRawText(doc.rawText ?? null)
       setRawTextTruncated(doc.rawTextTruncated === true)
+      if (doc.processing !== undefined) setDocuments(current => current.map(row => row.id === id ? { ...row, processing: doc.processing } : row))
     })
   }, [api, run, documents])
 
@@ -419,6 +421,13 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         anyActive = activeIds.size > 0
         const changed = !sameSet(activeIdsRef.current, activeIds)
         activeIdsRef.current = activeIds
+        if (!disposed) {
+          const byId = new Map(entries.filter(entry => entry.baseId === selectedBaseId).map(entry => [entry.docId, entry]))
+          setDocuments(current => current.map(doc => {
+            const entry = byId.get(doc.id)
+            return entry === undefined ? doc : { ...doc, indexingPhase: entry.phase, indexingProgress: entry.progress, processingProgress: entry.processingProgress }
+          }))
+        }
         if (!disposed && changed) void reloadDocuments()
       } catch {
         // polling is best-effort
@@ -956,7 +965,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     ]
   }, [t])
 
-  const reindexDoc = useCallback(async (doc: DocumentSummary): Promise<void> => {
+  const reindexDoc = useCallback(async (doc: DocumentSummary, mode?: 'reparse' | 'rechunk'): Promise<void> => {
     // Optimistic: mark the folder and its WHOLE subtree (all nesting levels)
     // as processing immediately — a fast reindex would otherwise finish
     // before any poll observes it, leaving deep folders/files on 'ready'.
@@ -968,7 +977,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     // reindex job reports progress continuously).
     setPollKick(kick => kick + 1)
     await run(async () => {
-      const result = await api.reindexDocument(doc.id)
+      const result = await api.reindexDocument(doc.id, mode)
       // A directory rescan reports per-file outcomes: without them a rescan whose
       // files all failed still showed the green "reindexed" toast (issue #20).
       if (result.sync !== undefined) notifySync(`${t('reindexDone')}: ${doc.title}`, result.sync)
@@ -992,6 +1001,16 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       await reloadDocuments()
     })
   }, [api, run, reloadDocuments, notify, selectedDocId, t])
+
+  const cancelProcessing = useCallback(async (doc: DocumentSummary): Promise<void> => {
+    try {
+      const result = await api.cancelProcessing(doc.id)
+      if (result.cancelled) notify('info', `${t('cancel')}: ${doc.title}`)
+      await reloadDocuments()
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : String(error))
+    }
+  }, [api, notify, reloadDocuments, t])
 
   // ── bulk selection ────────────────────────────────────────────────────────
 
@@ -1293,7 +1312,11 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     return [
       { key: 'preview', label: t('viewSource'), icon: <IconEye size={14} />, onSelect: () => void openDocument(doc.id, 'preview') },
       { key: 'chunks', label: t('viewChunks'), icon: <IconEye size={14} />, onSelect: () => void openDocument(doc.id, 'chunks') },
+      ...(doc.status === 'processing' || doc.status === 'pending' || optimisticProcessing.has(doc.id)
+        ? [{ key: 'cancel-processing', label: t('cancel'), onSelect: () => void cancelProcessing(doc) }] : []),
       { key: 'reindex', label: t('reindexButton'), icon: <IconRefresh size={14} />, onSelect: () => void reindexDoc(doc) },
+      { key: 'reparse', label: t('reparseDocument'), icon: <IconRefresh size={14} />, onSelect: () => void reindexDoc(doc, 'reparse') },
+      ...(doc.processing ? [{ key: 'rechunk', label: t('rechunkDocument'), icon: <IconRefresh size={14} />, onSelect: () => void reindexDoc(doc, 'rechunk') }] : []),
       ...(doc.sourceType === 'url'
         ? [{ key: 'refresh-url', label: t('refreshUrl'), icon: <IconRefresh size={14} />, onSelect: () => void refreshUrlDoc(doc) }]
         : []),
@@ -1478,6 +1501,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                 <DocumentDetailPanel
                   key={selectedDoc.id}
                   doc={selectedDoc}
+                  api={api}
                   rawText={rawText}
                   rawTextTruncated={rawTextTruncated}
                   chunks={chunks}
@@ -1737,7 +1761,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                     return (
                                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: C.accent }}>
                                         <span className="kb-spinner" style={{ ...style.spinner, width: 10, height: 10, borderWidth: 2 }} />
-                                        {phase === 'parsing' ? t('statusParsing') : `${t('statusProcessing')} ${progress}%`}
+                                        {doc.processingProgress ? processingStageLabel(doc.processingProgress, t) : phase === 'parsing' ? t('statusParsing') : `${t('statusProcessing')} ${progress}%`}
                                       </span>
                                     )
                                   }
@@ -1753,8 +1777,8 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                                   }
                                   if (doc.status === 'completed') {
                                     return (
-                                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, color: C.success }}>
-                                        <IconCheck size={12} />{t('ready')}
+                                      <span title={doc.processing?.warnings.map(warning => warning.message).join('\n')} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, color: doc.processing?.completeness === 'partial' ? C.warn : C.success }}>
+                                        <IconCheck size={12} />{doc.processing?.completeness === 'partial' ? t('processingPartial') : t('ready')}
                                       </span>
                                     )
                                   }
@@ -2266,6 +2290,7 @@ function RecallResultCard(props: { hit: SearchHit; index: number; t: Translate }
           margin: 0, fontSize: 13, color: C.muted, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           ...(expanded ? {} : { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }),
         }}>{displayText}</p>
+        <SourceReferences documentId={hit.docId} spans={hit.sourceSpans} t={t} />
       </div>
     </div>
   )
@@ -2427,6 +2452,7 @@ function Checkbox(props: {
 
 function DocumentDetailPanel(props: {
   doc: DocumentSummary
+  api: KnowledgeApi
   rawText: string | null
   rawTextTruncated: boolean
   chunks: ChunkView[]
@@ -2436,7 +2462,9 @@ function DocumentDetailPanel(props: {
   onLoadMoreChunks: () => void
 }): JSX.Element {
   const { doc, t } = props
-  const [mode, setMode] = useState<'preview' | 'chunks'>(props.initialMode)
+  const [mode, setMode] = useState<'preview' | 'chunks' | 'evidence'>(props.initialMode)
+  const [pageIndex, setPageIndex] = useState(0)
+  const showPage = (index: number): void => { setPageIndex(index); setMode('preview') }
   const [chunkExpansion, setChunkExpansion] = useState(collapsedChunkExpansion)
   const chunkIds = useMemo(() => props.chunks.map(chunk => chunk.id), [props.chunks])
   const anyChunkExpanded = chunkExpansion.allExpanded || chunkExpansion.expandedChunkIds.size > 0
@@ -2505,11 +2533,13 @@ function DocumentDetailPanel(props: {
         <span style={{ display: 'flex', gap: 2, background: C.surface2, borderRadius: 8, padding: 2, flexShrink: 0 }}>
           <button className="kb-row" style={tabStyle(mode === 'preview')} onClick={() => setMode('preview')}>{t('preview')}</button>
           <button className="kb-row" style={tabStyle(mode === 'chunks')} onClick={() => setMode('chunks')}>{t('chunks')} ({doc.chunkCount})</button>
+          {doc.processing ? <button className="kb-row" style={tabStyle(mode === 'evidence')} onClick={() => setMode('evidence')}>{t('evidence')}</button> : null}
         </span>
       </div>
 
+      <ProcessingSummary processing={doc.processing} t={t} />
       <div className="kb-scroll" style={{ maxHeight: 'calc(100vh - 250px)', overflowY: 'auto' }}>
-        {mode === 'preview' ? (
+        {mode === 'evidence' ? <EvidenceInspector key={`${doc.id}-${doc.processing?.revision}`} api={props.api} documentId={doc.id} revision={doc.processing?.revision} t={t} onPage={showPage} /> : mode === 'preview' ? (
           isPdfPreview ? (
             pdfPreviewError !== null ? (
               <div style={style.empty}>
@@ -2522,7 +2552,7 @@ function DocumentDetailPanel(props: {
               </div>
             ) : (
               <iframe
-                src={pdfUrl}
+                src={`${pdfUrl}#page=${pageIndex + 1}`}
                 title={doc.title}
                 style={{
                   width: '100%',
@@ -2610,6 +2640,7 @@ function DocumentDetailPanel(props: {
                       whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                       ...(expanded ? {} : { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }),
                     }}>{chunk.text}</p>
+                    <div style={{ padding: '0 10px 8px' }}><SourceReferences documentId={doc.id} spans={chunk.sourceSpans} t={t} revision={doc.processing?.revision} onPage={isPdfPreview ? showPage : undefined} /></div>
                   </div>
                 )
               })
