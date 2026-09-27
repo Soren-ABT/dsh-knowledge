@@ -438,7 +438,7 @@ Deployment defaults live in the `knowledge` row of `cordis.patch.yml`. The manag
 | `imageCaptionBaseUrl` | `''` | Figure-captioning API root |
 | `imageCaptionApiKey` | `''` | Key for an OpenAI-compatible vision endpoint |
 | `hfEndpoint` | `''` | Hugging Face download endpoint or mirror |
-| `documentProcessorProvider` | `builtin` | Local `builtin` parsing or remote `mineru` processing |
+| `documentProcessorProvider` | `builtin` | `builtin`, cloud `mineru`, or self-hosted MinerU 4 V1 `mineru-local` (new on the development branch) |
 | `mineruApiKey` | `''` | Required for MinerU mode |
 | `mineruApiHost` | `''` | Empty uses `https://mineru.net` |
 | `resumeInterruptedOnStartup` | `true` | Resume interrupted imports at startup |
@@ -491,7 +491,8 @@ pnpm run build
 
 - Model selectors are editable suggestion comboboxes rather than live provider model lists; custom IDs can be entered manually.
 - Embeddings run in batches inside the import flow. The first local-model download blocks that import, while the management panel displays progress.
-- MinerU requires an API key for its official or self-hosted service. Without one, PDFs use the local parser and OCR path.
+- Cloud `mineru` requires an API key. `mineru-local` uses a separate endpoint and optional service token, with no automatic cloud fallback. Self-hosted does not necessarily mean offline: documents go to the configured service and its upload storage.
+- The development branch adds structured evidence, page/block provenance, reusable parsing artifacts, and separate reparse/rechunk actions. Existing documents are not automatically rebuilt; real inference quality still requires validation. See the [self-hosted MinerU guide](docs/mineru-self-hosted.md).
 - The text entry is intended for lightweight notes and is not a rich-text editor.
 - Intel Macs cannot run the onnxruntime-based local embedding and OCR paths.
 

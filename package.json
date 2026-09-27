@@ -62,6 +62,7 @@
     "SECURITY.md",
     "LICENSE",
     "docs/releases",
+    "docs/mineru-self-hosted.md",
     "benchmarks",
     "scripts",
     "pnpm-workspace.yaml"
@@ -81,6 +82,8 @@
     "verify:release": "node scripts/verify-release.mjs",
     "smoke:packed": "node scripts/smoke-packed-install.mjs",
     "smoke:workers": "npm run build --silent && node scripts/smoke-worker-protocol.mjs",
+    "smoke:mineru-local": "npm run build --silent && node scripts/smoke-mineru-local.mjs",
+    "benchmark:structured": "vitest run tests/structured-chunk.spec.ts tests/mineru-local.spec.ts tests/processing-lifecycle.spec.ts",
     "smoke:local-embedding": "npm run build --silent && node scripts/smoke-local-embedding.mjs",
     "smoke:local-rerank": "npm run build --silent && node scripts/smoke-local-rerank.mjs",
     "release:check": "node scripts/release-check.mjs",

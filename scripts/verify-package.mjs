@@ -20,6 +20,8 @@ const REQUIRED_FILES = [
   'benchmarks/questions.json',
   'benchmarks/corpus/manifest.json',
   'scripts/verify-build-policy.mjs',
+  'scripts/smoke-mineru-local.mjs',
+  'docs/mineru-self-hosted.md',
   'lib/index.js',
   'lib/knowledge/index.js',
   'lib/knowledge/embed-process.mjs',

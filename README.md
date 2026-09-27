@@ -440,7 +440,7 @@ dsh-knowledge 的定位是“一体化文档知识库”。下面的对照用于
 | `imageCaptionBaseUrl` | `''` | 图表描述 API 基址 |
 | `imageCaptionApiKey` | `''` | OpenAI 兼容视觉服务密钥 |
 | `hfEndpoint` | `''` | Hugging Face 下载端点或镜像 |
-| `documentProcessorProvider` | `builtin` | `builtin` 本地解析或 `mineru` 远程处理 |
+| `documentProcessorProvider` | `builtin` | `builtin` 内置解析、`mineru` 云 API、`mineru-local` 自部署 MinerU 4 V1（开发分支新增） |
 | `mineruApiKey` | `''` | MinerU 模式需要的 API Key |
 | `mineruApiHost` | `''` | 空值使用 `https://mineru.net` |
 | `resumeInterruptedOnStartup` | `true` | 启动时恢复中断的导入 |
@@ -493,7 +493,8 @@ pnpm run build
 
 - 模型选择器是带建议的可编辑组合框，不是 provider 的实时模型列表；可以手动输入自定义 ID。
 - embedding 按批次运行在导入流程内；本地模型第一次下载会阻塞对应导入，但管理页面会显示进度。
-- MinerU 需要官方或自托管服务的 API Key；未配置时使用本地解析与 OCR。
+- `mineru` 云模式需要 API Key；`mineru-local` 使用独立服务地址和可选的服务令牌，不会自动降级到云 API。自部署服务不等于完全离线：文件会发送到配置的服务及其上传存储地址。
+- 开发分支新增结构化证据、页码/区域来源、解析产物复用及「重新解析 / 重新分块」。旧文档不会自动重建；真实模型效果仍须验证。参见 [MinerU 自部署与验证说明](docs/mineru-self-hosted.md)。
 - 文本入口适合轻量笔记，不提供富文本编辑器。
 - Intel Mac 无法运行基于 onnxruntime 的本地 embedding 和 OCR。
 

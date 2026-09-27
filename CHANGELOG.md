@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — optional self-hosted MinerU and structured evidence
+
+- Add a MinerU 4 V1 adapter with saved-endpoint capability checks, bounded uploads/results, credential isolation, explicit cancellation and no implicit cloud fallback.
+- Preserve canonical block ranges, page/region references and inert image assets through chunks, SQLite, context windows and evidence tools.
+- Rechunk from immutable artifacts without repeating parsing. Stage replacement generations and reconcile SQLite/DomainKV publication after interruption; retain the prior usable generation on failed replacement.
+- Share the processing entry point across uploads, paths, directory imports and rebuilds. Add a bounded processing queue and visible processing/completeness status.
+- Add offline protocol/storage/evidence regressions and an opt-in synthetic-PDF real-service smoke. Real MinerU inference and cross-platform/UI acceptance are not yet certified by these offline tests.
+
+
 ## 0.4.1 — 2026-09-22
 
 ### MinerU failures are recoverable (issue #30)
