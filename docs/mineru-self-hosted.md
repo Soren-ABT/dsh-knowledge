@@ -1,8 +1,64 @@
 # MinerU self-hosted document processing
 
-This integration is optional. The npm plugin does not install Python, CUDA,
-MinerU, or model weights. Existing built-in parsing and explicitly configured
+This integration is optional. Installing the npm plugin does not install Python,
+CUDA, MinerU, or model weights. Existing built-in parsing and explicitly configured
 MinerU cloud API settings continue to work.
+
+## Managed Basic preview / 托管 Basic 实验性入口
+
+Settings → Local models now includes an explicit preparation flow. Choose a
+dedicated installation directory, optionally verify an existing MinerU ONNX model
+directory, inspect the capacity plan, then confirm installation. Nothing installs
+on page load. The workflow prepares a separate Python environment, downloads a
+pinned model revision, verifies every file and parses a synthetic public PDF before
+granting readiness. Start the service separately; **Use as global default parser**
+is also a separate action. Per-base overrides continue to take precedence.
+
+当前边界：仅 Basic/ONNX，检测稳定版 64 位 CPython 3.10–3.14（非自由线程版，需 venv/ensurepip）。支持 PATH、Python launcher、Conda 注册表及有限常见目录发现，也可手动指定解释器绝对路径。不会下载 Python、安装 CUDA
+或修改全局 Python 包。真实模型安装/推理与三平台验收仍未完成，因此标为实验性。
+
+模型文件固定为 13 项，合计 **858,204,914 bytes（约 818.4 MiB）**；这不包含 Python 环境及其依赖。设置中的 `hfEndpoint` 镜像会用于模型下载，托管 Python 包源单独配置，默认 `https://pypi.org/simple`。预检会冻结并显示实际来源，来源发生变化后需要重新预检。无论是否使用镜像，模型 revision、文件大小和摘要校验都不会改变。
+
+检测不会安装依赖；通过检测仅表示可尝试创建隔离环境，不等于 MinerU 可用。
+安装预检绑定解释器指纹，安装前再次检查；解释器变化则拒绝继续，不自动切换到其他环境。
+解释器、隔离环境、依赖安装、真实解析分别记录验证结果。
+Standard/Advanced 继续通过已有外部服务使用，本入口不宣称已支持其托管部署。
+
+- Model metadata: `opendatalab/MinerU-4_models_onnx`, revision
+  `358310b4f64b95f9fefc372ad899356e4111f376`, required files pinned with hashes.
+- Runtime: `mineru==4.0.6` from the configured Python package index (official
+  PyPI by default). Transitive Python dependencies are resolved at installation
+  time, not a fully locked reproducible environment. Runtime
+  download/installed sizes remain unknown, separately from exact model bytes.
+- Existing external model files are verified and copied; their source directory
+  stays read-only. Copies require additional space even when network transfer is zero.
+- Network failures and explicit cancellation retain verified files and resumable
+  parts. Retry requires a fresh plan. Each candidate uses its own environment and
+  config. The active-install pointer changes only after the candidate passes the
+  real parse probe; a failed retry leaves the previous verified install usable.
+- Preparation is a service-owned background task; closing the panel does not cancel
+  it. State is stored in the chosen directory, and a private pointer permits panel
+  reopening/restart discovery. Restart never silently installs or starts a service.
+- Managed API listens only on `127.0.0.1:18879`. MinerU's documented local V1
+  server startup does not expose CLI API-key authentication, so the managed
+  service has no bearer key and is intentionally loopback-only. Do not expose it
+  through a public bind or reverse proxy without adding a separately secured gateway.
+  Port conflicts fail without killing the process occupying the port. Stop before
+  switching installations; stop interrupts any running parsing jobs on this service.
+- Management endpoints require a loopback-bound DSH web host, local peer, loopback
+  Host and same-origin management header. Network-bound hosts and Electron IPC
+  without a real local socket deliberately cannot invoke installation.
+- Hard crashes retain the installation lock: native descendant ownership cannot
+  safely be inferred from a stale PID. Reconciliation is currently manual; do not
+  remove `.operation.lock` until the owning host and its descendants are confirmed
+  stopped. No automatic lock stealing or PID-by-port killing is performed.
+
+This preview does not yet include managed Python bootstrap, Standard model cards,
+download-only mode, automatic hard-crash reconciliation, uninstall/rollback UI,
+or measured runtime/staging footprint. These remain follow-up work rather than
+claims of completed functionality. Runtime dependency size is still unknown until
+measured on each supported platform. Managed real-install acceptance has not yet
+been run; Python detection and offline tests do not certify a platform.
 
 ### Keep the existing cloud API / 继续使用现有云 API
 
@@ -79,6 +135,13 @@ recovery journal, not a claimed cross-database atomic transaction.
 `npm run benchmark:structured` runs deterministic offline protocol, storage,
 chunk/source mapping and evidence-continuation tests. These tests do **not** measure
 real OCR accuracy. `npm run benchmark` retains the existing 40-question benchmark.
+
+Maintainers can run the opt-in `Managed MinerU smoke` workflow from GitHub Actions
+with the `mineru_managed_smoke` input. It performs a clean runtime install, checks
+the pinned model files, runs the synthetic PDF parse during preparation, then
+repeats parsing after a service stop/start. It records the tested OS, Node/Python,
+MinerU/model revisions and packed tarball SHA-256. This small fixture validates
+installation and lifecycle; it does not certify scanned-PDF or table OCR quality.
 
 For opt-in real inference in PowerShell:
 

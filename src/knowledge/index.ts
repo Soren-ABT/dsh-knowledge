@@ -17,6 +17,7 @@ import { chunkParsedDocument } from './structured-chunk.js'
 import { ArtifactRepository } from './artifacts.js'
 import { processDocumentFile, processorErrorCode, processorErrorMessage, type ProcessedFile } from './document-processing.js'
 import { probeMineruLocal } from './mineru-local.js'
+import { MineruDeployment } from './mineru-deployment.js'
 import type { DocumentEvidence, ProcessingProgress } from './processing-types.js'
 import { composeDocumentEvidence } from './evidence.js'
 import { ProcessingQueue } from './processing-queue.js'
@@ -337,6 +338,7 @@ export class KnowledgeService extends Service {
     this.ctx.effect(() => () => { void disposeLocalModelWorker() }, 'knowledge: dispose local model worker')
     this.ctx.effect(() => () => { void disposeLocalRerankProcess() }, 'knowledge: dispose local rerank process')
     this.ctx.effect(() => () => { void disposeOcrWorker() }, 'knowledge: dispose OCR worker')
+    this.ctx.effect(() => () => this.mineruDeployment.dispose(), 'knowledge: dispose MinerU deployment')
     if (store === undefined) { this.resolveStore(); return }
     this.artifacts = new ArtifactRepository(store.raw !== undefined
       ? join(dirname(resolveChunkStorePath(this.baseConfig.chunkStorePath)), 'knowledge-artifacts')
@@ -2661,6 +2663,14 @@ export class KnowledgeService extends Service {
   }
 
   /** Probe only the saved endpoint: never accept an arbitrary caller URL. */
+  readonly mineruDeployment = new MineruDeployment(
+    () => join(dirname(resolveChunkStorePath(this.baseConfig.chunkStorePath)), 'mineru-management.json'),
+    {},
+    () => { const config = this.getConfig(); return { hfEndpoint: config.hfEndpoint, pythonIndexUrl: config.mineruPythonIndexUrl } },
+  )
+
+  get managementBindHost(): string { return this.ctx.webServer.host }
+
   async checkProcessor(baseId?: string) {
     if (baseId !== undefined && this.requireStore().getBase(baseId) === undefined) throw new NotFoundError('knowledge base not found')
     const config = baseId === undefined ? this.getConfig() : this.getConfigFor(baseId)
@@ -2825,6 +2835,16 @@ export class KnowledgeService extends Service {
       ? from.toLowerCase() === target.toLowerCase()
       : from === target
     if (samePath) return { moved: 0, from, to: target }
+    const managedRoot = (await this.mineruDeployment.status()).root
+    if (managedRoot) {
+      const inside = (parent: string, child: string) => {
+        const rel = relative(parent, child)
+        return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+      }
+      if (inside(from, managedRoot) || inside(target, managedRoot) || inside(managedRoot, from) || inside(managedRoot, target)) {
+        throw new Error('MinerU 托管目录与缓存迁移路径重叠；请保持 MinerU 独立目录，不随嵌入模型缓存迁移。')
+      }
+    }
     // A download in flight writes into the current cache directory; moving
     // its half-written files out from under the worker would corrupt the
     // model. Refuse instead of silently breaking the download.

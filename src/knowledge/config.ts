@@ -38,6 +38,8 @@ export interface Config {
   localModelCacheDir: string
   /** Hugging Face endpoint override (mirror); empty = official hub / `HF_ENDPOINT` env. */
   hfEndpoint: string
+  /** Optional package index for the isolated managed MinerU environment. */
+  mineruPythonIndexUrl?: string
   /** Chunk SQLite file; empty = `<DSH_HOME>/storages/knowledge-chunks.sqlite`. */
   chunkStorePath: string
   /** Built-in parsing, legacy MinerU cloud, or an independently deployed V1 service. */
@@ -120,6 +122,7 @@ export const Config: Schema<Config> = Schema.object({
   siblingChunks: Schema.number().default(1),
   localModelCacheDir: Schema.string().default(''),
   hfEndpoint: Schema.string().default(''),
+  mineruPythonIndexUrl: Schema.string().default('https://pypi.org/simple'),
   chunkStorePath: Schema.string().default(''),
   documentProcessorProvider: Schema.union(['builtin', 'mineru', 'mineru-local']).default('builtin'),
   mineruApiKey: Schema.string().default(''),
@@ -179,6 +182,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     embeddingBatchSize,
     siblingChunks,
     hfEndpoint: overrides.hfEndpoint ?? config.hfEndpoint,
+    mineruPythonIndexUrl: overrides.mineruPythonIndexUrl ?? config.mineruPythonIndexUrl ?? 'https://pypi.org/simple',
     documentProcessorProvider: overrides.documentProcessorProvider ?? config.documentProcessorProvider,
     mineruApiKey: overrides.mineruApiKey ?? config.mineruApiKey,
     mineruApiHost: overrides.mineruApiHost ?? config.mineruApiHost,

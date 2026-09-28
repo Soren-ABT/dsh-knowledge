@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased — optional self-hosted MinerU and structured evidence
+## 0.5.0 — 2026-09-29 — Structured evidence and optional managed MinerU
 
+- Managed MinerU now honors the saved Hugging Face mirror and a separate Python package index. Preflight freezes both sources and rejects a stale plan.
+- Candidate installations use isolated runtime configuration. The active install changes only after the candidate passes a real PDF parse probe; a failed retry preserves the previous verified environment.
+- Add an opt-in Windows/Ubuntu managed-install smoke with repeated PDF parsing and a build/tarball environment report. This remains experimental and does not certify OCR quality.
 - Add a MinerU 4 V1 adapter with saved-endpoint capability checks, bounded uploads/results, credential isolation, explicit cancellation and no implicit cloud fallback.
 - Preserve canonical block ranges, page/region references and inert image assets through chunks, SQLite, context windows and evidence tools.
 - Rechunk from immutable artifacts without repeating parsing. Stage replacement generations and reconcile SQLite/DomainKV publication after interruption; retain the prior usable generation on failed replacement.

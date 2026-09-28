@@ -24,6 +24,7 @@ const REQUIRED_FILES = [
   'docs/mineru-self-hosted.md',
   'lib/index.js',
   'lib/knowledge/index.js',
+  'lib/knowledge/mineru-deployment.mjs',
   'lib/knowledge/embed-process.mjs',
   'lib/knowledge/rerank-process.mjs',
   'lib/knowledge/ocr-worker.mjs',

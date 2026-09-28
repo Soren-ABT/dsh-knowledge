@@ -76,7 +76,7 @@ Lexical retrieval works without downloading a model. Scanned-document OCR, local
 
 ```bash
 # Tarball from GitHub Releases or npm pack
-dsh plugin --profile <name> add ./dsh-knowledge-0.4.1.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.0.tgz
 
 # Local source directory; build it first
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -167,6 +167,7 @@ The first-token proactive path never launches a local reranker. A remote reranke
 - Scanned PDFs, vector-only PDFs without a text layer, corrupt text layers, and per-glyph layouts can switch automatically to full-page OCR.
 - PaddleOCR PP-OCRv5 is the primary local recognizer, with Tesseract fallback. The pipeline also handles 1-bit JBIG2/CCITT-style scans.
 - Optional remote MinerU processing can recover formulas, tables, and complex layouts as Markdown. Without it, documents continue through the local parser and OCR path.
+- Settings offer an experimental managed MinerU Basic/ONNX setup. It uses an isolated Python environment and pinned model revision/checksums, with separate Hugging Face mirror and Python package-index settings. Managed inference still requires per-platform qualification; setup does not modify global Python packages or silently switch to cloud parsing. See the [MinerU self-hosting and verification guide](docs/mineru-self-hosted.md).
 
 ### Models and management UI
 
@@ -223,6 +224,19 @@ The plugin exposes 14 tools. Reads, writes, and proactive retrieval all obey the
 - Lexical retrieval uses a SQLite FTS5 trigram index; vectors use a resident Float32Array cache with precise invalidation.
 - Legacy JSON chunk data is migrated idempotently on first start. The service falls back to memory storage when no persistent backend is available.
 - After changing chunk or embedding settings, rebuild one document or the entire base from the panel or model tools.
+
+---
+
+## v0.5.0 highlights
+
+- **Structured evidence chain:** preserve parser page references, block ranges, tables and formula structure through chunking, indexing, retrieval context and anchored evidence reads. Rechunking can reuse saved parse artifacts instead of parsing the source again.
+- **Optional managed MinerU (experimental):** preflight an isolated Python environment, verify model files, configure Hugging Face/Python package sources, and inspect deployment state. A candidate becomes usable only after a real PDF parse probe succeeds. Existing cloud APIs and external self-hosted services remain available.
+- **Recoverable processing:** share ingestion and rebuild paths, expose queue/progress state, and keep the previous usable index generation when replacement fails.
+- **Verification boundary:** unit tests, retrieval benchmarks, package checks and worker smoke pass locally. The Windows/Linux managed MinerU install matrix and live-browser settings acceptance are still pending, so managed MinerU remains experimental; no OCR accuracy or cross-platform stability certification is claimed.
+
+This release adds structured evidence and processing capabilities. Upgrade compatibility with existing data is subject to the release candidate's separate migration/upgrade checks. Managed MinerU does not download models by default; users must explicitly preflight and confirm installation into an isolated environment.
+
+[Read the v0.5.0 release notes](./docs/releases/v0.5.0.md) · [Read the changelog](./CHANGELOG.md)
 
 ---
 
@@ -438,7 +452,8 @@ Deployment defaults live in the `knowledge` row of `cordis.patch.yml`. The manag
 | `imageCaptionBaseUrl` | `''` | Figure-captioning API root |
 | `imageCaptionApiKey` | `''` | Key for an OpenAI-compatible vision endpoint |
 | `hfEndpoint` | `''` | Hugging Face download endpoint or mirror |
-| `documentProcessorProvider` | `builtin` | `builtin`, cloud `mineru`, or self-hosted MinerU 4 V1 `mineru-local` (new on the development branch) |
+| `mineruPythonIndexUrl` | `https://pypi.org/simple` | Python package index used only by managed MinerU's isolated environment |
+| `documentProcessorProvider` | `builtin` | `builtin`, cloud `mineru`, or self-hosted MinerU 4 V1 `mineru-local` (managed Basic is experimental) |
 | `mineruApiKey` | `''` | Required for MinerU mode |
 | `mineruApiHost` | `''` | Empty uses `https://mineru.net` |
 | `resumeInterruptedOnStartup` | `true` | Resume interrupted imports at startup |

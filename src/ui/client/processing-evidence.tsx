@@ -53,8 +53,15 @@ export function SourceReferences(props: { documentId: string; spans?: readonly D
 }
 
 export function EvidenceInspector(props: { api: KnowledgeApi; documentId: string; revision?: string; t: Translate; onPage: (pageIndex: number) => void }): JSX.Element {
+  // A new source generation must never inherit another generation's cursor.
+  return <EvidenceInspectorSession key={JSON.stringify([props.documentId, props.revision])} {...props} />
+}
+
+function EvidenceInspectorSession(props: { api: KnowledgeApi; documentId: string; revision?: string; t: Translate; onPage: (pageIndex: number) => void }): JSX.Element {
   const { api, documentId, revision, t, onPage } = props
-  const [cursor, setCursor] = useState<{ blockId: string; blockOffset: number } | undefined>()
+  const [history, setHistory] = useState<Array<{ blockId: string; blockOffset: number } | undefined>>([undefined])
+  const cursor = history[history.length - 1]
+  const [attempt, setAttempt] = useState(0)
   const [result, setResult] = useState<DocumentEvidence | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
@@ -67,8 +74,15 @@ export function EvidenceInspector(props: { api: KnowledgeApi; documentId: string
       if (!canceled) setError(reason instanceof Error ? reason.message : String(reason))
     })
     return () => { canceled = true }
-  }, [api, documentId, revision, cursor?.blockId, cursor?.blockOffset])
-  if (error !== null) return <div role="alert" style={style.warningHint}>{error}</div>
+  }, [api, documentId, revision, cursor?.blockId, cursor?.blockOffset, attempt])
+  function back() { setResult(null); setError(null); setHistory(previous => previous.slice(0, -1)) }
+  if (error !== null) return <div>
+    <div role="alert" style={style.warningHint}>{error}</div>
+    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+      {history.length > 1 ? <button type="button" style={style.button} onClick={back}>{t('evidenceBack')}</button> : null}
+      <button type="button" style={style.button} onClick={() => { setError(null); setResult(null); setAttempt(value => value + 1) }}>{t('evidenceRetry')}</button>
+    </div>
+  </div>
   if (result === null) return <div role="status" style={style.empty}>{t('processing')}</div>
   return <div>
     {result.blocks.length === 0 ? <div style={style.empty}>{t('evidenceEmpty')}</div> : result.blocks.map(block => <div key={block.id} style={{ border: `1px solid ${C.border}`, borderRadius: 8, marginBottom: 8, padding: 10 }}>
@@ -80,6 +94,9 @@ export function EvidenceInspector(props: { api: KnowledgeApi; documentId: string
         pageIndex: block.pageIndex, bbox: block.bbox, assetIds: block.assetIds,
       }] : undefined} />
     </div>)}
-    {result.truncated && result.next ? <button type="button" style={style.button} onClick={() => setCursor(result.next)}>{t('evidenceNext')}</button> : null}
+    <nav aria-label={t('evidence')} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {history.length > 1 ? <button type="button" style={style.button} onClick={back}>{t('evidenceBack')}</button> : null}
+      {result.truncated && result.next ? <button type="button" style={style.button} onClick={() => { const next = result.next; setResult(null); setHistory(previous => [...previous, next]) }}>{t('evidenceNext')}</button> : null}
+    </nav>
   </div>
 }

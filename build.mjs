@@ -80,6 +80,9 @@ const hostExternal = [
 const hostEntries = [
   ['src/index.ts', 'lib/index.js'],
   ['src/knowledge/index.ts', 'lib/knowledge/index.js'],
+  // Managed MinerU deployment controller used by the local release smoke.
+  // Kept as a bundled public runtime entry so smoke tests exercise production code.
+  ['src/knowledge/mineru-deployment.ts', 'lib/knowledge/mineru-deployment.mjs'],
   ['src/tool-knowledge/index.ts', 'lib/tool-knowledge/index.js'],
   // Local embedding inference process: a separate ESM bundle loaded via
   // child_process IPC, so a native ONNX crash or timeout can be recovered

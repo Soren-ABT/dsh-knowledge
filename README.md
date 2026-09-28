@@ -78,7 +78,7 @@ dsh plugin --profile <name> add dsh-knowledge
 
 ```bash
 # GitHub Release 或 npm pack 生成的 tarball
-dsh plugin --profile <name> add ./dsh-knowledge-0.4.1.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.0.tgz
 
 # 本地源码目录，需要先完成构建
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -169,6 +169,7 @@ allowBuilds:
 - 扫描 PDF、无文本层矢量 PDF、损坏文本层和逐字符排版 PDF 可自动进入整页 OCR 路径。
 - PaddleOCR PP-OCRv5 为首选本地识别器，识别失败时回退 Tesseract；1-bit JBIG2/CCITT 扫描件也包含在处理路径中。
 - 可选 MinerU 远程处理可将公式、表格和复杂版式恢复为 Markdown；未配置时继续使用本地解析与 OCR。
+- 设置中提供 MinerU Basic/ONNX 本地托管实验入口：使用独立 Python 环境、固定模型 revision 与文件校验值，并可配置 Hugging Face 镜像和 Python 包源。真实托管推理仍按平台验收；安装不会修改全局 Python 包，也不会自动改用云端。参见 [MinerU 自部署与验证说明](docs/mineru-self-hosted.md)。
 
 ### 模型与管理界面
 
@@ -225,6 +226,19 @@ allowBuilds:
 - 词法检索使用 SQLite FTS5 trigram 索引；向量使用 Float32Array 常驻缓存并精确失效。
 - 旧 JSON 分块数据在首次启动时执行幂等迁移；没有存储后端时自动退化为内存模式。
 - 修改分块或 embedding 配置后，可以重建单条资料或整个知识库的索引。
+
+---
+
+## v0.5.0 更新重点
+
+- **结构化证据链**：保留解析器输出中的页码、块范围、表格/公式等结构信息，并贯穿分块、索引、检索上下文和证据续读；重分块可复用已保存的解析产物，不必重复解析。
+- **可选托管 MinerU（实验性）**：提供独立 Python 环境预检、模型文件校验、Hugging Face / Python 包源设置和部署状态显示。候选安装仅在真实 PDF 解析探针通过后才成为可用部署；现有云 API 和外部自部署服务仍可继续使用。
+- **可恢复处理流程**：统一导入和重建入口，增加处理队列与可见状态；替换索引失败时保留上一代可用数据。
+- **验证边界**：自动化单测、检索 benchmark、打包与 worker 检查已通过。托管 MinerU 的 Windows/Linux 实机部署矩阵和浏览器设置页验收尚未完成，因此该能力仍标注为实验性，不宣称 OCR 准确率或跨平台稳定性已获认证。
+
+本版本新增结构化证据及处理能力。已有数据的升级兼容性以发布候选的独立实测结果为准；托管 MinerU 默认不下载模型，只有用户显式预检并确认安装才会创建独立环境。
+
+[查看 v0.5.0 发布说明](./docs/releases/v0.5.0.md) · [查看 CHANGELOG](./CHANGELOG.md)
 
 ---
 
@@ -440,7 +454,8 @@ dsh-knowledge 的定位是“一体化文档知识库”。下面的对照用于
 | `imageCaptionBaseUrl` | `''` | 图表描述 API 基址 |
 | `imageCaptionApiKey` | `''` | OpenAI 兼容视觉服务密钥 |
 | `hfEndpoint` | `''` | Hugging Face 下载端点或镜像 |
-| `documentProcessorProvider` | `builtin` | `builtin` 内置解析、`mineru` 云 API、`mineru-local` 自部署 MinerU 4 V1（开发分支新增） |
+| `mineruPythonIndexUrl` | `https://pypi.org/simple` | 托管 MinerU 隔离环境使用的 Python 包源 |
+| `documentProcessorProvider` | `builtin` | `builtin` 内置解析、`mineru` 云 API、`mineru-local` 自部署 MinerU 4 V1（Basic 本地托管为实验性） |
 | `mineruApiKey` | `''` | MinerU 模式需要的 API Key |
 | `mineruApiHost` | `''` | 空值使用 `https://mineru.net` |
 | `resumeInterruptedOnStartup` | `true` | 启动时恢复中断的导入 |

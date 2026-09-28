@@ -11,6 +11,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { ConflictError, DirectorySourceError, NotFoundError, StorageUnavailableError, type KnowledgeService } from './index.js'
 import type { ConfigOverrides } from './domain.js'
 import { EvidenceRequestError } from './evidence.js'
+import { DeploymentError } from './mineru-deployment-plan.js'
+import { requireLocalManagement } from './mineru-management-security.js'
 import type {
   AddFileDocumentRequest,
   AddFilesItem,
@@ -53,6 +55,8 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
     })
     const method = (req.method ?? 'GET').toUpperCase()
 
+    if (segments[0] === 'processors' && segments[1] === 'managed') requireLocalManagement(req, service.managementBindHost)
+
     const body = method === 'GET' ? undefined : await readJson(req)
     const value = await route(service, method, segments, body ?? {}, url.searchParams)
     if (value === undefined) {
@@ -76,6 +80,10 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
     }
     writeJson(res, 200, { ok: true, value })
   } catch (error) {
+    if (error instanceof DeploymentError) {
+      writeJson(res, error.status, { ok: false, error: { code: error.code, message: error.message } })
+      return
+    }
     if (error instanceof EvidenceRequestError) {
       writeJson(res, error.code === 'not_found' ? 404 : 400, { ok: false, error: { code: error.code, message: error.message } })
       return
@@ -141,6 +149,33 @@ async function route(
   query: URLSearchParams,
 ): Promise<unknown | undefined> {
   // /config
+  if (segments[0] === 'processors' && segments[1] === 'managed' && segments.length === 3) {
+    const action = segments[2]
+    if (action === 'status' && method === 'GET') return service.mineruDeployment.status()
+    if (method === 'POST') {
+      if (action === 'python') {
+        if (body.executable !== undefined && typeof body.executable !== 'string') throw new InvalidRequestError('executable must be a Python path')
+        return service.mineruDeployment.pythonEnvironments(body.executable as string | undefined)
+      }
+      if (action === 'prepare') {
+        if (typeof body.planId !== 'string' || body.confirm !== true) throw new InvalidRequestError('planId and explicit confirm:true are required')
+        return service.mineruDeployment.prepare(body.planId)
+      }
+      if (action === 'cancel') return service.mineruDeployment.cancel()
+      if (action === 'start') return service.mineruDeployment.start()
+      if (action === 'stop') return service.mineruDeployment.stop()
+      if (action === 'use') {
+        await service.setConfig({ ...service.mineruDeployment.connection(), documentProcessorProvider: 'mineru-local', mineruTier: 'basic' })
+        return { applied: true }
+      }
+    }
+  }
+  if (segments.join('/') === 'processors/managed/plan' && method === 'POST') {
+    if (typeof body.root !== 'string' || (body.existingModels !== undefined && typeof body.existingModels !== 'string')) throw new InvalidRequestError('root and existingModels must be directory paths')
+    if (body.pythonExecutable !== undefined && typeof body.pythonExecutable !== 'string') throw new InvalidRequestError('pythonExecutable must be a Python path')
+    const config = service.getConfig()
+    return service.mineruDeployment.preflight({ root: body.root, existingModels: body.existingModels as string | undefined, pythonExecutable: body.pythonExecutable as string | undefined, hfEndpoint: config.hfEndpoint, pythonIndexUrl: config.mineruPythonIndexUrl })
+  }
   if (segments[0] === 'config') {
     if (method === 'GET') return service.getConfig()
     if (method === 'PUT') return service.setConfig(body as ConfigOverrides)

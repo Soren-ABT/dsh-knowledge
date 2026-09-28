@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      mineru_managed_smoke:
+        description: Install managed MinerU and run real PDF parse/lifecycle smoke on Windows and Ubuntu
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -168,3 +173,62 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: npm run smoke:local-embedding
       - run: npm run smoke:local-rerank
+
+  managed-mineru-smoke:
+    name: Managed MinerU smoke (${{ matrix.os }}, Python ${{ matrix.python }})
+    if: github.event_name == 'workflow_dispatch' && inputs.mineru_managed_smoke
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.13'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        id: setup-python
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+      - name: Check out the pinned DSH compatibility anchor
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness "$GITHUB_WORKSPACE/../dsh"
+          git -C "$GITHUB_WORKSPACE/../dsh" checkout "$DSH_COMMIT"
+      - name: Build DSH library types
+        working-directory: ../dsh
+        run: pnpm install --frozen-lockfile && pnpm run build:lib
+      - run: pnpm install --frozen-lockfile
+      - run: npm run build
+      - name: Pack release candidate and record its digest
+        shell: bash
+        run: |
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          node --input-type=module -e 'import { createHash } from "node:crypto"; import { readFileSync, appendFileSync } from "node:fs"; import { join, sep } from "node:path"; const pkg = JSON.parse(readFileSync("package.json", "utf8")); const path = join(process.env.RUNNER_TEMP, `${pkg.name}-${pkg.version}.tgz`); const digest = createHash("sha256").update(readFileSync(path)).digest("hex"); const portablePath = path.split(sep).join("/"); appendFileSync(process.env.GITHUB_ENV, `DSH_KNOWLEDGE_TARBALL_SHA256=${digest}\nDSH_KNOWLEDGE_TARBALL_PATH=${portablePath}\n`);'
+      - name: Extract the exact packed artifact for the smoke
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/managed-package"
+          tar -xzf "$DSH_KNOWLEDGE_TARBALL_PATH" -C "$RUNNER_TEMP/managed-package"
+      - name: Run real managed MinerU install and parse smoke
+        env:
+          MINERU_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+          MINERU_PACKAGE_ROOT: ${{ runner.temp }}/managed-package/package
+          MINERU_SMOKE_REPORT_PATH: ${{ runner.temp }}/managed-mineru-smoke-report.json
+        run: npm run smoke:mineru-managed
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: managed-mineru-${{ matrix.os }}-python-${{ matrix.python }}
+          path: ${{ runner.temp }}/managed-mineru-smoke-report.json
+          if-no-files-found: ignore
+          retention-days: 30

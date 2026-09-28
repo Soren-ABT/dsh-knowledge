@@ -1,7 +1,7 @@
 {
   "name": "dsh-knowledge",
   "description": "Cherry Studio-style knowledge base system for DeepSeek Harness (DSH): bases, documents, chunking, embeddings (OpenAI-compatible / Ollama / local / lexical fallback), retrieval, model-facing tools, and a browser management panel",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "packageManager": "pnpm@11.7.0",
   "license": "AGPL-3.0",
   "repository": {
@@ -83,6 +83,7 @@
     "smoke:packed": "node scripts/smoke-packed-install.mjs",
     "smoke:workers": "npm run build --silent && node scripts/smoke-worker-protocol.mjs",
     "smoke:mineru-local": "npm run build --silent && node scripts/smoke-mineru-local.mjs",
+    "smoke:mineru-managed": "npm run build --silent && node scripts/smoke-mineru-managed.mjs",
     "benchmark:structured": "vitest run tests/structured-chunk.spec.ts tests/mineru-local.spec.ts tests/processing-lifecycle.spec.ts",
     "smoke:local-embedding": "npm run build --silent && node scripts/smoke-local-embedding.mjs",
     "smoke:local-rerank": "npm run build --silent && node scripts/smoke-local-rerank.mjs",

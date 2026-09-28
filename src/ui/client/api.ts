@@ -6,6 +6,8 @@
  */
 
 import type { DocumentProcessingInfo, DocumentSourceSpan, MineruTier, ParsedAsset, ParsedBlock, ProcessingProgress, ProcessorCapabilities } from '../../knowledge/processing-types.js'
+import type { MineruDeploymentPlan, MineruDeploymentStatus, MineruPythonDiscovery, MineruPythonEnvironment } from '../../knowledge/mineru-deployment-types.js'
+export type { MineruDeploymentPlan, MineruDeploymentStatus, MineruPythonDiscovery, MineruPythonEnvironment }
 export type { DocumentProcessingInfo, DocumentSourceSpan, MineruTier, ParsedAsset, ParsedBlock, ProcessingProgress, ProcessorCapabilities }
 
 export type EmbeddingProvider = 'openai' | 'ollama' | 'local' | 'none'
@@ -218,6 +220,7 @@ export interface KnowledgeConfig {
   localModelCacheDir: string
   siblingChunks: number
   hfEndpoint: string
+  mineruPythonIndexUrl?: string
   documentProcessorProvider: 'builtin' | 'mineru' | 'mineru-local'
   mineruApiKey: string
   mineruApiHost: string
@@ -374,7 +377,7 @@ export class KnowledgeApi {
   private async call<T>(method: string, path: string, body?: unknown, timeoutMs = 60_000): Promise<T> {
     const response = await fetch(`/knowledge${path}`, {
       method,
-      headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
+      headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(path.startsWith('/processors/managed/') ? { 'x-dsh-mineru-management': '1' } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       // A hung host must not pin the panel's busy state forever: fail the
       // call with a clear error instead of an indefinite spinner. Long-running
@@ -398,6 +401,16 @@ export class KnowledgeApi {
   getConfig(): Promise<KnowledgeConfig> {
     return this.call('GET', '/config')
   }
+
+  planMineruDeployment(root: string, existingModels?: string, pythonExecutable?: string): Promise<MineruDeploymentPlan> {
+    return this.call('POST', '/processors/managed/plan', { root, existingModels, pythonExecutable }, 310_000)
+  }
+  detectMineruPython(executable?: string): Promise<MineruPythonDiscovery> { return this.call('POST', '/processors/managed/python', { executable }, 70_000) }
+
+  mineruDeploymentStatus(): Promise<MineruDeploymentStatus> { return this.call('GET', '/processors/managed/status') }
+  prepareMineruDeployment(planId: string): Promise<MineruDeploymentStatus> { return this.call('POST', '/processors/managed/prepare', { planId, confirm: true }) }
+  mineruDeploymentAction(action: 'start' | 'stop' | 'cancel'): Promise<MineruDeploymentStatus> { return this.call('POST', `/processors/managed/${action}`, {}) }
+  useManagedMineru(): Promise<{ applied: boolean }> { return this.call('POST', '/processors/managed/use', {}) }
 
   checkProcessor(baseId?: string): Promise<ProcessorCapabilities> {
     return this.call('POST', '/processors/check', baseId === undefined ? {} : { baseId })

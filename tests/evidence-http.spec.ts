@@ -5,6 +5,7 @@ import type { KnowledgeService } from '../src/knowledge/index.js'
 import type { KnowledgeDocument } from '../src/knowledge/types.js'
 import { composeDocumentEvidence } from '../src/knowledge/evidence.js'
 import { parsedTextDocument } from '../src/knowledge/parsed-document.js'
+import { vi } from 'vitest'
 
 const servers: Server[] = []
 afterEach(async () => {
@@ -15,6 +16,46 @@ afterEach(async () => {
 })
 
 describe('evidence HTTP boundary', () => {
+  it('protects managed preflight before invoking filesystem work', async () => {
+    const preflight = vi.fn(async (input: unknown) => ({ id: 'plan', input }))
+    const prepare = vi.fn(async () => ({ phase: 'preparing_environment', active: true }))
+    const pythonEnvironments = vi.fn(async () => ({ environments: [], truncated: false }))
+    const service = { whenReady: async () => {}, getConfig: () => ({ hfEndpoint: '', mineruPythonIndexUrl: 'https://pypi.org/simple' }), managementBindHost: '127.0.0.1', mineruDeployment: { preflight, prepare, pythonEnvironments } } as unknown as KnowledgeService
+    const route = knowledgeRoute(service)
+    if (route.kind !== 'prefix') throw new Error('expected prefix route')
+    const server = createServer((req, res) => { void route.handler(req, res) })
+    servers.push(server)
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing address')
+    const origin = `http://127.0.0.1:${address.port}`
+    const url = `${origin}/knowledge/processors/managed/plan`
+    const body = JSON.stringify({ root: 'chosen-directory' })
+    const rejectedHeaders: Record<string, string>[] = [
+      { 'content-type': 'application/json' },
+      { 'content-type': 'application/json', 'x-dsh-mineru-management': '1', origin: 'https://untrusted.example' },
+    ]
+    for (const headers of rejectedHeaders) {
+      expect((await fetch(url, { method: 'POST', headers, body })).status).toBe(403)
+    }
+    expect(preflight).not.toHaveBeenCalled()
+    const headers = { 'content-type': 'application/json', 'x-dsh-mineru-management': '1', origin }
+    const pythonUrl = `${origin}/knowledge/processors/managed/python`
+    expect((await fetch(pythonUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(403)
+    expect(pythonEnvironments).not.toHaveBeenCalled()
+    expect((await fetch(pythonUrl, { method: 'POST', headers, body: '{"executable":42}' })).status).toBe(400)
+    expect((await fetch(pythonUrl, { method: 'POST', headers, body: '{"executable":"selected-python"}' })).status).toBe(200)
+    expect(pythonEnvironments).toHaveBeenCalledExactlyOnceWith('selected-python')
+    expect((await fetch(url, { method: 'POST', headers, body: '{"root":42}' })).status).toBe(400)
+    expect(preflight).not.toHaveBeenCalled()
+    expect((await fetch(url, { method: 'POST', headers, body })).status).toBe(200)
+    expect(preflight).toHaveBeenCalledExactlyOnceWith({ root: 'chosen-directory', existingModels: undefined, pythonExecutable: undefined, hfEndpoint: '', pythonIndexUrl: 'https://pypi.org/simple' })
+    const prepareUrl = `${origin}/knowledge/processors/managed/prepare`
+    expect((await fetch(prepareUrl, { method: 'POST', headers, body: '{"planId":"plan"}' })).status).toBe(400)
+    expect(prepare).not.toHaveBeenCalled()
+    expect((await fetch(prepareUrl, { method: 'POST', headers, body: '{"planId":"plan","confirm":true}' })).status).toBe(200)
+    expect(prepare).toHaveBeenCalledExactlyOnceWith('plan')
+  })
   it('distinguishes malformed cursors, missing blocks, and genuine server failures', async () => {
     const doc: KnowledgeDocument = { id: 'doc', baseId: 'base', title: 'Fixture', sourceType: 'file', charCount: 5, chunkCount: 1, createdAt: 0 }
     const parsed = parsedTextDocument('hello', new Uint8Array([1]), 'builtin', 'options').document

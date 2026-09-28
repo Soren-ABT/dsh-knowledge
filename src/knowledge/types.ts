@@ -285,6 +285,7 @@ export interface KnowledgeConfig {
   readonly siblingChunks: number
   /** Hugging Face endpoint override (mirror); empty = official hub / `HF_ENDPOINT` env. */
   readonly hfEndpoint: string
+  readonly mineruPythonIndexUrl?: string
   /** Document processor: `builtin` (local parsers + OCR) or `mineru` (remote MinerU API). */
   readonly documentProcessorProvider: DocumentProcessor
   readonly mineruLocalUrl?: string

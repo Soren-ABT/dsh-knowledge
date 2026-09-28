@@ -28,6 +28,7 @@ const base: Config = {
   siblingChunks: 1,
   localModelCacheDir: '',
   hfEndpoint: '',
+  mineruPythonIndexUrl: 'https://pypi.org/simple',
   chunkStorePath: '',
   documentProcessorProvider: 'builtin',
   mineruApiKey: '',
@@ -65,6 +66,12 @@ describe('resolveConfig', () => {
     expect(resolved.chunkSize).toBe(1000)
     expect(resolved.searchMode).toBe('hybrid')
     expect(resolved.rerankModel).toBe('jina-reranker-v2-base-multilingual')
+  })
+  it('keeps the managed MinerU package index global and defaults to public PyPI', () => {
+    expect(resolveConfig(base, {}).mineruPythonIndexUrl).toBe('https://pypi.org/simple')
+    expect(resolveConfig(base, { mineruPythonIndexUrl: 'https://mirror.example/simple' }).mineruPythonIndexUrl).toBe('https://mirror.example/simple')
+    expect(configOverridesSchema.parse({ mineruPythonIndexUrl: 'https://mirror.example/simple' })).toEqual({ mineruPythonIndexUrl: 'https://mirror.example/simple' })
+    expect(baseConfigSchema.parse({ mineruPythonIndexUrl: 'https://mirror.example/simple' })).toEqual({})
   })
 
   it('clamps out-of-range values', () => {
