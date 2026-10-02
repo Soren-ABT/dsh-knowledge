@@ -117,7 +117,7 @@
     "ppu-paddle-ocr": "^6.4.0",
     "tesseract.js": "^7.0.0",
     "turndown": "^7.2.4",
-    "undici": "^7.0.0",
+    "undici": "^7.30.0",
     "word-extractor": "^1.0.4"
   },
   "optionalDependencies": {

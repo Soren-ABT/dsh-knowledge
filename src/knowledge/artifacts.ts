@@ -31,6 +31,8 @@ export interface ProcessingJobRecord {
   readonly updatedAt: number
   readonly artifact?: DocumentProcessingInfo
   readonly errorCode?: string
+  /** Durable count incremented before each automatic startup parse attempt. */
+  readonly startupAttempts?: number
 }
 
 /** Immutable artifacts scoped to one document. No downloaded paths are used as

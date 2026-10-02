@@ -7,7 +7,7 @@
  * in the tarball, and vitest runs `src/`, where three of the four companion files
  * do not exist (their `.ts` sources are compiled to `lib/` only). The real child
  * implementations — `embed-worker.ts` (bundled into `embed-process.mjs`),
- * `rerank-process.ts`, `ocr-worker.ts` — were therefore executed by NO test and
+ * `rerank-process.ts`, `ocr-process.ts` — were therefore executed by NO test and
  * NO gate, so a bundle that cannot start shipped green.
  *
  * Every request below is local and returns immediately (`release`/`dispose`/
@@ -73,7 +73,7 @@ function nextMessage(port, label) {
 
 /** Fork one child-process bundle: one local round trip, then a clean shutdown. */
 async function smokeForkedBundle({ name, file, probe }) {
-  const child = fork(join(LIB, file), [], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] })
+  const child = fork(join(LIB, file), [], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], serialization: 'advanced', windowsHide: true })
   try {
     const replyPromise = nextMessage(child, `${name} ${probe.operation}`)
     child.send(probe)
@@ -165,12 +165,11 @@ try {
     probe: { id: 1, data: new Uint8Array(Buffer.from('this is not a pdf at all %%%')) },
     expectReply: reply => reply?.id === 1 && reply?.ok === false && typeof reply?.error === 'string',
   })
-  await smokeWorkerBundle({
-    name: 'ocr-worker.mjs',
-    file: 'ocr-worker.mjs',
-    // The OCR worker has no cheap local round trip — any real request starts an
-    // inference engine and needs trained models — so this asserts the lifecycle
-    // only: the bundle loads and shuts down cleanly.
+  await smokeForkedBundle({
+    name: 'ocr-process.mjs',
+    file: 'ocr-process.mjs',
+    // Probe without importing native inference libraries or downloading models.
+    probe: { protocolVersion: PROTOCOL_VERSION, id: 1, operation: 'status' },
   })
 } finally {
   clearTimeout(watchdog)

@@ -182,6 +182,8 @@ export type KnowledgeKey =
   | 'resumeInterrupted'
   | 'autoRetrieve'
   | 'autoRetrieveHint'
+  | 'injectUsagePrompt'
+  | 'injectUsagePromptHint'
   | 'autoRetrieveWeight'
   | 'autoRetrieveWeightHint'
   | 'localWorkerIdleTimeoutMs'
@@ -549,6 +551,8 @@ export const zh: Record<KnowledgeKey, string> = {
   resumeInterrupted: '重启后自动恢复中断的导入',
   resumeInterruptedHint: '关闭后，重启时中断的导入标记为失败（需手动重建），不再自动重跑嵌入（Cherry Studio 行为）',
   autoRetrieve: '自动检索（用户消息进来时预检索并注入相关背景）',
+  injectUsagePrompt: '可用知识库提示',
+  injectUsagePromptHint: '每次请求仅提示库名；关闭不影响知识库工具或自动检索',
   autoRetrieveHint: '开启后，模型回答事实性问题时自动使用知识库内容，无需显式提到“知识库”；关闭后仅按需调用（knowledge_search 工具 + 显式请求）',
   autoRetrieveWeight: '自动检索权重（每库可注入的分块数，0 = 不参与）',
   autoRetrieveWeightHint: '每个库在一次自动检索注入中最多贡献该数量的分块（0–5，默认 3）；权重高可让该库内容占更多上下文，0 则完全排除该库',
@@ -922,6 +926,8 @@ export const en: Record<KnowledgeKey, string> = {
   resumeInterrupted: 'Resume interrupted imports on restart',
   resumeInterruptedHint: 'When off, imports interrupted by a shutdown are marked failed instead of auto re-embedding (Cherry Studio behavior)',
   autoRetrieve: 'Auto-retrieve (pre-search user messages and inject relevant background)',
+  injectUsagePrompt: 'Available knowledge-base prompt',
+  injectUsagePromptHint: 'Lists base names on each request; turning it off keeps tools and auto-retrieval available',
   autoRetrieveHint: 'When on, the model automatically uses knowledge-base content for factual questions without an explicit "knowledge base" mention; when off, only on-demand calls (knowledge_search tool + explicit requests)',
   autoRetrieveWeight: 'Auto-retrieve weight (chunks this base may contribute, 0 = excluded)',
   autoRetrieveWeightHint: 'A base contributes at most this many chunks per auto-retrieve injection (0–5, default 3); higher lets its content take more context, 0 excludes it entirely',

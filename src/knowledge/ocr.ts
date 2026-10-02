@@ -1,11 +1,11 @@
 /**
  * Local OCR for scanned PDFs (Cherry's local-document posture). When
  * pdf-parse and anydoc both fail to extract a text layer, the PDF's pages are
- * rendered at ~216dpi through pdfjs onto an @napi-rs/canvas surface (Cherry's
- * pdfPageOcr renders each page) and PaddleOCR recognizes the full-page raster.
- * Two fallbacks keep it working without a canvas: embedded rasters are
- * extracted via pdfjs operator lists (no rendering), and a worker thread runs
- * PaddleOCR (WASM/ONNX, isolated so a native crash cannot take down the host).
+ * rendered through MuPDF with a per-page raster budget and PaddleOCR
+ * recognizes the full-page raster (216dpi for ordinary-sized pages).
+ * Embedded rasters are extracted via pdfjs operator lists when rendering is
+ * unavailable. PaddleOCR/Tesseract inference runs in a separate process so a
+ * fatal native error cannot take down the host.
  * @module dsh-knowledge/knowledge/ocr
  */
 
@@ -14,10 +14,10 @@ import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { Worker } from 'node:worker_threads'
-import { fileURLToPath } from 'node:url'
 import { httpFetch } from './net.js'
 import { localModelCacheDir } from './embed.js'
+import { OcrProcessClient } from './ocr-process-client.js'
+import { ocrError } from './ocr-protocol.js'
 
 /** Cap on OCR work per PDF (Cherry refuses >300 pages; images are capped similarly). */
 const MAX_OCR_PAGES = 100
@@ -27,10 +27,13 @@ const MAX_OCR_IMAGES = 200
 const MAX_IMAGE_PIXELS = 32_000_000
 /** Total RGBA bytes collected per PDF (~512MB of decoded rasters). */
 const MAX_TOTAL_RASTER_BYTES = 512 * 1024 * 1024
+/** Conservative RGBA budget checked before allocating a mupdf pixmap. */
+export const MAX_PAGE_RASTER_BYTES = 64 * 1024 * 1024
+const MAX_RASTER_DIMENSION = 8192
 /** Overall wall-clock budget for one PDF's OCR pass. Per-page timeouts alone
  *  multiply: 5 minutes × 100 pages is most of a working day for one wedged
  *  import, and the base's ingest queue is occupied for all of it. Reaching the
- *  budget returns the pages recognized so far. */
+ *  budget fails the import rather than publishing only the recognized prefix. */
 const MAX_OCR_TOTAL_MS = 15 * 60_000
 
 export interface OcrModelStatus {
@@ -187,7 +190,7 @@ export async function downloadOcrModels(mirror?: string): Promise<OcrModelStatus
 }
 
 /**
- * Remove the OCR cache. The worker is released first so a Windows file lock
+ * Remove the OCR cache. The child process exits first so a Windows file lock
  * cannot block the unlink (Cherry terminates its OCR worker before deleting
  * weights for the same reason).
  */
@@ -234,21 +237,7 @@ interface PdfImage {
   data: Uint8ClampedArray
 }
 
-// ── OCR worker client ────────────────────────────────────────────────────────
-// Tesseract.js runs inside a dedicated worker thread: its errors are rethrown
-// on process.nextTick and would kill the host process otherwise. A worker
-// crash surfaces as an 'error' event here — in-flight requests fail, the next
-// call respawns (Cherry's own-worker OCR posture).
-
-const OCR_WORKER_REQUEST_TIMEOUT_MS = 5 * 60_000
-
-let ocrWorker: Worker | null = null
-let ocrRequestSeq = 0
-const ocrPending = new Map<number, { resolve: (text: string) => void; reject: (error: Error) => void }>()
-
-function ocrWorkerPath(): string {
-  return fileURLToPath(new URL('./ocr-worker.mjs', import.meta.url))
-}
+const ocrProcess = new OcrProcessClient()
 
 /** Resolve pdfjs-dist's wasm directory (image decoders) for fake-worker mode. */
 const pdfjsWasmUrl: string | undefined = (() => {
@@ -282,19 +271,34 @@ const pdfjsCMapUrl: string | undefined = (() => {
  * as scanned rasters. pdfjs remains only for embedded-raster extraction
  * (the no-renderer fallback).
  */
+interface MupdfPixmap { asPNG(): Uint8Array; destroy(): void }
+interface MupdfPage {
+  getBounds(): number[]
+  toPixmap(matrix: unknown, colorspace: unknown, alpha: boolean): MupdfPixmap
+  destroy(): void
+}
 interface MupdfModule {
   Document: {
     openDocument(data: Uint8Array, magic: string): {
       countPages(): number
-      loadPage(index: number): {
-        toPixmap(matrix: unknown, colorspace: unknown, alpha: boolean): { asPNG(): Uint8Array }
-        destroy(): void
-      }
+      loadPage(index: number): MupdfPage
       destroy(): void
     }
   }
   Matrix: { scale(x: number, y: number): unknown }
   ColorSpace: { DeviceRGB: unknown }
+}
+
+/** Small PDF pages retain 216dpi; large pixel-sized scans stay at 1x when safe. */
+export function ocrRenderScale(width: number, height: number): number {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw ocrError('ocr_incomplete', 'OCR page dimensions are invalid')
+  }
+  const area = width * height
+  if (!Number.isFinite(area) || area <= 0) throw ocrError('ocr_incomplete', 'OCR page dimensions are out of range')
+  const preferred = area * 9 * 4 <= MAX_PAGE_RASTER_BYTES ? 3 : 1
+  return Math.min(preferred, Math.sqrt(MAX_PAGE_RASTER_BYTES / (4 * area)) * 0.999,
+    MAX_RASTER_DIMENSION / width, MAX_RASTER_DIMENSION / height)
 }
 
 let mupdfModule: MupdfModule | null | undefined
@@ -322,7 +326,8 @@ export async function renderPdfPages(bytes: Uint8Array, maxPages: number): Promi
   try {
     document = mupdf.Document.openDocument(Uint8Array.from(bytes), 'application/pdf')
     const out: Array<{ page: number; png: Buffer }> = []
-    const pageCount = Math.min(document.countPages(), maxPages)
+    const pageCount = document.countPages()
+    if (pageCount > maxPages) throw ocrError('ocr_incomplete', `OCR page limit exceeded (${pageCount} pages, limit ${maxPages}); split the PDF or use MinerU`)
     let totalBytes = 0
     for (let index = 0; index < pageCount; index += 1) {
       // NO yield here, deliberately. mupdf's render is synchronous WASM and this
@@ -334,28 +339,37 @@ export async function renderPdfPages(bytes: Uint8Array, maxPages: number): Promi
       // thread (where mupdf state is per-thread), not interleaving it here; that
       // is recorded as a deferred item. The byte budget below at least bounds
       // how much work one pass can do.
-      let page: { toPixmap(matrix: unknown, colorspace: unknown, alpha: boolean): { asPNG(): Uint8Array }; destroy(): void } | null = null
+      let page: MupdfPage | null = null
       try {
         page = document.loadPage(index)
-        // ~216dpi on A4 (612x842pt * 3). mupdf renders into WASM memory, so
-        // large pages cost memory but never hit a canvas dimension limit.
-        const pixmap = page.toPixmap(mupdf.Matrix.scale(3, 3), mupdf.ColorSpace.DeviceRGB, false)
-        const png = Buffer.from(pixmap.asPNG())
-        if (png.length > 0) {
-          out.push({ page: index + 1, png })
-          totalBytes += png.length
+        const bounds = page.getBounds()
+        let scale = ocrRenderScale(bounds[2] - bounds[0], bounds[3] - bounds[1])
+        let png: Buffer | undefined
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          let pixmap: MupdfPixmap | undefined
+          try {
+            pixmap = page.toPixmap(mupdf.Matrix.scale(scale, scale), mupdf.ColorSpace.DeviceRGB, false)
+            png = Buffer.from(pixmap.asPNG())
+            break
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (attempt === 3 || !/malloc|memory|allocat/i.test(message)) throw error
+            scale /= 2
+            console.warn(`[dsh-knowledge] page ${index + 1} raster allocation failed; retrying at ${scale}x`)
+          } finally {
+            // page.destroy() does not release its pixmap. Keep only the copied
+            // PNG and free the large WASM raster before rendering another page.
+            pixmap?.destroy()
+          }
         }
-        // The same cumulative budget the embedded-raster path enforces: this is
-        // the PREFERRED path, so without it a 100-page high-resolution scan holds
-        // every page PNG in memory before OCR even starts.
-        if (totalBytes >= MAX_TOTAL_RASTER_BYTES) {
-          console.warn(`[dsh-knowledge] page render stopped at ${out.length} page(s): ${MAX_TOTAL_RASTER_BYTES} byte raster budget reached`)
-          break
+        if (png === undefined || png.length === 0) throw new Error('empty page raster')
+        if (totalBytes + png.length > MAX_TOTAL_RASTER_BYTES) {
+          throw new Error(`raster byte budget exceeded after ${out.length}/${pageCount} pages; split the PDF or use MinerU`)
         }
+        out.push({ page: index + 1, png })
+        totalBytes += png.length
       } catch (error) {
-        // A page that refuses to render (malformed content) is skipped — the
-        // rest of the document still gets OCR'd.
-        console.warn(`[dsh-knowledge] page ${index + 1} render failed, skipping: ${error instanceof Error ? error.message : String(error)}`)
+        throw ocrError('ocr_incomplete', `OCR page ${index + 1}/${pageCount} render failed: ${error instanceof Error ? error.message : String(error)}`)
       } finally {
         // Always release the page back to the WASM heap, even when rendering
         // threw (a malformed page would otherwise accumulate until the
@@ -365,6 +379,9 @@ export async function renderPdfPages(bytes: Uint8Array, maxPages: number): Promi
     }
     return out
   } catch (error) {
+    // Once a renderer opened the PDF, a missing page must fail the import.
+    // Only an unavailable renderer/document-open failure may use extraction.
+    if (document !== null) throw error
     console.warn(`[dsh-knowledge] mupdf render failed, falling back to embedded rasters: ${error instanceof Error ? error.message : String(error)}`)
     return null
   } finally {
@@ -372,91 +389,9 @@ export async function renderPdfPages(bytes: Uint8Array, maxPages: number): Promi
   }
 }
 
-function failAllOcrPending(error: Error): void {
-  for (const { reject } of ocrPending.values()) reject(error)
-  ocrPending.clear()
-}
-
-function ensureOcrWorker(): Worker {
-  if (ocrWorker !== null) return ocrWorker
-  const worker = new Worker(ocrWorkerPath())
-  worker.unref()
-  worker.on('message', (message: { id?: number; ok?: boolean; text?: string; error?: string }): void => {
-    if (message.id === undefined) return
-    const pending = ocrPending.get(message.id)
-    if (pending === undefined) return
-    ocrPending.delete(message.id)
-    if (message.ok === true) pending.resolve(message.text ?? '')
-    else pending.reject(new Error(message.error ?? 'OCR worker failed'))
-  })
-  const onFailure = (error: Error): void => {
-    if (ocrWorker !== worker) return
-    failAllOcrPending(error)
-    ocrWorker = null
-  }
-  worker.on('error', (error) => onFailure(error instanceof Error ? error : new Error(String(error))))
-  worker.on('exit', () => onFailure(new Error('OCR worker exited')))
-  ocrWorker = worker
-  return worker
-}
-
-/** Consecutive request timeouts before the worker is assumed hung and respawned. */
-const OCR_HUNG_TIMEOUT_THRESHOLD = 2
-let ocrTimeoutStreak = 0
-
-function recognizePng(png: Buffer): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const id = ++ocrRequestSeq
-    const timer = setTimeout(() => {
-      ocrPending.delete(id)
-      // A worker that is alive but wedged (onnxruntime's native inference is
-      // synchronous — a hung model blocks the worker's event loop and every
-      // subsequent request queues behind it) never fires error/exit, so the
-      // respawn path would never run. After a streak of timeouts, force a
-      // respawn: the next call rebuilds the worker (and its model session).
-      ocrTimeoutStreak += 1
-      if (ocrTimeoutStreak >= OCR_HUNG_TIMEOUT_THRESHOLD) {
-        ocrTimeoutStreak = 0
-        const worker = ocrWorker
-        ocrWorker = null
-        failAllOcrPending(new Error('OCR worker respawned after request timeouts'))
-        void worker?.terminate()
-      }
-      reject(new Error('OCR request timed out'))
-    }, OCR_WORKER_REQUEST_TIMEOUT_MS)
-    timer.unref?.()
-    ocrPending.set(id, {
-      resolve: (text) => { clearTimeout(timer); ocrTimeoutStreak = 0; resolve(text) },
-      reject: (error) => { clearTimeout(timer); reject(error) },
-    })
-    try {
-      ensureOcrWorker().postMessage({ id, type: 'ocr', png, modelDir: ocrCacheDir() })
-    } catch (error) {
-      // The worker died between ensure and postMessage: fail this request
-      // synchronously instead of leaking the pending entry until timeout.
-      clearTimeout(timer)
-      ocrPending.delete(id)
-      ocrWorker = null
-      reject(error instanceof Error ? error : new Error(String(error)))
-    }
-  })
-}
-
-/** Release the worker (plugin teardown). Idempotent; resolves once the
- *  worker thread has actually exited so callers can move/delete the OCR
- *  weights without a Windows file lock blocking the operation. */
+/** Legacy function name retained for callers; waits for the OCR child to exit. */
 export async function disposeOcrWorker(): Promise<void> {
-  const worker = ocrWorker
-  ocrWorker = null
-  failAllOcrPending(new Error('OCR worker disposed'))
-  if (worker !== null) {
-    try {
-      worker.postMessage({ type: 'shutdown' })
-    } catch {
-      // already dead
-    }
-    await worker.terminate()
-  }
+  await ocrProcess.dispose()
 }
 
 /**
@@ -487,7 +422,8 @@ export async function extractPdfImages(bytes: Uint8Array): Promise<Array<PdfImag
   try {
     const doc = await loadingTask.promise as { numPages: number; getPage(n: number): Promise<unknown> }
     const out: Array<PdfImage & { page: number }> = []
-    const pageCount = Math.min(doc.numPages, MAX_OCR_PAGES)
+    if (doc.numPages > MAX_OCR_PAGES) throw ocrError('ocr_incomplete', `OCR page limit exceeded (${doc.numPages} pages); split the PDF or use MinerU`)
+    const pageCount = doc.numPages
     let totalRasterBytes = 0
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
       const page = await doc.getPage(pageNumber) as {
@@ -498,21 +434,24 @@ export async function extractPdfImages(bytes: Uint8Array): Promise<Array<PdfImag
         }
       }
       const ops = await page.getOperatorList()
-      for (let i = 0; i < ops.fnArray.length && out.length < MAX_OCR_IMAGES; i += 1) {
+      for (let i = 0; i < ops.fnArray.length; i += 1) {
         if (ops.fnArray[i] !== pdfjs.OPS.paintImageXObject) continue
+        if (out.length >= MAX_OCR_IMAGES) throw ocrError('ocr_incomplete', `OCR image limit exceeded at page ${pageNumber}; split the PDF or use MinerU`)
         const name = ops.argsArray[i][0] as string
         // pdfjs decodes images asynchronously; objs.get() throws until the
-        // decode lands. Poll has() with a timeout — a failed decode (e.g.
-        // unsupported codec) simply skips that image.
+        // decode lands. Poll has() with a timeout; a failed decode (e.g.
+        // unsupported codec) fails the import rather than losing that image.
         const image = await waitForImage(page, name, 5000)
-        if (image === null || image.width <= 0 || image.height <= 0 || !image.data) continue
+        if (image === null || image.width <= 0 || image.height <= 0 || !image.data) {
+          throw ocrError('ocr_incomplete', `OCR image decoding failed at page ${pageNumber}`)
+        }
         // Memory guard: a single forged/oversized dimension header must not
         // allocate a huge RGBA buffer (RangeError) or OOM the process, and
         // the cumulative raster bytes stay bounded across the whole PDF.
         const pixels = image.width * image.height
-        if (pixels > MAX_IMAGE_PIXELS) continue
+        if (pixels > MAX_IMAGE_PIXELS) throw ocrError('ocr_incomplete', `OCR image at page ${pageNumber} exceeds the pixel budget`)
         const bytes = pixels * 4
-        if (totalRasterBytes + bytes > MAX_TOTAL_RASTER_BYTES) continue
+        if (totalRasterBytes + bytes > MAX_TOTAL_RASTER_BYTES) throw ocrError('ocr_incomplete', `OCR raster budget exceeded at page ${pageNumber}; split the PDF or use MinerU`)
         totalRasterBytes += bytes
         out.push({ width: image.width, height: image.height, data: normalizeRgba(image), page: pageNumber })
       }
@@ -652,28 +591,18 @@ function crc32(buffer: Buffer): number {
  *
  * Returns '' when the OCR models are not downloaded (the caller keeps its
  * "download the models" hint) or when the pages simply contained no text.
- * THROWS when the models are present but the engine failed on every attempt, so
- * the caller can report the real reason instead of telling the user to download
- * models they already have (issue #17).
+ * THROWS on a missing page, an engine failure, or a work-budget limit. Partial
+ * text is never returned as a successful import (issues #17 and #37).
  */
 export async function ocrPdfText(bytes: Uint8Array): Promise<string> {
   if (!isOcrReady()) return ''
   const deadline = Date.now() + MAX_OCR_TOTAL_MS
   const pageTexts = new Map<number, string[]>()
-  let failures = 0
-  let firstFailure = ''
-  const noteFailure = (message: string): void => {
-    failures += 1
-    if (firstFailure === '') firstFailure = message
-  }
   try {
     const rendered = await renderPdfPages(bytes, MAX_OCR_PAGES)
-    // Per-page/per-image fault isolation: one bad page (timeout, worker
-    // crash, corrupt raster) must not discard every page recognized before
-    // it — partial results beat an empty document.
     const recognize = async (page: number, png: Buffer): Promise<void> => {
       try {
-        const text = postprocessOcrText(await recognizePng(png))
+        const text = postprocessOcrText(await ocrProcess.recognize(png, ocrCacheDir()))
         if (text.length > 0) {
           const bucket = pageTexts.get(page) ?? []
           bucket.push(text)
@@ -681,8 +610,7 @@ export async function ocrPdfText(bytes: Uint8Array): Promise<string> {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        noteFailure(message)
-        console.warn(`[dsh-knowledge] OCR failed for page ${page}: ${message}`)
+        throw ocrError((error as { code?: string }).code ?? 'ocr_failed', `OCR failed for page ${page}: ${message}`)
       }
     }
     if (rendered !== null) {
@@ -690,8 +618,7 @@ export async function ocrPdfText(bytes: Uint8Array): Promise<string> {
       // (mupdf output needs no grayscale/normalize chain).
       for (const { page, png } of rendered) {
         if (Date.now() >= deadline) {
-          console.warn(`[dsh-knowledge] OCR stopped after ${pageTexts.size} page(s): the ${Math.round(MAX_OCR_TOTAL_MS / 60_000)} minute budget for this document was reached`)
-          break
+          throw ocrError('ocr_incomplete', `OCR time budget reached after ${pageTexts.size}/${rendered.length} pages; split the PDF or use MinerU`)
         }
         await recognize(page, png)
       }
@@ -700,8 +627,7 @@ export async function ocrPdfText(bytes: Uint8Array): Promise<string> {
       const images = await extractPdfImages(bytes)
       for (const image of images) {
         if (Date.now() >= deadline) {
-          console.warn(`[dsh-knowledge] OCR stopped after ${pageTexts.size} image(s): the ${Math.round(MAX_OCR_TOTAL_MS / 60_000)} minute budget for this document was reached`)
-          break
+          throw ocrError('ocr_incomplete', `OCR time budget reached after ${pageTexts.size} pages; split the PDF or use MinerU`)
         }
         // Cherry preprocesses OCR input (grayscale → normalize → sharpen, via
         // sharp); here the same chain runs in pure JS. Low-resolution rasters
@@ -712,16 +638,9 @@ export async function ocrPdfText(bytes: Uint8Array): Promise<string> {
       }
     }
   } catch (error) {
-    // A rendering or extraction failure aborts the pass; record it so the
-    // decision below can tell an engine failure from an empty document.
     const message = error instanceof Error ? error.message : String(error)
-    noteFailure(message)
     console.warn(`[dsh-knowledge] OCR failed for scanned PDF: ${message}`)
-  }
-  if (pageTexts.size === 0 && failures > 0) {
-    // Nothing was recognized AND every attempt errored: the engine is broken,
-    // not the document. Callers must not present this as "no extractable text".
-    throw new Error(`OCR could not process this document (${failures} attempt(s) failed): ${firstFailure}`)
+    throw ocrError((error as { code?: string }).code ?? 'ocr_incomplete', `OCR could not process this document completely: ${message}`)
   }
   return [...pageTexts.entries()]
     .sort((a, b) => a[0] - b[0])

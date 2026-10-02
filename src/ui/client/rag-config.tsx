@@ -718,6 +718,14 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   onChange={(e) => patchNumber('autoRetrieveWeight', e.target.value)}
                 />
               </FieldRow>
+              <FieldRow label={t('injectUsagePrompt')} hint={t('injectUsagePromptHint')}>
+                <input
+                  type="checkbox"
+                  aria-label={t('injectUsagePrompt')}
+                  checked={values.injectUsagePrompt !== false}
+                  onChange={(e) => patch({ injectUsagePrompt: e.target.checked })}
+                />
+              </FieldRow>
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
                 <input
                   style={{ ...style.input, width: 140 }}

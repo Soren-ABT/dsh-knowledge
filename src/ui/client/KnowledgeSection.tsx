@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { CSSProperties, DragEvent } from 'react'
 import { serializeContextWindow } from '../../knowledge/context.js'
 import { KnowledgeApi } from './api.js'
+import { getTitlebarInset, subscribeTitlebarInset } from './titlebar-safe-area.js'
 import { EvidenceInspector, ProcessingSummary, SourceReferences, processingStageLabel } from './processing-evidence.js'
 import type {
   BaseSourceInfo,
@@ -160,6 +161,7 @@ interface RecallEntry {
 }
 
 function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void }): JSX.Element {
+  const titlebarInset = useSyncExternalStore(subscribeTitlebarInset, getTitlebarInset, () => 0)
   const { api, t, onClose } = props
   const [bases, setBases] = useState<BaseSummary[]>([])
   const [groups, setGroups] = useState<string[]>([])
@@ -1326,7 +1328,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   }
 
   return (
-    <div style={style.panel} className="kb-panel-in">
+    <div style={{ ...style.panel, '--kb-titlebar-inset': `${titlebarInset}px` } as CSSProperties} className="kb-panel-in">
       <div style={style.header}>
         <div style={style.headerLeft}>
           <IconBook size={20} color={C.accent} />

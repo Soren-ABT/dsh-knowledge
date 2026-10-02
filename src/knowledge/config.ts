@@ -84,6 +84,8 @@ export interface Config {
    * "use the knowledge base" instruction or a knowledge_search call.
    */
   autoRetrieve: boolean
+  /** Include the short available-base list in the system prompt. */
+  injectUsagePrompt?: boolean
   /**
    * Auto-retrieve seat cap per base (0–5, default 3; 0 excludes a base):
    * how many of THIS base's chunks may enter one injection.
@@ -143,6 +145,7 @@ export const Config: Schema<Config> = Schema.object({
   imageCaptionApiKey: Schema.string().default(''),
   resumeInterruptedOnStartup: Schema.boolean().default(true),
   autoRetrieve: Schema.boolean().default(true),
+  injectUsagePrompt: Schema.boolean().default(true),
   autoRetrieveWeight: Schema.number().default(3),
   localWorkerIdleTimeoutMs: Schema.number().default(60000),
 })
@@ -202,6 +205,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     imageCaptionApiKey: overrides.imageCaptionApiKey ?? config.imageCaptionApiKey,
     resumeInterruptedOnStartup: overrides.resumeInterruptedOnStartup ?? config.resumeInterruptedOnStartup,
     autoRetrieve: overrides.autoRetrieve ?? config.autoRetrieve,
+    injectUsagePrompt: overrides.injectUsagePrompt ?? config.injectUsagePrompt ?? true,
     autoRetrieveWeight: clampInt(overrides.autoRetrieveWeight ?? config.autoRetrieveWeight, 0, 5, 3),
     localWorkerIdleTimeoutMs: clampInt(overrides.localWorkerIdleTimeoutMs ?? config.localWorkerIdleTimeoutMs, 0, 24 * 3600 * 1000, 60000),
     localModelCacheDir: overrides.localModelCacheDir ?? config.localModelCacheDir,
@@ -259,6 +263,7 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     imageCaptionApiKey: baseConfig.imageCaptionApiKey ?? resolved.imageCaptionApiKey,
     resumeInterruptedOnStartup: baseConfig.resumeInterruptedOnStartup ?? resolved.resumeInterruptedOnStartup,
     autoRetrieve: baseConfig.autoRetrieve ?? resolved.autoRetrieve,
+    injectUsagePrompt: baseConfig.injectUsagePrompt ?? resolved.injectUsagePrompt,
     autoRetrieveWeight: clampInt(baseConfig.autoRetrieveWeight ?? resolved.autoRetrieveWeight, 0, 5, 3),
   }
 }

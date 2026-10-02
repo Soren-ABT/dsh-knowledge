@@ -51,6 +51,7 @@ export interface BaseConfig {
   imageCaptionBaseUrl?: string
   imageCaptionApiKey?: string
   autoRetrieve?: boolean
+  injectUsagePrompt?: boolean
   autoRetrieveWeight?: number
   resumeInterruptedOnStartup?: boolean
 }
@@ -231,6 +232,7 @@ export interface KnowledgeConfig {
   structuredChunking?: boolean
   resumeInterruptedOnStartup: boolean
   autoRetrieve: boolean
+  injectUsagePrompt?: boolean
   autoRetrieveWeight: number
   /** Local-model worker idle timeout in ms (0 = never release; keeps the
    *  model hot and avoids an onnxruntime binding reload on respawn). */

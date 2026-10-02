@@ -1,32 +1,21 @@
 /**
- * OCR inference worker — PaddleOCR (PP-OCRv5 mobile, Cherry's engine choice
+ * OCR inference process — PaddleOCR (PP-OCRv5 mobile, Cherry's engine choice
  * with a full Chinese dictionary) runs here first, Tesseract.js as fallback.
- * Everything runs in this thread so a native/WASM crash (onnxruntime,
- * OpenCV.js, tesseract's rethrown worker errors) can never take down the host
- * process; the client respawns on 'error' (Cherry's own-worker OCR posture).
+ * A native/WASM fatal exits this child instead of the DSH host. Requests are
+ * serialized so the engines never share concurrent inference state.
  *
- * Protocol (JSON over parentPort):
- *   main → worker:  { id, type: 'ocr', png: Buffer, modelDir: string }
- *                    { type: 'shutdown' }
- *   worker → main:  { id, ok: true, text } | { id, ok: false, error }
- * @module dsh-knowledge/knowledge/ocr-worker
+ * Protocol: versioned IPC with advanced Buffer/Uint8Array serialization.
+ * @module dsh-knowledge/knowledge/ocr-process
  */
 
-import { parentPort } from 'node:worker_threads'
 import { join } from 'node:path'
+import { OCR_PROTOCOL_VERSION, type OcrProcessRequest, type OcrProcessResponse } from './ocr-protocol.js'
 import type { PaddleOcrService as PaddleOcrServiceType } from 'ppu-paddle-ocr'
 import type { createWorker as TesseractCreateWorker } from 'tesseract.js'
 
 type OcrWorker = Awaited<ReturnType<typeof TesseractCreateWorker>>
 type TesseractModule = { createWorker: typeof TesseractCreateWorker }
 type PaddleModule = { PaddleOcrService: typeof PaddleOcrServiceType }
-
-interface OcrRequest {
-  id: number
-  type: 'ocr'
-  png: Buffer
-  modelDir: string
-}
 
 let paddlePromise: Promise<PaddleOcrServiceType> | null = null
 let paddleModelDir: string | null = null
@@ -88,13 +77,22 @@ async function recognizeWithTesseract(png: Buffer, langPath: string): Promise<st
   return data.text
 }
 
-parentPort?.on('message', (message: OcrRequest | { type: 'shutdown' }): void => {
-  if (message.type === 'shutdown') {
+let queue = Promise.resolve()
+process.on('disconnect', () => process.exit(0))
+process.on('message', (message: OcrProcessRequest): void => {
+  if (message.protocolVersion !== OCR_PROTOCOL_VERSION) return
+  if (message.operation === 'shutdown') {
     process.exit(0)
     return
   }
-  const { id, png, modelDir } = message
-  void (async () => {
+  const respond = (response: OcrProcessResponse): void => { if (process.connected) process.send?.(response) }
+  if (message.operation === 'status') {
+    respond({ protocolVersion: OCR_PROTOCOL_VERSION, id: message.id, operation: 'status', ok: true })
+    return
+  }
+  const { id, modelDir } = message
+  const png = Buffer.from(message.png)
+  queue = queue.then(async () => {
     try {
       let text = ''
       try {
@@ -105,9 +103,9 @@ parentPort?.on('message', (message: OcrRequest | { type: 'shutdown' }): void => 
         // traineddata is present (a previous download, or manual placement).
         text = (await recognizeWithTesseract(png, modelDir)).trim()
       }
-      parentPort?.postMessage({ id, ok: true, text })
+      respond({ protocolVersion: OCR_PROTOCOL_VERSION, id, operation: 'recognize', ok: true, text })
     } catch (error) {
-      parentPort?.postMessage({ id, ok: false, error: error instanceof Error ? error.message : String(error) })
+      respond({ protocolVersion: OCR_PROTOCOL_VERSION, id, operation: 'recognize', ok: false, error: error instanceof Error ? error.message : String(error) })
     }
-  })()
+  })
 })

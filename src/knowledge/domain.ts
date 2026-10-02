@@ -61,6 +61,7 @@ export const baseConfigSchema = z.object({
   resumeInterruptedOnStartup: z.boolean().optional(),
   /** Proactive auto-retrieval on every user message. */
   autoRetrieve: z.boolean().optional(),
+  injectUsagePrompt: z.boolean().optional(),
 })
 
 const baseSchema = z.object({
@@ -157,6 +158,7 @@ export const configOverridesSchema = z.object({
   imageCaptionApiKey: z.string().optional(),
   resumeInterruptedOnStartup: z.boolean().optional(),
   autoRetrieve: z.boolean().optional(),
+  injectUsagePrompt: z.boolean().optional(),
   autoRetrieveWeight: z.number().int().gte(0).lte(5).optional(),
   localModelCacheDir: z.string().optional(),
   localWorkerIdleTimeoutMs: z.number().int().gte(0).optional(),
@@ -204,6 +206,7 @@ export interface ConfigOverrides {
   imageCaptionApiKey?: string
   resumeInterruptedOnStartup?: boolean
   autoRetrieve?: boolean
+  injectUsagePrompt?: boolean
   autoRetrieveWeight?: number
   localModelCacheDir?: string
   localWorkerIdleTimeoutMs?: number

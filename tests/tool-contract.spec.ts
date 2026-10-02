@@ -142,6 +142,32 @@ describe('model-facing knowledge tool contracts', () => {
   beforeEach(async () => {
     await harness.knowledge.setEnabled(true)
     await harness.knowledge.setEnabledBaseIds([])
+    await harness.knowledge.setConfig({ injectUsagePrompt: true })
+  })
+
+  it('lists base names once and leaves behavioral guidance in the search tool (#36)', async () => {
+    const assembly = await harness.ctx.systemPrompt.assemble()
+    const usage = assembly.sections.find(section => section.name === 'knowledge:usage')
+    expect(usage?.text).toBe('Available knowledge bases: primary, foreign.')
+    expect(usage?.text).not.toContain('extraQueries')
+    expect(usage?.text).not.toContain('proactively')
+  })
+
+  it('can suppress the usage section while knowledge_search remains usable (#36)', async () => {
+    await harness.knowledge.setConfig({ injectUsagePrompt: false })
+    const assembly = await harness.ctx.systemPrompt.assemble()
+    expect(assembly.sections.find(section => section.name === 'knowledge:usage')?.text ?? '').toBe('')
+    expect(harness.knowledge.getConfig().autoRetrieve).toBe(true)
+    const result = await execute(harness.ctx, 'knowledge_search', { query: 'needle invoice', mode: 'lexical' })
+    expect(valueOf<{ hits: unknown[] }>(result).hits.length).toBeGreaterThan(0)
+  })
+
+  it('honors per-base prompt preferences independently of search scope (#36)', async () => {
+    await harness.knowledge.renameBase(harness.foreignBase.id, { config: { ...harness.foreignBase.config, injectUsagePrompt: false } })
+    const assembly = await harness.ctx.systemPrompt.assemble()
+    expect(assembly.sections.find(section => section.name === 'knowledge:usage')?.text).toBe('Available knowledge bases: primary.')
+    expect(harness.knowledge.enabledBases().map(base => base.id)).toContain(harness.foreignBase.id)
+    await harness.knowledge.renameBase(harness.foreignBase.id, { config: harness.foreignBase.config })
   })
 
   it('keeps legacy chunk pagination bounded and reports page continuation', async () => {

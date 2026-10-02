@@ -27,7 +27,7 @@ const REQUIRED_FILES = [
   'lib/knowledge/mineru-deployment.mjs',
   'lib/knowledge/embed-process.mjs',
   'lib/knowledge/rerank-process.mjs',
-  'lib/knowledge/ocr-worker.mjs',
+  'lib/knowledge/ocr-process.mjs',
   'lib/knowledge/pdf-parse-worker.mjs',
   'lib/tool-knowledge/index.js',
   'lib/client.js',
@@ -37,7 +37,7 @@ const REQUIRED_FILES = [
 // reason to reach a consumer. Listing them here means a later change to the
 // `files` allowlist cannot publish them by accident.
 const FORBIDDEN_PREFIXES = ['src/', 'tests/', 'node_modules/', '.git/', '.github/', 'docs/superpowers/', 'docs/issues/', 'docs/images/']
-const FORBIDDEN_FILES = ['lib/knowledge/embed-worker.mjs', 'lib/knowledge/embed-worker.mjs.map']
+const FORBIDDEN_FILES = ['lib/knowledge/embed-worker.mjs', 'lib/knowledge/embed-worker.mjs.map', 'lib/knowledge/ocr-worker.mjs', 'lib/knowledge/ocr-worker.mjs.map']
 
 function executable(name) {
   return process.platform === 'win32' ? `${name}.cmd` : name

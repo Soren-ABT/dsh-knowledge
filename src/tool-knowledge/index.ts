@@ -275,28 +275,17 @@ export function apply(ctx: Context): void {
     return document
   }
 
-  // Proactive-use guidance: the model decides whether to call a tool from its
-  // system prompt, so a deployment that never says "use the knowledge base"
-  // still gets knowledge_search called for facts that may live in imported
-  // material. The section renders only while knowledge is enabled AND at
-  // least one base exists (an empty/disabled deployment contributes nothing).
+  // Search guidance lives in the tool description. This optional section only
+  // supplies base names, which the tool schema cannot know at registration.
   ctx.systemPrompt.section({
     name: 'knowledge:usage',
     order: 110,
     text: () => {
       if (!knowledge.isEnabled()) return ''
-      const bases = scopedBases()
+      const bases = scopedBases().filter(base => knowledge.getConfigFor(base.id).injectUsagePrompt !== false)
       if (bases.length === 0) return ''
       const names = bases.map(base => base.name).join(', ')
-      return 'You have access to knowledge bases (' + names + '). '
-        + 'When the user asks about facts, internal documents, specific numbers, or anything that may '
-        + 'exist in their imported material (reports, manuals, notes, archived web pages) — even if they '
-        + 'never mention a knowledge base — proactively call `knowledge_search` before answering, and '
-        + 'quote the returned excerpts with their citations instead of answering from general knowledge alone. '
-        + 'Explicit phrasings such as 「查看/查询/运用 我的资料/知识/文档」, "look up / search my materials", '
-        + 'or "use the knowledge base" are direct requests to search. If a search returns nothing relevant, '
-        + 'say so plainly instead of guessing. For a hard-to-query question, submit 2–3 phrasings or a '
-        + 'translation through the `extraQueries` parameter to widen recall.'
+      return 'Available knowledge bases: ' + names + '.'
     },
   })
 
@@ -1243,12 +1232,12 @@ const injectedChunkIds = new Map<string, Set<string>>()
  * concurrent agent. Weak keys also avoid retaining disposed services. */
 const autoRetrieveLogStates = new WeakMap<KnowledgeService, Map<string, string>>()
 
-/** A folded auto-retrieve background message (user-role, plugin source). */
+/** A folded auto-retrieve background message with a producer-owned source. */
 export interface AutoRetrieveBackground {
   readonly message: {
     role: 'user'
     content: ReadonlyArray<{ type: 'text'; text: string }>
-    source: { kind: 'plugin'; plugin: 'dsh-knowledge' }
+    source: { kind: 'dsh-knowledge' }
     id: string
   }
   /** Commit throttle/dedup state only after the message was actually folded or injected. */
@@ -1528,7 +1517,7 @@ export async function buildAutoRetrieveMessage(
       message: {
         role: 'user',
         content: [{ type: 'text', text: background }],
-        source: { kind: 'plugin', plugin: 'dsh-knowledge' },
+        source: { kind: 'dsh-knowledge' },
         id: crypto.randomUUID(),
       },
       commit() {

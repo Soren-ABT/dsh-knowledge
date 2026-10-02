@@ -166,6 +166,7 @@ The first-token proactive path never launches a local reranker. A remote reranke
 - Optional semantic chunking merges similar adjacent paragraphs; an optional token ceiling further divides oversized chunks near sentence, comma, or whitespace boundaries.
 - Scanned PDFs, vector-only PDFs without a text layer, corrupt text layers, and per-glyph layouts can switch automatically to full-page OCR.
 - PaddleOCR PP-OCRv5 is the primary local recognizer, with Tesseract fallback. The pipeline also handles 1-bit JBIG2/CCITT-style scans.
+- OCR inference runs in a separate process: a native crash or timeout fails the document without killing DSH. Page scaling is chosen before allocation under a 64 MiB raster budget, and each pixmap is explicitly released. Missing pages and work-budget limits fail visibly instead of completing with truncated text. Reparse scans that older versions already indexed with missing pages.
 - Optional remote MinerU processing can recover formulas, tables, and complex layouts as Markdown. Without it, documents continue through the local parser and OCR path.
 - Settings offer an experimental managed MinerU Basic/ONNX setup. It uses an isolated Python environment and pinned model revision/checksums, with separate Hugging Face mirror and Python package-index settings. Managed inference still requires per-platform qualification; setup does not modify global Python packages or silently switch to cloud parsing. See the [MinerU self-hosting and verification guide](docs/mineru-self-hosted.md).
 
@@ -360,7 +361,7 @@ These constraints share one principle: fail closed on scope, fail soft on rankin
 
 ## Architecture
 
-One bundle mounts three plugin rows. Local embeddings and local reranking run in separate replaceable child processes; OCR remains in its own worker thread. Local inference failures remain outside the DSH host's main execution space.
+One bundle mounts three plugin rows. Local embeddings, local reranking, and OCR inference run in separate replaceable child processes. Synchronous mupdf page rendering remains in the host, bounded by page geometry and raster budgets.
 
 | Component | Platform | Responsibility |
 |---|---|---|
@@ -368,7 +369,7 @@ One bundle mounts three plugin rows. Local embeddings and local reranking run in
 | `tool-knowledge` | host | Registration and execution of the 14 model-facing tools |
 | `ui-knowledge` | client | Sidebar entry, workspace management panel, and same-origin API calls |
 | `embed-process` | child process | Local transformers.js embedding inference; strict IPC, staging/readiness probing, and recoverable native-model lifecycle |
-| `ocr-worker` | worker thread | mupdf page rendering plus PaddleOCR, OpenCV, and Tesseract recognition |
+| `ocr-process` | child process | PaddleOCR, OpenCV, and Tesseract recognition; serialized inference, timeout termination, and observed process exit |
 | `rerank-process.mjs` | child process | Local cross-encoder reranking, hard-timeout isolation, and process-level recovery |
 
 The `knowledge` storage domain contains `bases`, `documents`, and global configuration. Chunks and optional embeddings live in the plugin-owned SQLite store. Original file bytes live in the adjacent `knowledge-raw` directory.
@@ -456,12 +457,15 @@ Deployment defaults live in the `knowledge` row of `cordis.patch.yml`. The manag
 | `documentProcessorProvider` | `builtin` | `builtin`, cloud `mineru`, or self-hosted MinerU 4 V1 `mineru-local` (managed Basic is experimental) |
 | `mineruApiKey` | `''` | Required for MinerU mode |
 | `mineruApiHost` | `''` | Empty uses `https://mineru.net` |
-| `resumeInterruptedOnStartup` | `true` | Resume interrupted imports at startup |
+| `resumeInterruptedOnStartup` | `true` | Resume interrupted imports; automatic parse recovery stops after 3 attempts and retains sources for manual rebuild |
 | `autoRetrieve` | `true` | Search user messages proactively and inject relevant background |
+| `injectUsagePrompt` | `true` | List available base names per request; can be disabled in per-base advanced settings without disabling tools or auto-retrieval |
 | `autoRetrieveWeight` | `3` | Per-base proactive seat cap, range 0–5; `0` excludes the base |
 | `localModelCacheDir` | `''` | Empty uses `<DSH_HOME>/cache/dsh-knowledge/local-models` |
 | `localWorkerIdleTimeoutMs` | `60000` | Idle time before releasing local embedding-process sessions; `0` keeps them hot |
 | `chunkStorePath` | `''` | Empty uses `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
+
+`knowledge:usage` now supplies only base names; behavioral guidance stays in `knowledge_search`. Set `injectUsagePrompt: false` in deployment/global configuration or override it per base. Auto-retrieval messages use the producer-owned `dsh-knowledge` source accepted by DSH v4. Desktop panels dynamically avoid native window controls using Window Controls Overlay geometry and CSS titlebar environment variables, moving the close button, knowledge toggle, and toasts into the safe area together.
 
 Empty per-base fields inherit the global configuration. `localModelCacheDir`, `localWorkerIdleTimeoutMs`, and `chunkStorePath` are process-wide. API keys are stored as plain text on the local machine, so protect the profile data directory.
 

@@ -58,6 +58,7 @@ describe('resolveConfig', () => {
       mineruTier: 'basic',
       documentProcessingTimeoutMs: 1_800_000,
       structuredChunking: true,
+      injectUsagePrompt: true,
     })
   })
   it('applies runtime overrides', () => {
@@ -66,6 +67,15 @@ describe('resolveConfig', () => {
     expect(resolved.chunkSize).toBe(1000)
     expect(resolved.searchMode).toBe('hybrid')
     expect(resolved.rerankModel).toBe('jina-reranker-v2-base-multilingual')
+  })
+  it('persists and resolves the prompt switch independently of auto-retrieval', () => {
+    expect(configOverridesSchema.parse({ injectUsagePrompt: false })).toEqual({ injectUsagePrompt: false })
+    expect(baseConfigSchema.parse({ injectUsagePrompt: false })).toEqual({ injectUsagePrompt: false })
+    const global = resolveConfig(base, { injectUsagePrompt: false })
+    expect(global.injectUsagePrompt).toBe(false)
+    expect(global.autoRetrieve).toBe(true)
+    expect(resolveConfigFor(base, { injectUsagePrompt: false }, { injectUsagePrompt: true }).injectUsagePrompt).toBe(true)
+    expect(() => configOverridesSchema.parse({ injectUsagePrompt: 'false' })).toThrow()
   })
   it('keeps the managed MinerU package index global and defaults to public PyPI', () => {
     expect(resolveConfig(base, {}).mineruPythonIndexUrl).toBe('https://pypi.org/simple')

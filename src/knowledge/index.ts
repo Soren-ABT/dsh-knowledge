@@ -518,6 +518,13 @@ export class KnowledgeService extends Service {
         }
       } catch (error) {
         this.ctx.logger.warn(`knowledge: interrupted import recovery failed (${processorErrorCode(error)})`)
+        // A settled recovery failure must not be selected again on every boot.
+        // Keep raw sources/chunks for a manual rebuild, but leave the row failed.
+        const current = store.getDocument(id)
+        if (current !== undefined) {
+          await store.putDocument({ ...current, incomplete: false, embeddingError: processorErrorMessage(error),
+            errorCode: current.rawText === undefined ? 'parse_failed' : 'embedding_provider', updatedAt: Date.now() })
+        }
       }
     }
   }

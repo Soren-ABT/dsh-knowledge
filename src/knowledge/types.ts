@@ -79,6 +79,8 @@ export interface BaseConfig {
   readonly imageCaptionApiKey?: string
   /** Whether this base participates in proactive retrieval. */
   readonly autoRetrieve?: boolean
+  /** Include this base in the optional system-prompt base list. */
+  readonly injectUsagePrompt?: boolean
   /**
    * Auto-retrieve weight (0–5, default 3): how many chunks of THIS base may
    * enter a proactive-retrieval injection. 0 excludes the base entirely;
@@ -321,6 +323,8 @@ export interface KnowledgeConfig {
   readonly resumeInterruptedOnStartup: boolean
   /** Proactive auto-retrieval on every user message. */
   readonly autoRetrieve: boolean
+  /** Include the available-base list in the system prompt (default true). */
+  readonly injectUsagePrompt?: boolean
   /** Auto-retrieve seat cap per base (0–5, 0 = excluded; see BaseConfig). */
   readonly autoRetrieveWeight: number
   /** Local-model worker idle timeout in ms (0 = never release; see Config). */

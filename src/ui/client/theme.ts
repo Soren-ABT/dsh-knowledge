@@ -114,6 +114,7 @@ body, .kb-panel-in {
 export const style = {
   panel: {
     position: 'fixed', inset: 0, zIndex: 300, display: 'flex', flexDirection: 'column',
+    top: 'max(var(--kb-titlebar-inset, 0px), calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 0px)))',
     background: C.bg, color: C.text, pointerEvents: 'auto',
   } as CSSProperties,
   header: {

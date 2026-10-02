@@ -34,6 +34,10 @@ export function processorErrorCode(error: unknown): string {
 /** Do not copy upstream response bodies/URLs/tokens into persisted diagnostics. */
 export function processorErrorMessage(error: unknown): string {
   const code = processorErrorCode(error)
+  if (code === 'ocr_incomplete') return 'OCR did not process every required page; no partial text was indexed. Split the PDF or switch to MinerU, then rebuild.'
+  if (['ocr_process_crash', 'ocr_timeout', 'ocr_failed'].includes(code)) return `Local OCR failed (${code}); the DSH host remains running. Check the OCR model installation or switch to MinerU, then rebuild.`
+  if (code === 'ocr_busy') return 'Local OCR queue is full; retry the document later.'
+  if (code === 'recovery_limit_reached') return 'Automatic document recovery stopped after 3 attempts; check the source and processor settings, then rebuild manually.'
   if (code === 'parse_failed') return 'MinerU extraction failed (provider unavailable); local parsing failed (parse_failed); check the document processor settings'
   return `document processor failed (${code}); check processor configuration and service health`
 }
@@ -66,9 +70,14 @@ export async function processDocumentFile(input: ProcessFileInput): Promise<Proc
     return { text: parsed.text, parsed, processing: { ...matching.artifact, reused: true } }
   }
   if (matching?.errorCode === 'submission_unknown') throw Object.assign(new Error('previous submission outcome is unknown; explicitly reparse to retry'), { code: 'submission_unknown' })
+  if (matching !== undefined && (matching.startupAttempts ?? 0) >= 3) {
+    await artifacts.saveJob({ ...matching, state: 'failed', errorCode: 'recovery_limit_reached', progress: { stage: 'failed' }, updatedAt: Date.now() })
+    throw Object.assign(new Error('automatic document recovery limit reached; rebuild manually'), { code: 'recovery_limit_reached' })
+  }
   let job: ProcessingJobRecord = {
     version: 1, baseId, documentId, sourceHash, fingerprint, state: 'running',
     progress: { stage: 'checking' }, updatedAt: Date.now(),
+    startupAttempts: input.resume ? (matching?.startupAttempts ?? 0) + 1 : 0,
   }
   await artifacts.saveJob(job)
   let progressWrite: Promise<void> = Promise.resolve()
