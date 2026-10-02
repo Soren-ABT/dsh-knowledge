@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, rm, readdir, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, readdir, symlink, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, parse } from 'node:path'
 import type { IncomingMessage } from 'node:http'
@@ -9,7 +9,7 @@ import { requireLocalManagement } from '../src/knowledge/mineru-management-secur
 import { MINERU_BASIC_FILES } from '../src/knowledge/mineru-manifest.js'
 
 const temporary: string[] = []
-async function fixture() { const root = await mkdtemp(join(tmpdir(), 'mineru-plan-')); temporary.push(root); return root }
+async function fixture() { const root = await mkdtemp(join(await realpath(tmpdir()), 'mineru-plan-')); temporary.push(root); return root }
 afterEach(async () => { await Promise.all(temporary.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 const bytes = Buffer.from('fixture')
 const file = { path: 'Layout/model.onnx', bytes: bytes.length, algorithm: 'sha256' as const, digest: createHash('sha256').update(bytes).digest('hex') }

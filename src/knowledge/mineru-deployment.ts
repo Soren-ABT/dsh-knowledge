@@ -152,14 +152,13 @@ export class MineruDeployment {
     const signal = this.controller.signal
     try { await this.lock(plan.root); signal.throwIfAborted() }
     catch (error) {
-      this.state.active = false
       this.failure(error, signal)
       // Do not overwrite another process's state when lock acquisition failed.
       if (this.releaseLock) {
         try {
           if (previousState.phase === 'ready' && previousState.root && previousEnvironmentId) {
             const operationError = this.state.error
-            this.state = { ...previousState, active: false, service: 'stopped', error: operationError }
+            this.state = { ...previousState, active: true, service: 'stopped', error: operationError }
             this.environmentId = previousEnvironmentId
             if (sameDeploymentPath(previousState.root, plan.root)) await this.persist(true)
           } else await this.persist(true)
@@ -171,11 +170,11 @@ export class MineruDeployment {
         }
       } else if (error instanceof DeploymentError && error.code === 'installation_locked') {
         if (previousState.phase === 'ready' && previousState.root && previousEnvironmentId) {
-          this.state = { ...previousState, active: false, service: 'stopped', error: this.state.error }
+          this.state = { ...previousState, active: true, service: 'stopped', error: this.state.error }
           this.environmentId = previousEnvironmentId
         } else this.state.phase = 'interrupted'
       }
-      this.controller = undefined
+      this.state.active = false; this.controller = undefined
       throw error
     }
     this.plans.delete(planId)
@@ -213,7 +212,9 @@ export class MineruDeployment {
       try { await probeService?.stop() } catch { stopped = false; this.state.error = { code: 'shutdown_failed', message: 'Owned process may still be running; installation remains locked.' } }
       if (!committed && previousState.phase === 'ready' && previousState.root && previousEnvironmentId) {
         const operationError = this.state.error ?? { code: 'preparation_failed', message: 'Preparation failed; the previously verified installation remains available.' }
-        this.state = { ...previousState, phase: stopped ? 'ready' : 'interrupted', active: false, service: 'stopped', endpoint: undefined, error: operationError }
+        // Restoring the usable candidate does not finish the operation: keep
+        // callers busy until its state is saved and the owned lock is released.
+        this.state = { ...previousState, phase: stopped ? 'ready' : 'interrupted', active: true, service: 'stopped', endpoint: undefined, error: operationError }
         this.environmentId = previousEnvironmentId
         if (sameDeploymentPath(previousState.root, plan.root)) {
           try { await this.persist(true) } catch { this.state.error = { code: 'state_write_failed', message: 'The prior verified installation remains in memory, but its saved state could not be refreshed.' } }

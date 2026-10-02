@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat, rename, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -12,17 +12,23 @@ import { MINERU_MODEL_DIRECTORY } from '../src/knowledge/mineru-manifest.js'
 import { runManagedCommand, runtimeEnvironment, type ManagedService } from '../src/knowledge/mineru-runtime.js'
 import type { MineruDeploymentPlan } from '../src/knowledge/mineru-deployment-types.js'
 
+vi.mock('node:fs/promises', async importOriginal => {
+  const original = await importOriginal<typeof import('node:fs/promises')>()
+  return { ...original, rename: vi.fn(original.rename) }
+})
+
 const directories: string[] = []
 const managers: MineruDeployment[] = []
 afterEach(async () => {
   await Promise.all(managers.splice(0).map(manager => manager.dispose()))
   await Promise.all(directories.splice(0).map(root => rm(root, { recursive: true, force: true })))
   vi.unstubAllEnvs()
+  vi.mocked(rename).mockRestore()
 })
 const bytes = Buffer.from('verified fixture bytes')
 const file = { path: 'Layout/model.onnx', bytes: bytes.length, digest: createHash('sha256').update(bytes).digest('hex'), algorithm: 'sha256' as const }
 async function fixture(): Promise<MineruDeploymentPlan> {
-  const parent = await mkdtemp(join(tmpdir(), 'mineru-managed-')); directories.push(parent)
+  const parent = await mkdtemp(join(await realpath(tmpdir()), 'mineru-managed-')); directories.push(parent)
   return createDeploymentPlan({ root: join(parent, 'install') }, { files: [file] })
 }
 const modelPath = (plan: MineruDeploymentPlan) => join(plan.root, 'models', MINERU_MODEL_DIRECTORY, file.path)
@@ -150,6 +156,36 @@ describe('durable preparation lifecycle', () => {
     vi.mocked(deps.prepare).mockRejectedValueOnce(new DeploymentError('runtime_command_failed', 'candidate failed'))
     await manager.prepare(plan.id)
     expect(await settled(manager)).toMatchObject({ phase: 'ready', root: plan.root, service: 'stopped', error: { code: 'runtime_command_failed' } })
+    await manager.start()
+    expect(await settled(manager)).toMatchObject({ phase: 'ready', service: 'running' })
+  })
+  it('keeps failed re-preparation busy until saved-state cleanup and unlock finish', async () => {
+    const { manager, plan, deps } = await managerFixture()
+    await manager.prepare(plan.id); await settled(manager)
+    await manager.preflight({ root: plan.root })
+    vi.mocked(deps.prepare).mockRejectedValueOnce(new DeploymentError('runtime_command_failed', 'candidate failed'))
+    let enterWrite!: () => void
+    let releaseWrite!: () => void
+    const entered = new Promise<void>(resolve => { enterWrite = resolve })
+    const released = new Promise<void>(resolve => { releaseWrite = resolve })
+    const original = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    vi.mocked(rename).mockImplementationOnce(async (from, to) => {
+      enterWrite(); await released
+      return original.rename(from, to)
+    })
+    await manager.prepare(plan.id)
+    try {
+      await entered
+      expect(await manager.status()).toMatchObject({ phase: 'ready', active: true, error: { code: 'runtime_command_failed' } })
+      await expect(manager.start()).rejects.toMatchObject({ code: 'busy' })
+      await expect(manager.preflight({ root: plan.root })).rejects.toMatchObject({ code: 'busy' })
+    } finally {
+      releaseWrite()
+      // Wait for cleanup itself, even if the idle-state assertion fails.
+      await manager.stop()
+    }
+    expect(await manager.status()).toMatchObject({ phase: 'ready', active: false })
+    await expect(stat(join(plan.root, '.operation.lock'))).rejects.toMatchObject({ code: 'ENOENT' })
     await manager.start()
     expect(await settled(manager)).toMatchObject({ phase: 'ready', service: 'running' })
   })
