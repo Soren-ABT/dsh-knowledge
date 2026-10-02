@@ -37,26 +37,56 @@ function run(executable, args, options = {}) {
   return result.stdout ?? ''
 }
 
-async function waitForKnowledge(port, logs) {
-  const deadline = Date.now() + STARTUP_TIMEOUT_MS
+export async function waitForKnowledge(port, child, logs, options = {}) {
+  const {
+    timeoutMs = STARTUP_TIMEOUT_MS,
+    stableMs = 1_000,
+    pollMs = 250,
+    fetchImpl = fetch,
+  } = options
+  const deadline = Date.now() + timeoutMs
   let lastError = ''
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/knowledge/bases`, { signal: AbortSignal.timeout(2_000) })
-      const body = await response.text()
-      if (response.ok) {
-        const parsed = JSON.parse(body)
-        if (parsed?.ok === true && Array.isArray(parsed.value)) return
-        lastError = `unexpected response: ${body.slice(0, 500)}`
-      } else {
-        lastError = `HTTP ${response.status}: ${body.slice(0, 500)}`
-      }
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error)
+  let readySince
+  let spawnError
+  const onError = error => { spawnError = error }
+  const assertRunning = () => {
+    if (spawnError !== undefined) throw new Error(`DSH could not start: ${spawnError.message}\n\n${logs()}`)
+    if (child.exitCode !== null || child.signalCode != null) {
+      throw new Error(`DSH exited during startup (${child.exitCode ?? child.signalCode})\n\n${logs()}`)
     }
-    await new Promise(resolvePromise => setTimeout(resolvePromise, 500))
   }
-  throw new Error(`DSH knowledge route did not become ready: ${lastError}\n\n${logs()}`)
+  child.on('error', onError)
+  try {
+    while (Date.now() < deadline) {
+      assertRunning()
+      let ready = false
+      try {
+        const response = await fetchImpl(`http://127.0.0.1:${port}/knowledge/bases`, { signal: AbortSignal.timeout(2_000) })
+        const body = await response.text()
+        if (response.ok) {
+          const parsed = JSON.parse(body)
+          ready = parsed?.ok === true && Array.isArray(parsed.value)
+          if (!ready) lastError = `unexpected response: ${body.slice(0, 500)}`
+        } else {
+          lastError = `HTTP ${response.status}: ${body.slice(0, 500)}`
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error)
+      }
+      assertRunning()
+      if (ready) {
+        readySince ??= Date.now()
+        if (Date.now() - readySince >= stableMs) return
+      } else {
+        readySince = undefined
+      }
+      await new Promise(resolvePromise => setTimeout(resolvePromise, Math.min(pollMs, Math.max(0, deadline - Date.now()))))
+    }
+    assertRunning()
+    throw new Error(`DSH knowledge route did not become ready: ${lastError}\n\n${logs()}`)
+  } finally {
+    child.removeListener('error', onError)
+  }
 }
 
 async function stopProcess(child) {
@@ -103,6 +133,16 @@ async function main() {
     // native build approvals — writing a workspace one directory above the
     // profile would not affect the pnpm command whose cwd is profiles/web.
     run(dsh, [...dshPrefix, '--profile', 'web', '--dump-config'], { env })
+    // The pinned public CLI checks for HMR before its dynamic fallback has
+    // finished loading. Enable its watch-only service during normal boot in
+    // this temporary profile so the smoke can reach the installed plugin.
+    await writeFile(join(profiles, 'web', 'cordis.patch.yml'), [
+      '- id: hmr',
+      '  disabled: false',
+      '  config:',
+      '    root: []',
+      '',
+    ].join('\n'))
     await writeFile(join(profiles, 'web', 'pnpm-workspace.yaml'), [
       'packages:',
       '  - .',
@@ -140,7 +180,7 @@ async function main() {
     child.stdout?.on('data', chunk => { output += chunk.toString() })
     child.stderr?.on('data', chunk => { output += chunk.toString() })
     child.once('error', error => { output += `\nspawn error: ${error.message}` })
-    await waitForKnowledge(port, () => output)
+    await waitForKnowledge(port, child, () => output)
     console.log(`packed DSH smoke passed at http://127.0.0.1:${port}/knowledge/bases`)
     await stopProcess(child)
     const uninstall = await runSupervised(dsh, [...dshPrefix, 'plugin', '--profile', 'web', 'remove', 'dsh-knowledge'], {
