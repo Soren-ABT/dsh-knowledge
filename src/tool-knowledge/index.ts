@@ -13,9 +13,70 @@ import type {} from '../knowledge/index.js'
 import { estimateContextTokens, serializeContextWindow } from '../knowledge/context-protocol.js'
 import type { KnowledgeService } from '../knowledge/index.js'
 import type { ContextWindow, SearchHit, SearchResult } from '../knowledge/types.js'
+import type { DocumentEvidence, DocumentProcessingInfo, DocumentSourceSpan } from '../knowledge/processing-types.js'
+import { sourceSpanLabel } from '../knowledge/source-spans.js'
 
 /** Hard ceiling for the complete model-visible native search rendering. */
 export const SEARCH_RENDER_MAX_TOKENS = 8192
+
+const blockTypes = ['text', 'heading', 'table', 'equation', 'image', 'caption', 'code', 'list', 'unknown'] as const
+
+type MutableOutput<T> = T extends readonly (infer U)[] ? MutableOutput<U>[]
+  : T extends object ? { -readonly [K in keyof T]: MutableOutput<T[K]> } : T
+
+/** Tool schemas use mutable JSON arrays; keep immutable service snapshots isolated. */
+function toolOutput<T>(value: T): MutableOutput<T> {
+  return structuredClone(value) as MutableOutput<T>
+}
+
+const sourceBoxSchema = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    coordinateSpace: { type: 'string', enum: ['normalized'], required: true },
+    x0: { type: 'number', required: true }, y0: { type: 'number', required: true },
+    x1: { type: 'number', required: true }, y1: { type: 'number', required: true },
+  },
+} as const
+
+const sourceSpansSchema = {
+  type: 'array', items: {
+    type: 'object', additionalProperties: false,
+    properties: {
+      revision: { type: 'string', required: true }, blockId: { type: 'string', required: true },
+      blockType: { type: 'string', enum: blockTypes, required: true },
+      chunkStart: { type: 'number', required: true }, chunkEnd: { type: 'number', required: true },
+      blockStart: { type: 'number', required: true }, blockEnd: { type: 'number', required: true },
+      pageIndex: { type: 'number' }, bbox: sourceBoxSchema,
+      assetIds: { type: 'array', items: { type: 'string' } },
+    },
+  },
+} as const
+
+const processingInfoSchema = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    revision: { type: 'string', required: true }, artifactId: { type: 'string', required: true },
+    sourceHash: { type: 'string', required: true }, provider: { type: 'string', enum: ['builtin', 'mineru', 'mineru-local'], required: true },
+    processorVersion: { type: 'string' }, optionsFingerprint: { type: 'string', required: true },
+    parsedAt: { type: 'number', required: true }, completeness: { type: 'string', enum: ['complete', 'partial', 'unknown'], required: true },
+    pageCount: { type: 'number' }, processedPages: { type: 'array', items: { type: 'number' } },
+    warnings: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
+      code: { type: 'string', required: true }, message: { type: 'string', required: true },
+    } } },
+    reused: { type: 'boolean' },
+  },
+} as const
+
+const parsedBlockSchema = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true }, index: { type: 'number', required: true },
+    type: { type: 'string', enum: blockTypes, required: true }, text: { type: 'string', required: true },
+    textStart: { type: 'number', required: true }, textEnd: { type: 'number', required: true },
+    pageIndex: { type: 'number' }, heading: { type: 'string' }, bbox: sourceBoxSchema,
+    parentId: { type: 'string' }, assetIds: { type: 'array', items: { type: 'string' } },
+  },
+} as const
 
 const contextChunkSchema = {
   type: 'object',
@@ -29,6 +90,7 @@ const contextChunkSchema = {
     textEnd: { type: 'number', required: true },
     truncatedStart: { type: 'boolean', required: true },
     truncatedEnd: { type: 'boolean', required: true },
+    sourceSpans: sourceSpansSchema,
   },
 } as const
 
@@ -80,7 +142,8 @@ export function renderKnowledgeDocumentPage(value: {
   readMode?: 'page' | 'context'
   title: string
   chunkCount: number
-  chunks: Array<{ index: number; heading?: string; text: string }>
+  chunks: Array<{ index: number; heading?: string; text: string; sourceSpans?: readonly DocumentSourceSpan[] }>
+  processing?: DocumentProcessingInfo
   truncated: boolean
   nextChunkOffset?: number
   contextWindow?: ContextWindow
@@ -94,8 +157,23 @@ export function renderKnowledgeDocumentPage(value: {
       + more
   }
   return `document "${value.title}" (${value.chunkCount} chunks; returned ${value.chunks.length})\n`
-    + value.chunks.map(chunk => `[chunk ${chunk.index}${chunk.heading !== undefined ? `; ${chunk.heading}` : ''}]\n${chunk.text}`).join('\n\n')
+    + (value.processing ? `[processor ${value.processing.provider}; completeness=${value.processing.completeness}]\n` : '')
+    + value.chunks.map(chunk => `[chunk ${chunk.index}${chunk.heading !== undefined ? `; ${chunk.heading}` : ''}]\n${sourceSpanLabel(chunk.sourceSpans)}${chunk.text}`).join('\n\n')
     + (value.truncated ? `\n\n[truncated; continue with chunkOffset=${value.nextChunkOffset}]` : '\n\n[complete]')
+}
+
+export function renderKnowledgeEvidence(value: DocumentEvidence): string {
+  const processing = value.processing
+  const metadata = processing === undefined ? '[no structured processing metadata]' : `[processor=${processing.provider}; completeness=${processing.completeness}; revision=${safeLabelValue(processing.revision)}]`
+  const warnings = processing?.warnings.map(warning => `[warning ${safeLabelValue(warning.code)}: ${safeLabelValue(warning.message)}]`).join('\n') ?? ''
+  const blocks = value.blocks.map(block => {
+    const page = block.pageIndex === undefined ? 'page unknown' : `page ${block.pageIndex + 1} (pageIndex=${block.pageIndex})`
+    const region = block.bbox === undefined ? '' : `; normalized region=${[block.bbox.x0, block.bbox.y0, block.bbox.x1, block.bbox.y1].join(',')}`
+    const assets = block.assetIds?.length ? `; assets=${block.assetIds.map(safeLabelValue).join(',')}` : ''
+    return `[${page}; block=${safeLabelValue(block.id)}; type=${block.type}${region}${assets}]\n${block.text}`
+  }).join('\n\n')
+  const continuation = value.truncated && value.next ? `[truncated; continue knowledge_read_evidence with documentId=${JSON.stringify(value.documentId)}, revision=${JSON.stringify(processing?.revision)}, blockId=${JSON.stringify(value.next.blockId)}, blockOffset=${value.next.blockOffset}]` : '[complete evidence selection]'
+  return [`document "${safeLabelValue(value.title)}"`, metadata, warnings, blocks, continuation].filter(Boolean).join('\n\n')
 }
 
 export function renderKnowledgeReadResult(value: {
@@ -163,7 +241,7 @@ export function renderKnowledgeSearchResult(
     const fixedLineTokens = estimateContextTokens(`${separator}${label}`)
     const evidenceBudget = SEARCH_RENDER_MAX_TOKENS - usedTokens - fixedLineTokens
     if (evidenceBudget <= 0) break
-    const canonical = hit.contextWindow !== undefined ? serializeContextWindow(hit.contextWindow) : hit.text
+    const canonical = hit.contextWindow !== undefined ? serializeContextWindow(hit.contextWindow) : `${sourceSpanLabel(hit.sourceSpans)}${hit.text}`
     const excerpt = estimateContextTokens(canonical) <= evidenceBudget
       ? canonical
       : clipAroundQuery(canonical, value.query, evidenceBudget)
@@ -197,28 +275,17 @@ export function apply(ctx: Context): void {
     return document
   }
 
-  // Proactive-use guidance: the model decides whether to call a tool from its
-  // system prompt, so a deployment that never says "use the knowledge base"
-  // still gets knowledge_search called for facts that may live in imported
-  // material. The section renders only while knowledge is enabled AND at
-  // least one base exists (an empty/disabled deployment contributes nothing).
+  // Search guidance lives in the tool description. This optional section only
+  // supplies base names, which the tool schema cannot know at registration.
   ctx.systemPrompt.section({
     name: 'knowledge:usage',
     order: 110,
     text: () => {
       if (!knowledge.isEnabled()) return ''
-      const bases = scopedBases()
+      const bases = scopedBases().filter(base => knowledge.getConfigFor(base.id).injectUsagePrompt !== false)
       if (bases.length === 0) return ''
       const names = bases.map(base => base.name).join(', ')
-      return 'You have access to knowledge bases (' + names + '). '
-        + 'When the user asks about facts, internal documents, specific numbers, or anything that may '
-        + 'exist in their imported material (reports, manuals, notes, archived web pages) — even if they '
-        + 'never mention a knowledge base — proactively call `knowledge_search` before answering, and '
-        + 'quote the returned excerpts with their citations instead of answering from general knowledge alone. '
-        + 'Explicit phrasings such as 「查看/查询/运用 我的资料/知识/文档」, "look up / search my materials", '
-        + 'or "use the knowledge base" are direct requests to search. If a search returns nothing relevant, '
-        + 'say so plainly instead of guessing. For a hard-to-query question, submit 2–3 phrasings or a '
-        + 'translation through the `extraQueries` parameter to widen recall.'
+      return 'Available knowledge bases: ' + names + '.'
     },
   })
 
@@ -269,23 +336,23 @@ export function apply(ctx: Context): void {
         additionalProperties: false,
         properties: {
           query: { type: 'string', required: true },
-          mode: { type: 'string', required: true },
+          mode: { type: 'string', enum: ['auto', 'hybrid', 'vector', 'lexical'], required: true },
           scoreKind: { type: 'string', enum: ['lexical_relevance', 'vector_similarity', 'rrf', 'rerank'] },
           retrieval: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              requestedMode: { type: 'string', required: true },
-              effectiveMode: { type: 'string', required: true },
+              requestedMode: { type: 'string', enum: ['auto', 'hybrid', 'vector', 'lexical'], required: true },
+              effectiveMode: { type: 'string', enum: ['auto', 'hybrid', 'vector', 'lexical'], required: true },
               lexical: {
-                type: 'object', additionalProperties: false,
+                type: 'object', additionalProperties: false, required: true,
                 properties: {
                   attempted: { type: 'boolean', required: true }, succeeded: { type: 'boolean', required: true },
                   returnedCount: { type: 'number', required: true }, errorCode: { type: 'string' },
                 },
               },
               vector: {
-                type: 'object', additionalProperties: false,
+                type: 'object', additionalProperties: false, required: true,
                 properties: {
                   attempted: { type: 'boolean', required: true }, succeeded: { type: 'boolean', required: true },
                   returnedCount: { type: 'number', required: true }, errorCode: { type: 'string' },
@@ -299,7 +366,7 @@ export function apply(ctx: Context): void {
             type: 'object',
             additionalProperties: false,
             properties: {
-              configured: { type: 'boolean', required: true },
+              configured: { type: 'boolean', const: true, required: true },
               provider: { type: 'string', enum: ['local', 'remote'], required: true },
               model: { type: 'string', required: true },
               status: { type: 'string', enum: ['applied', 'not_needed', 'skipped', 'degraded'], required: true },
@@ -311,10 +378,10 @@ export function apply(ctx: Context): void {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  code: { type: 'string', required: true },
+                  code: { type: 'string', enum: ['model_not_downloaded', 'model_checking', 'model_unhealthy', 'unsupported_model', 'timeout', 'invalid_response', 'runtime_error', 'process_crash', 'circuit_open', 'busy', 'provider_error'], required: true },
                   message: { type: 'string', required: true },
                   retryable: { type: 'boolean', required: true },
-                  action: { type: 'string' },
+                  action: { type: 'string', enum: ['download_model', 'run_self_test', 'check_config', 'retry_later'] },
                 },
               },
             },
@@ -334,6 +401,8 @@ export function apply(ctx: Context): void {
                 heading: { type: 'string' },
                 index: { type: 'number', required: true },
                 text: { type: 'string', required: true },
+                sourceSpans: sourceSpansSchema,
+                processingRevision: { type: 'string' },
                 contextWindow: contextWindowSchema,
                 siblingContext: { type: 'string', description: 'Neighbouring chunks (±siblingChunks) around this hit in the same document, in reading order — the full paragraph the excerpt sits in.' },
                 score: { type: 'number', required: true },
@@ -381,7 +450,7 @@ export function apply(ctx: Context): void {
       })
       // Traceable citations: quote blocks + source line, one per top hit —
       // the model can quote them verbatim so answers stay grounded.
-      return { ...value, citations: value.hits.map(hit => citationOf(hit)) }
+      return toolOutput({ ...value, citations: value.hits.map(hit => citationOf(hit)) })
     },
   }))
 
@@ -740,6 +809,7 @@ export function apply(ctx: Context): void {
           nextChunkOffset: { type: 'number' },
           truncated: { type: 'boolean', required: true },
           contextWindow: contextWindowSchema,
+          processing: processingInfoSchema,
           chunks: {
             type: 'array',
             required: true,
@@ -750,6 +820,7 @@ export function apply(ctx: Context): void {
                 index: { type: 'number', required: true },
                 heading: { type: 'string' },
                 text: { type: 'string', required: true },
+                sourceSpans: sourceSpansSchema,
               },
             },
           },
@@ -794,21 +865,23 @@ export function apply(ctx: Context): void {
           result.contextWindow.anchor,
           ...result.contextWindow.after,
         ]
-        return {
+        return toolOutput({
           readMode: 'context' as const,
           id: result.id,
           title: result.title,
           sourceType: result.sourceType,
           charCount: result.charCount,
           chunkCount: result.chunkCount,
+          ...(doc.processing !== undefined ? { processing: doc.processing } : {}),
           truncated: result.contextWindow.hasMoreBefore || result.contextWindow.hasMoreAfter,
           chunks: ordered.map(chunk => ({
             index: chunk.index,
             ...(chunk.heading !== undefined ? { heading: chunk.heading } : {}),
             text: chunk.text,
+            ...(chunk.sourceSpans !== undefined ? { sourceSpans: chunk.sourceSpans } : {}),
           })),
           contextWindow: result.contextWindow,
-        }
+        })
       }
 
       const offset = clampToolInt(args.chunkOffset, 0, doc.chunkCount, 0)
@@ -817,21 +890,70 @@ export function apply(ctx: Context): void {
       // document's entire chunk collection before slicing it in JavaScript.
       const chunks = knowledge.listChunks(args.documentId, limit, offset)
       const nextChunkOffset = offset + chunks.length
-      return {
+      return toolOutput({
         readMode: 'page' as const,
         id: doc.id,
         title: doc.title,
         sourceType: doc.sourceType,
         charCount: doc.charCount,
         chunkCount: doc.chunkCount,
+        ...(doc.processing !== undefined ? { processing: doc.processing } : {}),
         ...(nextChunkOffset < doc.chunkCount ? { nextChunkOffset } : {}),
         truncated: nextChunkOffset < doc.chunkCount,
         chunks: chunks.map(chunk => ({
           index: chunk.index,
           ...(chunk.heading !== undefined ? { heading: chunk.heading } : {}),
           text: chunk.text,
+          ...(chunk.sourceSpans !== undefined ? { sourceSpans: chunk.sourceSpans } : {}),
         })),
-      }
+      })
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'knowledge_read_evidence',
+    description: 'Read bounded structured document evidence: blocks, zero-based page indices, normalized block regions, and safe asset metadata. '
+      + 'Use after search when table, formula, image, or page provenance matters. maxTokens bounds text; follow next.blockId and next.blockOffset to continue long blocks. '
+      + 'textStart/textEnd locate the returned excerpt in canonical text. Pass the processing revision when following a citation or continuation. Never interpret extracted HTML as executable content.',
+    parameters: {
+      documentId: { type: 'string', required: true },
+      pageIndex: { type: 'number', description: 'Optional zero-based page filter.' },
+      revision: { type: 'string', description: 'Expected processing revision from a source span or previous evidence response. Rejects stale citations.' },
+      blockId: { type: 'string', description: 'Start at this block (also used with next.blockOffset for continuation).' },
+      blockOffset: { type: 'number', description: 'UTF-16 offset into the starting block (default 0); requires blockId.' },
+      maxTokens: { type: 'number', description: 'Text budget (default 1600, range 128-4096).' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          documentId: { type: 'string', required: true }, title: { type: 'string', required: true },
+          processing: processingInfoSchema,
+          blocks: { type: 'array', required: true, items: parsedBlockSchema },
+          assets: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
+            id: { type: 'string', required: true }, path: { type: 'string', required: true },
+            mimeType: { type: 'string', required: true }, byteLength: { type: 'number', required: true }, sha256: { type: 'string', required: true },
+          } } },
+          estimatedTokens: { type: 'number', required: true }, truncated: { type: 'boolean', required: true },
+          next: { type: 'object', additionalProperties: false, properties: { blockId: { type: 'string', required: true }, blockOffset: { type: 'number', required: true } } },
+        },
+      },
+      render: (_args, value: DocumentEvidence) => [{ type: 'text', text: renderKnowledgeEvidence(value) }],
+    },
+    async execute(args) {
+      requireDocumentEnabled(args.documentId)
+      assertToolRange('pageIndex', args.pageIndex, 0, Number.MAX_SAFE_INTEGER)
+      assertToolRange('blockOffset', args.blockOffset, 0, Number.MAX_SAFE_INTEGER)
+      assertToolRange('maxTokens', args.maxTokens, 128, 4096)
+      if (args.blockId !== undefined && args.blockId.trim().length === 0) throw new Error('blockId must not be empty')
+      if (args.blockOffset !== undefined && args.blockId === undefined) throw new Error('blockOffset requires blockId')
+      return toolOutput(await knowledge.readDocumentEvidence(args.documentId, {
+        ...(args.revision !== undefined ? { revision: args.revision } : {}),
+        ...(args.pageIndex !== undefined ? { pageIndex: args.pageIndex } : {}),
+        ...(args.blockId !== undefined ? { blockId: args.blockId } : {}),
+        ...(args.blockOffset !== undefined ? { blockOffset: args.blockOffset } : {}),
+        ...(args.maxTokens !== undefined ? { maxTokens: args.maxTokens } : {}),
+      }))
     },
   }))
 
@@ -843,6 +965,7 @@ export function apply(ctx: Context): void {
     parameters: {
       baseId: { type: 'string', required: true, description: 'Knowledge base id (used for validation).' },
       documentId: { type: 'string', required: true, description: 'Document (or directory) id to reindex.' },
+      mode: { type: 'string', enum: ['reparse', 'rechunk'], description: 'reparse reruns the configured parser; rechunk reuses a compatible stored structured result. Omit for automatic reuse.' },
     },
     output: {
       schema: {
@@ -863,7 +986,7 @@ export function apply(ctx: Context): void {
       if (doc.baseId !== args.baseId) {
         throw new Error(`document "${doc.title}" does not belong to knowledge base ${args.baseId}`)
       }
-      const reindexed = await knowledge.reindexDocument(args.documentId)
+      const reindexed = await knowledge.reindexDocument(args.documentId, { mode: args.mode })
       return { id: reindexed.id, title: reindexed.title, chunkCount: reindexed.chunkCount }
     },
   }))
@@ -1109,12 +1232,12 @@ const injectedChunkIds = new Map<string, Set<string>>()
  * concurrent agent. Weak keys also avoid retaining disposed services. */
 const autoRetrieveLogStates = new WeakMap<KnowledgeService, Map<string, string>>()
 
-/** A folded auto-retrieve background message (user-role, plugin source). */
+/** A folded auto-retrieve background message with a producer-owned source. */
 export interface AutoRetrieveBackground {
   readonly message: {
     role: 'user'
     content: ReadonlyArray<{ type: 'text'; text: string }>
-    source: { kind: 'plugin'; plugin: 'dsh-knowledge' }
+    source: { kind: 'dsh-knowledge' }
     id: string
   }
   /** Commit throttle/dedup state only after the message was actually folded or injected. */
@@ -1394,7 +1517,7 @@ export async function buildAutoRetrieveMessage(
       message: {
         role: 'user',
         content: [{ type: 'text', text: background }],
-        source: { kind: 'plugin', plugin: 'dsh-knowledge' },
+        source: { kind: 'dsh-knowledge' },
         id: crypto.randomUUID(),
       },
       commit() {
@@ -1589,7 +1712,7 @@ function renderAutoRetrieveHit(hit: SearchHit, baseName: string, query: string, 
   const label = fitSourceLabel(rawLabel, labelBudget)
   const separator = ' '
   const evidenceBudget = Math.max(0, budget - estimateContextTokens(`${label}${separator}`))
-  const source = hit.contextWindow !== undefined ? serializeContextWindow(hit.contextWindow) : hit.text
+  const source = hit.contextWindow !== undefined ? serializeContextWindow(hit.contextWindow) : `${sourceSpanLabel(hit.sourceSpans)}${hit.text}`
   let evidence = clipAroundQuery(source, query, evidenceBudget)
   let rendered = evidence.length > 0 ? `${label}${separator}${evidence}` : label
   while (rendered.length > 0 && estimateContextTokens(rendered) > budget && evidence.length > 0) {

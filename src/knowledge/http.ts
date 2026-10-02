@@ -10,6 +10,9 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { ConflictError, DirectorySourceError, NotFoundError, StorageUnavailableError, type KnowledgeService } from './index.js'
 import type { ConfigOverrides } from './domain.js'
+import { EvidenceRequestError } from './evidence.js'
+import { DeploymentError } from './mineru-deployment-plan.js'
+import { requireLocalManagement } from './mineru-management-security.js'
 import type {
   AddFileDocumentRequest,
   AddFilesItem,
@@ -52,6 +55,8 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
     })
     const method = (req.method ?? 'GET').toUpperCase()
 
+    if (segments[0] === 'processors' && segments[1] === 'managed') requireLocalManagement(req, service.managementBindHost)
+
     const body = method === 'GET' ? undefined : await readJson(req)
     const value = await route(service, method, segments, body ?? {}, url.searchParams)
     if (value === undefined) {
@@ -66,12 +71,23 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
           ? `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`
           : `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
         'content-length': String(bytes.byteLength),
+        'x-content-type-options': 'nosniff',
+        'cache-control': 'private, no-store',
+        'content-security-policy': "sandbox; default-src 'none'",
       })
       res.end(Buffer.from(bytes))
       return
     }
     writeJson(res, 200, { ok: true, value })
   } catch (error) {
+    if (error instanceof DeploymentError) {
+      writeJson(res, error.status, { ok: false, error: { code: error.code, message: error.message } })
+      return
+    }
+    if (error instanceof EvidenceRequestError) {
+      writeJson(res, error.code === 'not_found' ? 404 : 400, { ok: false, error: { code: error.code, message: error.message } })
+      return
+    }
     // Same-name conflicts surface as 409 so callers can re-submit with a
     // conflict strategy instead of treating the import as a server error.
     if (error instanceof ConflictError) {
@@ -133,10 +149,42 @@ async function route(
   query: URLSearchParams,
 ): Promise<unknown | undefined> {
   // /config
+  if (segments[0] === 'processors' && segments[1] === 'managed' && segments.length === 3) {
+    const action = segments[2]
+    if (action === 'status' && method === 'GET') return service.mineruDeployment.status()
+    if (method === 'POST') {
+      if (action === 'python') {
+        if (body.executable !== undefined && typeof body.executable !== 'string') throw new InvalidRequestError('executable must be a Python path')
+        return service.mineruDeployment.pythonEnvironments(body.executable as string | undefined)
+      }
+      if (action === 'prepare') {
+        if (typeof body.planId !== 'string' || body.confirm !== true) throw new InvalidRequestError('planId and explicit confirm:true are required')
+        return service.mineruDeployment.prepare(body.planId)
+      }
+      if (action === 'cancel') return service.mineruDeployment.cancel()
+      if (action === 'start') return service.mineruDeployment.start()
+      if (action === 'stop') return service.mineruDeployment.stop()
+      if (action === 'use') {
+        await service.setConfig({ ...service.mineruDeployment.connection(), documentProcessorProvider: 'mineru-local', mineruTier: 'basic' })
+        return { applied: true }
+      }
+    }
+  }
+  if (segments.join('/') === 'processors/managed/plan' && method === 'POST') {
+    if (typeof body.root !== 'string' || (body.existingModels !== undefined && typeof body.existingModels !== 'string')) throw new InvalidRequestError('root and existingModels must be directory paths')
+    if (body.pythonExecutable !== undefined && typeof body.pythonExecutable !== 'string') throw new InvalidRequestError('pythonExecutable must be a Python path')
+    const config = service.getConfig()
+    return service.mineruDeployment.preflight({ root: body.root, existingModels: body.existingModels as string | undefined, pythonExecutable: body.pythonExecutable as string | undefined, hfEndpoint: config.hfEndpoint, pythonIndexUrl: config.mineruPythonIndexUrl })
+  }
   if (segments[0] === 'config') {
     if (method === 'GET') return service.getConfig()
     if (method === 'PUT') return service.setConfig(body as ConfigOverrides)
     return undefined
+  }
+
+  if (segments[0] === 'processors' && segments[1] === 'check' && segments.length === 2 && method === 'POST') {
+    if (body.baseId !== undefined && typeof body.baseId !== 'string') throw new InvalidRequestError('baseId must be a string')
+    return service.checkProcessor(body.baseId as string | undefined)
   }
 
   // /knowledge-toggle (invocation on/off + pinned base scope)
@@ -412,6 +460,11 @@ async function route(
       return service.reindexDocuments(readIds(body))
     }
     const documentId = segments[1]
+    if (segments.length === 4 && segments[2] === 'artifacts' && method === 'GET') {
+      const revision = query.get('revision')
+      if (revision === null || revision === '') throw new InvalidRequestError('evidence revision is required')
+      return { rawDownload: true, inline: true, ...await service.getEvidenceAsset(documentId, segments[3]!, revision) } satisfies RawDownload
+    }
     if (segments.length === 2) {
       if (method === 'GET') {
         const rawTextLimit = readIntQuery(query, 'rawTextLimit')
@@ -429,6 +482,15 @@ async function route(
       return undefined
     }
     if (segments.length === 3) {
+      if (segments[2] === 'cancel' && method === 'POST') return service.cancelProcessing(documentId)
+      if (segments[2] === 'evidence' && method === 'GET') {
+        const pageIndex = strictIntQuery(query, 'pageIndex', 0, 100_000)
+        const blockOffset = strictIntQuery(query, 'blockOffset', 0, 32 * 1024 * 1024)
+        const maxTokens = strictIntQuery(query, 'maxTokens', 128, 4096)
+        const blockId = query.get('blockId') ?? undefined
+        if (blockOffset !== undefined && blockId === undefined) throw new InvalidRequestError('blockOffset requires blockId')
+        return service.readDocumentEvidence(documentId, { revision: query.get('revision') ?? undefined, pageIndex, blockId, blockOffset, maxTokens })
+      }
       if (segments[2] === 'chunks' && method === 'GET') {
         // Every chunk carries its embedding vector (1024 floats by default, so
         // megabytes per document), and the panel's preview never reads it.
@@ -439,7 +501,10 @@ async function route(
           .listChunks(documentId, readIntQuery(query, 'limit'), readIntQuery(query, 'offset'))
           .map(chunk => withEmbeddings ? chunk : (({ embedding: _embedding, ...rest }) => rest)(chunk))
       }
-      if (segments[2] === 'reindex' && method === 'POST') return service.reindexDocument(documentId)
+      if (segments[2] === 'reindex' && method === 'POST') {
+        if (body.mode !== undefined && body.mode !== 'reparse' && body.mode !== 'rechunk') throw new InvalidRequestError('mode must be reparse or rechunk')
+        return service.reindexDocument(documentId, { mode: body.mode as 'reparse' | 'rechunk' | undefined })
+      }
       if (segments[2] === 'delete-impact' && method === 'GET') return service.getDeleteImpact(documentId)
       if (segments[2] === 'refresh' && method === 'POST') return service.refreshUrlDocument(documentId)
       if (segments[2] === 'raw' && method === 'GET') {
@@ -516,4 +581,12 @@ function readIntQuery(query: URLSearchParams, key: string): number | undefined {
   if (raw === null || raw === '') return undefined
   const value = Number(raw)
   return Number.isFinite(value) ? Math.trunc(value) : undefined
+}
+
+function strictIntQuery(query: URLSearchParams, key: string, min: number, max: number): number | undefined {
+  const raw = query.get(key)
+  if (raw === null) return undefined
+  const value = Number(raw)
+  if (raw.trim() === '' || !Number.isInteger(value) || value < min || value > max) throw new InvalidRequestError(`invalid ${key}`)
+  return value
 }

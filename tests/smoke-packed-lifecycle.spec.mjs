@@ -5,6 +5,7 @@ import {
   runSupervised,
   verifyUninstallOutcome,
 } from '../scripts/smoke-packed-lifecycle.mjs'
+import { waitForKnowledge } from '../scripts/smoke-packed-install.mjs'
 
 class FakeChild extends EventEmitter {
   pid = 4321
@@ -18,6 +19,71 @@ const removedManifest = {
 }
 
 describe('packed smoke process lifecycle', () => {
+  it('rejects a host that exits just after serving a successful route', async () => {
+    const child = new FakeChild()
+    const fetchImpl = vi.fn(async () => {
+      child.exitCode = 1
+      return { ok: true, text: async () => '{"ok":true,"value":[]}' }
+    })
+    await expect(waitForKnowledge(31879, child, () => 'HMR failed', { fetchImpl }))
+      .rejects.toThrow('DSH exited during startup (1)\n\nHMR failed')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(child.listenerCount('error')).toBe(0)
+  })
+
+  it('requires a continuous healthy interval while the host remains alive', async () => {
+    vi.useFakeTimers()
+    try {
+      const child = new FakeChild()
+      const fetchImpl = vi.fn(async () => ({ ok: true, text: async () => '{"ok":true,"value":[]}' }))
+      let settled = false
+      const result = waitForKnowledge(31879, child, () => '', {
+        fetchImpl, stableMs: 1_000, pollMs: 250,
+      }).then(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(750)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(250)
+      await result
+      expect(fetchImpl).toHaveBeenCalledTimes(5)
+      expect(child.listenerCount('error')).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('resets the healthy interval when a later request fails', async () => {
+    vi.useFakeTimers()
+    try {
+      const child = new FakeChild()
+      const fetchImpl = vi.fn(async () => ({ ok: true, text: async () => '{"ok":true,"value":[]}' }))
+      fetchImpl.mockRejectedValueOnce(new Error('not listening'))
+      fetchImpl.mockResolvedValueOnce({ ok: true, text: async () => '{"ok":true,"value":[]}' })
+      fetchImpl.mockResolvedValueOnce({ ok: false, status: 503, text: async () => 'starting' })
+      let settled = false
+      const result = waitForKnowledge(31879, child, () => '', {
+        fetchImpl, stableMs: 1_000, pollMs: 250,
+      }).then(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(1_500)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(250)
+      await result
+      expect(fetchImpl).toHaveBeenCalledTimes(8)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports spawn failures promptly with the captured logs', async () => {
+    const child = new FakeChild()
+    const fetchImpl = vi.fn(async () => {
+      child.emit('error', new Error('ENOENT'))
+      throw new Error('not listening')
+    })
+    await expect(waitForKnowledge(31879, child, () => 'spawn error', { fetchImpl }))
+      .rejects.toThrow('DSH could not start: ENOENT\n\nspawn error')
+    expect(child.listenerCount('error')).toBe(0)
+  })
+
   it('reports a clean zero exit', async () => {
     const child = new FakeChild()
     const outcomePromise = runSupervised('dsh', ['plugin', 'remove'], {

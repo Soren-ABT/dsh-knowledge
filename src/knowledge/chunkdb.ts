@@ -23,7 +23,8 @@ import { mkdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { KnowledgeChunk } from './types.js'
+import type { KnowledgeChunk, KnowledgeDocument } from './types.js'
+import { validSourceSpan } from './source-spans.js'
 
 /** Resolve the chunk database path: explicit config, else `<DSH_HOME>/storages/`. */
 export function resolveChunkStorePath(explicit: string | undefined): string {
@@ -196,6 +197,8 @@ function toChunkRow(chunk: KnowledgeChunk): ChunkRow {
     context: chunk.context ?? null,
     embedding: chunk.embedding !== undefined ? encodeEmbedding(chunk.embedding) : null,
     embedding_model: chunk.embeddingModel ?? null,
+    source_spans: chunk.sourceSpans !== undefined ? JSON.stringify(chunk.sourceSpans) : null,
+    processing_revision: chunk.processingRevision ?? null,
   }
 }
 
@@ -231,6 +234,30 @@ export interface RetrievalLane {
   vector(embedding: readonly number[], baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult>
 }
 
+export interface StagedDocumentGeneration {
+  readonly document: KnowledgeDocument
+  readonly chunks: KnowledgeChunk[]
+}
+
+export interface PendingDocumentGeneration {
+  readonly document: KnowledgeDocument
+  readonly previousCreatedAt: number
+}
+
+export function validateDocumentGeneration(doc: KnowledgeDocument, chunks: readonly KnowledgeChunk[]): void {
+  const ids = new Set<string>()
+  const indices = new Set<number>()
+  for (const chunk of chunks) {
+    if (chunk.docId !== doc.id || chunk.baseId !== doc.baseId || ids.has(chunk.id) || indices.has(chunk.index)
+      || !Number.isSafeInteger(chunk.index) || chunk.index < 0
+      || chunk.processingRevision !== doc.processing?.revision
+      || !(chunk.sourceSpans ?? []).every(span => validSourceSpan(span) && span.chunkEnd <= chunk.text.length
+        && span.revision === chunk.processingRevision)) throw new Error('invalid document generation')
+    ids.add(chunk.id)
+    indices.add(chunk.index)
+  }
+}
+
 /** The chunk store: bounded SQL reads, single-transaction writes. */
 export class ChunkDatabase implements RetrievalLane {
   private readonly db: DatabaseSync
@@ -247,7 +274,7 @@ export class ChunkDatabase implements RetrievalLane {
    *  write from another connection invalidates it instead of being invisible. */
   private readonly vectorCacheDataVersion = new Map<string, number>()
 
-  private static readonly SELECT_COLUMNS = 'chunk_id, doc_id, base_id, idx, text, heading, context, embedding, embedding_model'
+  private static readonly SELECT_COLUMNS = 'chunk_id, doc_id, base_id, idx, text, heading, context, embedding, embedding_model, source_spans, processing_revision'
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true })
@@ -313,7 +340,28 @@ export class ChunkDatabase implements RetrievalLane {
     `)
     this.migrateEmbeddingHashColumn()
     this.migrateFtsRowidColumn()
+    this.migrateEvidenceColumns()
     this.migrateFromBundleLayout()
+  }
+
+  private migrateEvidenceColumns(): void {
+    const columns = this.db.prepare('PRAGMA table_info(chunk)').all() as Array<{ name: string }>
+    if (!columns.some(column => column.name === 'source_spans')) this.db.exec('ALTER TABLE chunk ADD COLUMN source_spans TEXT')
+    if (!columns.some(column => column.name === 'processing_revision')) this.db.exec('ALTER TABLE chunk ADD COLUMN processing_revision TEXT')
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS document_generation_stage (
+        doc_id TEXT PRIMARY KEY, base_id TEXT NOT NULL, revision TEXT NOT NULL, next_document TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS document_generation_chunk (
+        doc_id TEXT NOT NULL, chunk_id TEXT NOT NULL, chunk_json TEXT NOT NULL,
+        embedding_text_hash TEXT, embedding_model TEXT, embedding BLOB,
+        PRIMARY KEY (doc_id, chunk_id)
+      );
+      CREATE INDEX IF NOT EXISTS generation_embedding_hash ON document_generation_chunk(embedding_text_hash, embedding_model);
+      CREATE TABLE IF NOT EXISTS document_generation_commit (
+        doc_id TEXT PRIMARY KEY, base_id TEXT NOT NULL, previous_created_at INTEGER NOT NULL, next_document TEXT NOT NULL
+      );
+    `)
   }
 
   /**
@@ -528,7 +576,7 @@ export class ChunkDatabase implements RetrievalLane {
     // rows if that invariant ever broke.
     const deleteOld = this.db.prepare('DELETE FROM chunk WHERE doc_id = ? AND base_id = ?')
     const insert = this.db.prepare(
-      'INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model, embedding_text_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model, embedding_text_hash, source_spans, processing_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -547,6 +595,8 @@ export class ChunkDatabase implements RetrievalLane {
           chunk.embedding !== undefined ? encodeEmbedding(chunk.embedding) : null,
           chunk.embeddingModel ?? null,
           chunk.embedding !== undefined ? hashEmbeddingText(searchText) : null,
+          chunk.sourceSpans !== undefined ? JSON.stringify(chunk.sourceSpans) : null,
+          chunk.processingRevision ?? null,
         )
       }
       this.db.exec('COMMIT')
@@ -573,12 +623,13 @@ export class ChunkDatabase implements RetrievalLane {
   putChunkBatch(chunks: KnowledgeChunk[]): void {
     if (chunks.length === 0) return
     const upsert = this.db.prepare(
-      `INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model, embedding_text_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO chunk (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model, embedding_text_hash, source_spans, processing_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(chunk_id) DO UPDATE SET
          doc_id = excluded.doc_id, base_id = excluded.base_id, idx = excluded.idx,
          text = excluded.text, search_text = excluded.search_text, heading = excluded.heading,
          context = excluded.context, embedding = excluded.embedding,
-         embedding_model = excluded.embedding_model, embedding_text_hash = excluded.embedding_text_hash`,
+         embedding_model = excluded.embedding_model, embedding_text_hash = excluded.embedding_text_hash,
+         source_spans = excluded.source_spans, processing_revision = excluded.processing_revision`,
     )
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -596,6 +647,8 @@ export class ChunkDatabase implements RetrievalLane {
           chunk.embedding !== undefined ? encodeEmbedding(chunk.embedding) : null,
           chunk.embeddingModel ?? null,
           chunk.embedding !== undefined ? hashEmbeddingText(searchText) : null,
+          chunk.sourceSpans !== undefined ? JSON.stringify(chunk.sourceSpans) : null,
+          chunk.processingRevision ?? null,
         )
       }
       this.db.exec('COMMIT')
@@ -604,6 +657,111 @@ export class ChunkDatabase implements RetrievalLane {
       throw error
     }
     for (const chunk of chunks) this.upsertVectorCache(chunk)
+  }
+
+  /** Durable candidate batches remain invisible to both retrieval lanes. */
+  stageDocumentGeneration(doc: KnowledgeDocument, chunks: KnowledgeChunk[]): void {
+    validateDocumentGeneration(doc, chunks)
+    const revision = doc.processing?.revision ?? `legacy:${doc.updatedAt}`
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const previous = this.db.prepare('SELECT revision FROM document_generation_stage WHERE doc_id = ?').get(doc.id) as { revision: string } | undefined
+      if (previous !== undefined && previous.revision !== revision) {
+        this.db.prepare('DELETE FROM document_generation_chunk WHERE doc_id = ?').run(doc.id)
+      }
+      this.db.prepare(`INSERT INTO document_generation_stage(doc_id, base_id, revision, next_document) VALUES (?, ?, ?, ?)
+        ON CONFLICT(doc_id) DO UPDATE SET base_id = excluded.base_id, revision = excluded.revision, next_document = excluded.next_document`)
+        .run(doc.id, doc.baseId, revision, JSON.stringify(doc))
+      const insert = this.db.prepare(`INSERT INTO document_generation_chunk(doc_id, chunk_id, chunk_json, embedding_text_hash, embedding_model, embedding)
+        VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(doc_id, chunk_id) DO UPDATE SET chunk_json = excluded.chunk_json,
+        embedding_text_hash = excluded.embedding_text_hash, embedding_model = excluded.embedding_model, embedding = excluded.embedding`)
+      for (const chunk of chunks) insert.run(doc.id, chunk.id, JSON.stringify(chunk),
+        chunk.embedding !== undefined ? hashEmbeddingText(searchTextOf(chunk)) : null,
+        chunk.embeddingModel ?? null, chunk.embedding !== undefined ? encodeEmbedding(chunk.embedding) : null)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+  }
+
+  getStagedDocumentGeneration(docId: string): StagedDocumentGeneration | undefined {
+    const row = this.db.prepare('SELECT next_document FROM document_generation_stage WHERE doc_id = ?').get(docId) as { next_document: string } | undefined
+    if (row === undefined) return undefined
+    const rows = this.db.prepare('SELECT chunk_json FROM document_generation_chunk WHERE doc_id = ?').all(docId) as Array<{ chunk_json: string }>
+    return { document: JSON.parse(row.next_document) as KnowledgeDocument,
+      chunks: rows.map(row => JSON.parse(row.chunk_json) as KnowledgeChunk).sort((a, b) => a.index - b.index) }
+  }
+
+  /** Replace the live generation and its recovery record in ONE transaction. */
+  publishDocumentGeneration(doc: KnowledgeDocument, chunks: KnowledgeChunk[], previousCreatedAt: number): void {
+    validateDocumentGeneration(doc, chunks)
+    if (doc.chunkCount !== chunks.length) throw new Error('document generation chunk count mismatch')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare('DELETE FROM chunk WHERE doc_id = ? AND base_id = ?').run(doc.id, doc.baseId)
+      const insert = this.db.prepare(`INSERT INTO chunk
+        (chunk_id, doc_id, base_id, idx, text, search_text, heading, context, embedding, embedding_model, embedding_text_hash, source_spans, processing_revision)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      for (const chunk of chunks) insert.run(chunk.id, chunk.docId, chunk.baseId, chunk.index, chunk.text, searchTextOf(chunk),
+        chunk.heading ?? null, chunk.context ?? null, chunk.embedding !== undefined ? encodeEmbedding(chunk.embedding) : null,
+        chunk.embeddingModel ?? null, chunk.embedding !== undefined ? hashEmbeddingText(searchTextOf(chunk)) : null,
+        chunk.sourceSpans !== undefined ? JSON.stringify(chunk.sourceSpans) : null, chunk.processingRevision ?? null)
+      this.db.prepare(`INSERT INTO document_generation_commit(doc_id, base_id, previous_created_at, next_document) VALUES (?, ?, ?, ?)
+        ON CONFLICT(doc_id) DO UPDATE SET base_id = excluded.base_id, previous_created_at = excluded.previous_created_at, next_document = excluded.next_document`)
+        .run(doc.id, doc.baseId, previousCreatedAt, JSON.stringify(doc))
+      this.db.prepare('DELETE FROM document_generation_stage WHERE doc_id = ?').run(doc.id)
+      this.db.prepare('DELETE FROM document_generation_chunk WHERE doc_id = ?').run(doc.id)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    this.dropVectorCacheByDoc(doc.id)
+    for (const chunk of chunks) this.upsertVectorCache(chunk)
+  }
+
+  pendingDocumentGenerations(): PendingDocumentGeneration[] {
+    const rows = this.db.prepare('SELECT next_document, previous_created_at FROM document_generation_commit').all() as Array<{ next_document: string; previous_created_at: number }>
+    return rows.map(row => ({ document: JSON.parse(row.next_document) as KnowledgeDocument, previousCreatedAt: row.previous_created_at }))
+  }
+
+  stagedDocumentHeaders(): KnowledgeDocument[] {
+    const rows = this.db.prepare('SELECT next_document FROM document_generation_stage').all() as Array<{ next_document: string }>
+    return rows.map(row => JSON.parse(row.next_document) as KnowledgeDocument)
+  }
+
+  discardPublishedGeneration(doc: KnowledgeDocument): void {
+    // Reused IDs must not let an old journal delete a newer incarnation's rows.
+    if (doc.processing?.revision !== undefined) {
+      this.db.prepare('DELETE FROM chunk WHERE doc_id = ? AND base_id = ? AND processing_revision = ?')
+        .run(doc.id, doc.baseId, doc.processing.revision)
+      this.dropVectorCacheByDoc(doc.id)
+      this.vectorCache.delete(doc.baseId)
+    }
+    this.discardDocumentGenerations(doc.id)
+  }
+
+  pendingDocumentGeneration(docId: string): PendingDocumentGeneration | undefined {
+    const row = this.db.prepare('SELECT next_document, previous_created_at FROM document_generation_commit WHERE doc_id = ?').get(docId) as { next_document: string; previous_created_at: number } | undefined
+    return row === undefined ? undefined : { document: JSON.parse(row.next_document) as KnowledgeDocument, previousCreatedAt: row.previous_created_at }
+  }
+
+  acknowledgeDocumentGeneration(docId: string): void {
+    this.db.prepare('DELETE FROM document_generation_commit WHERE doc_id = ?').run(docId)
+  }
+
+  discardDocumentGenerations(docId: string): void {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare('DELETE FROM document_generation_commit WHERE doc_id = ?').run(docId)
+      this.db.prepare('DELETE FROM document_generation_stage WHERE doc_id = ?').run(docId)
+      this.db.prepare('DELETE FROM document_generation_chunk WHERE doc_id = ?').run(docId)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+  }
+
+  discardStagedDocumentGeneration(docId: string): void {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare('DELETE FROM document_generation_stage WHERE doc_id = ?').run(docId)
+      this.db.prepare('DELETE FROM document_generation_chunk WHERE doc_id = ?').run(docId)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
   }
 
   async deleteChunks(docId: string, baseId?: string): Promise<void> {
@@ -722,6 +880,13 @@ export class ChunkDatabase implements RetrievalLane {
       for (const row of rows) {
         const vector = decodeEmbedding(row.embedding)
         if (vector !== undefined) vectors.set(row.embedding_text_hash, vector)
+      }
+      const candidates = this.db.prepare(`SELECT embedding_text_hash, embedding FROM document_generation_chunk
+        WHERE embedding_text_hash IN (${placeholders}) AND embedding_model = ? AND embedding IS NOT NULL`)
+        .all(...batch, embeddingModel) as Array<{ embedding_text_hash: string; embedding: Buffer }>
+      for (const row of candidates) {
+        const vector = decodeEmbedding(row.embedding)
+        if (vector !== undefined && !vectors.has(row.embedding_text_hash)) vectors.set(row.embedding_text_hash, vector)
       }
     }
     return vectors
@@ -956,9 +1121,12 @@ interface ChunkRow {
   context: string | null
   embedding: Buffer | null
   embedding_model: string | null
+  source_spans: string | null
+  processing_revision: string | null
 }
 
 function rowToChunk(row: ChunkRow): KnowledgeChunk {
+  const sourceSpans = decodeSourceSpans(row.source_spans, row.text.length, row.processing_revision)
   const chunk: KnowledgeChunk = {
     id: row.chunk_id,
     docId: row.doc_id,
@@ -967,6 +1135,8 @@ function rowToChunk(row: ChunkRow): KnowledgeChunk {
     text: row.text,
     ...(row.heading !== null ? { heading: row.heading } : {}),
     ...(row.context !== null ? { context: row.context } : {}),
+    ...(sourceSpans !== undefined ? { sourceSpans } : {}),
+    ...(row.processing_revision != null ? { processingRevision: row.processing_revision } : {}),
   }
   const embedding = decodeEmbedding(row.embedding)
   return {
@@ -974,6 +1144,14 @@ function rowToChunk(row: ChunkRow): KnowledgeChunk {
     ...(embedding !== undefined ? { embedding } : {}),
     ...(row.embedding_model !== null ? { embeddingModel: row.embedding_model } : {}),
   }
+}
+
+function decodeSourceSpans(json: string | null, length: number, revision: string | null): KnowledgeChunk['sourceSpans'] {
+  if (json == null) return undefined
+  const value: unknown = JSON.parse(json)
+  if (!Array.isArray(value) || !value.every(span => validSourceSpan(span) && span.chunkEnd <= length
+    && (revision == null || span.revision === revision))) throw new Error('invalid persisted source spans')
+  return value
 }
 
 /** The search/embedding text of a chunk: context (title/heading path) + body. */

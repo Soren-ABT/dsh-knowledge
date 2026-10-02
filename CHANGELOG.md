@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 — 2026-09-29 — Structured evidence and optional managed MinerU
+
+- Fix #34: use a producer-owned `dsh-knowledge` source for auto-retrieval messages, avoiding DSH v4's rejection of legacy `plugin` wrappers.
+- Fix #35: dynamically inset the full knowledge panel below Window Controls Overlay geometry, including the close button, invocation toggle and toasts.
+- Fix #36: reduce `knowledge:usage` to base names and add the default-on `injectUsagePrompt` deployment/runtime/per-base switch with bilingual advanced settings.
+- Fix #37: run OCR inference in an isolated forked process with binary IPC, serialized inference, bounded requests and observed teardown. Budget page rasters before allocation, release each mupdf pixmap, retry allocation failures at smaller scales, and fail visibly if any required page is omitted. Bound automatic startup parsing recovery and retain sources for manual rebuild.
+- Upgrade `undici` to 7.30.0 to resolve GHSA-rfgv-xxqx-mfg5 and GHSA-w293-vg96-wgc3; retain the existing, time-limited `sharp` audit exceptions.
+- Failed managed MinerU re-preparation remains busy until saved-state cleanup and installation unlock finish, so immediately starting the previous verified installation cannot race cleanup.
+- Managed MinerU now honors the saved Hugging Face mirror and a separate Python package index. Preflight freezes both sources and rejects a stale plan.
+- Candidate installations use isolated runtime configuration. The active install changes only after the candidate passes a real PDF parse probe; a failed retry preserves the previous verified environment.
+- Add an opt-in Windows/Ubuntu managed-install smoke with repeated PDF parsing and a build/tarball environment report. This remains experimental and does not certify OCR quality.
+- Add a MinerU 4 V1 adapter with saved-endpoint capability checks, bounded uploads/results, credential isolation, explicit cancellation and no implicit cloud fallback.
+- Preserve canonical block ranges, page/region references and inert image assets through chunks, SQLite, context windows and evidence tools.
+- Rechunk from immutable artifacts without repeating parsing. Stage replacement generations and reconcile SQLite/DomainKV publication after interruption; retain the prior usable generation on failed replacement.
+- Share the processing entry point across uploads, paths, directory imports and rebuilds. Add a bounded processing queue and visible processing/completeness status.
+- Add offline protocol/storage/evidence regressions and an opt-in synthetic-PDF real-service smoke. Real MinerU inference and cross-platform/UI acceptance are not yet certified by these offline tests.
+
+
 ## 0.4.1 — 2026-09-22
 
 ### MinerU failures are recoverable (issue #30)

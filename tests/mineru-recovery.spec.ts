@@ -146,6 +146,22 @@ function storeOf(service: KnowledgeService): Store {
 const NOT_A_PDF = Buffer.from('scanned-looking bytes without a text layer').toString('base64')
 
 describe('MinerU recovery (issue #30)', () => {
+  it('leaves a failed startup parse visible and stops selecting it for automatic recovery (#37)', { timeout: 45_000 }, async () => {
+    const mineru = await startFakeMineru()
+    servers.push(mineru.server)
+    mineru.state.failing = true
+    const service = await mount(mineru.url)
+    const base = await service.createBase({ name: 'failed startup' })
+    const doc = await service.addFileDocument({ baseId: base.id, fileName: 'scan.pdf', contentBase64: NOT_A_PDF })
+    await service.waitForIdle()
+    const store = storeOf(service)
+    const current = store.getDocument(doc.id)!
+    await store.putDocument({ ...current, incomplete: true, errorCode: 'interrupted', embeddingError: undefined })
+    await (service as unknown as { resumeInterruptedDocuments(ids: string[]): Promise<void> }).resumeInterruptedDocuments([doc.id])
+    expect(store.getDocument(doc.id)).toMatchObject({ incomplete: false, errorCode: 'parse_failed' })
+    expect(service.listDocuments(base.id).find(item => item.id === doc.id)?.status).toBe('failed')
+    expect((await store.recoverInterruptedImports(Date.now() + 1)).resume).not.toContain(doc.id)
+  })
   it('recovers a failed MinerU import on reindex and reports both failure reasons', { timeout: 45_000 }, async () => {
     const mineru = await startFakeMineru()
     servers.push(mineru.server)

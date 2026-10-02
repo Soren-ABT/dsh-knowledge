@@ -13,6 +13,7 @@ import type { LocalModelSummary } from './api.js'
 import { C, style } from './theme.js'
 import { IconBot, IconBox, IconDownload, IconFolderInput, IconFolderOpen, IconFolderSearch, IconRefresh, IconScanText, IconTrash, IconX } from './icons.js'
 import type { Translate } from './locales.js'
+import { MineruDeploymentSection } from './MineruDeploymentSection.js'
 
 export interface LocalModelsSectionProps {
   close: () => void
@@ -385,13 +386,14 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
 
   return (
     <div style={{ minWidth: 0 }}>
-      <h2 style={{ fontSize: 15, fontWeight: 600, color: C.text }}>{t('localModelsTitle')}</h2>
-      <p style={{ marginTop: 4, marginBottom: 12, fontSize: 12, color: C.muted, lineHeight: 1.6 }}>{t('localModelsDesc')}</p>
+      <h2 style={{ fontSize: 17, fontWeight: 650, color: C.text, margin: '0 0 6px' }}>{t('localModelsTitle')}</h2>
+      <p style={{ marginTop: 0, marginBottom: 16, fontSize: 13, color: C.muted, lineHeight: 1.65, maxWidth: 760 }}>{t('localModelsDesc')}</p>
+      <MineruDeploymentSection api={api} t={t} pickDirectory={props.workspaces ? () => props.workspaces!.pickDirectory() : undefined} />
 
       {mirrorLoaded && (
-        <div style={{ marginBottom: 14, padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t('hfMirror')}</label>
-          <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ marginBottom: 14, padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
+          <label style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: 8 }}>{t('hfMirror')}</label>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <input
               style={style.input}
               placeholder="https://hf-mirror.com"
@@ -400,39 +402,39 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             />
             <button className="kb-btn" style={style.button} onClick={() => void saveMirror()}>{t('hfMirrorSave')}</button>
           </div>
-          <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('hfMirrorHint')}</p>
+          <p style={{ marginTop: 8, fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{t('hfMirrorHint')}</p>
         </div>
       )}
 
       {mirrorLoaded && (
-        <div style={{ marginBottom: 14, padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t('cacheDirTitle')}</label>
-          <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ marginBottom: 14, padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
+          <label style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: 8 }}>{t('cacheDirTitle')}</label>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <input
-              style={{ ...style.input, flex: 1 }}
+              style={{ ...style.input, flex: '1 1 260px', minWidth: 0 }}
               placeholder="C:\\Users\\you\\.dsh\\cache\\dsh-knowledge\\local-models"
               value={cacheDir}
               onChange={(e) => setCacheDir(e.target.value)}
             />
             <button className="kb-btn" style={style.button} onClick={() => void browseCacheDir()}><IconFolderSearch size={13} /> {t('cacheDirBrowse')}</button>
           </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
             <button className="kb-btn" style={style.button} onClick={() => void saveCacheDir()}>{t('hfMirrorSave')}</button>
             <button className="kb-btn" style={style.button} disabled={migrating} onClick={() => void migrateCacheDir()}>
               <IconFolderInput size={13} /> {t('cacheDirMigrate')}
             </button>
             <button className="kb-btn" style={style.button} onClick={() => void openCacheDir()}><IconFolderOpen size={13} /> {t('cacheDirOpen')}</button>
           </div>
-          <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('cacheDirHint')}</p>
+          <p style={{ marginTop: 8, fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{t('cacheDirHint')}</p>
         </div>
       )}
 
       {mirrorLoaded && (
-        <div style={{ marginBottom: 14, padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t('localWorkerIdleTimeoutMs')}</label>
-          <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ marginBottom: 14, padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
+          <label style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: 8 }}>{t('localWorkerIdleTimeoutMs')}</label>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <input
-              style={{ ...style.input, flex: 1 }}
+              style={{ ...style.input, flex: '1 1 240px', minWidth: 0 }}
               type="number"
               min={0}
               max={86_400_000}
@@ -445,7 +447,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             />
             <button className="kb-btn" style={style.button} onClick={() => void saveWorkerIdleTimeout()}>{t('hfMirrorSave')}</button>
           </div>
-          <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('localWorkerIdleTimeoutMsHint')}</p>
+          <p style={{ marginTop: 8, fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{t('localWorkerIdleTimeoutMsHint')}</p>
         </div>
       )}
 
@@ -459,11 +461,11 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
         <div style={{ ...style.error, marginBottom: 12 }}>{t('statusPollFailed')}: {pollError}</div>
       )}
 
-      <div style={{ marginBottom: 14, padding: 12, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
-        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t('customRerankTitle')}</label>
-        <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ marginBottom: 16, padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>
+        <label style={{ display: 'block', fontSize: 14, fontWeight: 600, marginBottom: 8 }}>{t('customRerankTitle')}</label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <input
-            style={{ ...style.input, flex: 1 }}
+            style={{ ...style.input, flex: '1 1 260px', minWidth: 0 }}
             placeholder="owner/onnx-reranker-model"
             value={customRerankerId}
             onChange={(event) => setCustomRerankerId(event.target.value)}
@@ -472,14 +474,14 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             <IconDownload size={13} /> {t('customRerankAdd')}
           </button>
         </div>
-        <p style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>{t('customRerankHint')}</p>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 11, color: C.muted }}>
+        <p style={{ marginTop: 8, fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{t('customRerankHint')}</p>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 8, fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
           <input type="checkbox" checked={customRerankerAccepted} onChange={(event) => setCustomRerankerAccepted(event.target.checked)} />
           {t('customRerankAccept')}
         </label>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))', gap: 14 }}>
         {(models ?? []).map(model => (
           <ModelCard
             key={model.id}
@@ -726,7 +728,7 @@ function ModelCard(props: {
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {model.name}
             </span>
             {ready && (
@@ -738,7 +740,7 @@ function ModelCard(props: {
             {model.subtitle}
           </p>
           {model.kind === 'reranking' && model.lastCheckedAt !== undefined && (
-            <p style={{ marginTop: 3, fontSize: 11, color: C.muted }}>{t('rerankLastValidated')}{new Date(model.lastCheckedAt).toLocaleString()} · {model.latencyMs ?? 0}ms</p>
+            <p style={{ marginTop: 4, fontSize: 12, color: C.muted, lineHeight: 1.5 }}>{t('rerankLastValidated')}{new Date(model.lastCheckedAt).toLocaleString()} · {model.latencyMs ?? 0}ms</p>
           )}
         </div>
         {ready && <div style={{ display: 'flex', gap: 4 }}>
@@ -802,7 +804,7 @@ const cardStyle: CSSProperties = {
 const accentSoft = 'color-mix(in srgb, var(--dsw-alias-brand-primary, #3b6ef6) 10%, transparent)'
 
 const readyBadge: CSSProperties = {
-  fontSize: 11,
+  fontSize: 12,
   lineHeight: 1.5,
   padding: '0 6px',
   borderRadius: 999,

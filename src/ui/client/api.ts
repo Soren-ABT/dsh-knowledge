@@ -5,6 +5,11 @@
  * @module dsh-knowledge/client/api
  */
 
+import type { DocumentProcessingInfo, DocumentSourceSpan, MineruTier, ParsedAsset, ParsedBlock, ProcessingProgress, ProcessorCapabilities } from '../../knowledge/processing-types.js'
+import type { MineruDeploymentPlan, MineruDeploymentStatus, MineruPythonDiscovery, MineruPythonEnvironment } from '../../knowledge/mineru-deployment-types.js'
+export type { MineruDeploymentPlan, MineruDeploymentStatus, MineruPythonDiscovery, MineruPythonEnvironment }
+export type { DocumentProcessingInfo, DocumentSourceSpan, MineruTier, ParsedAsset, ParsedBlock, ProcessingProgress, ProcessorCapabilities }
+
 export type EmbeddingProvider = 'openai' | 'ollama' | 'local' | 'none'
 export type SearchMode = 'auto' | 'hybrid' | 'vector' | 'lexical'
 
@@ -28,6 +33,14 @@ export interface BaseConfig {
   rrfVectorWeight?: number
   embeddingBatchSize?: number
   siblingChunks?: number
+  documentProcessorProvider?: 'builtin' | 'mineru' | 'mineru-local'
+  mineruApiKey?: string
+  mineruApiHost?: string
+  mineruLocalUrl?: string
+  mineruLocalApiKey?: string
+  mineruTier?: MineruTier
+  documentProcessingTimeoutMs?: number
+  structuredChunking?: boolean
   semanticChunk?: boolean
   semanticChunkThreshold?: number
   chunkTokenLimit?: number
@@ -38,6 +51,7 @@ export interface BaseConfig {
   imageCaptionBaseUrl?: string
   imageCaptionApiKey?: string
   autoRetrieve?: boolean
+  injectUsagePrompt?: boolean
   autoRetrieveWeight?: number
   resumeInterruptedOnStartup?: boolean
 }
@@ -128,6 +142,8 @@ export interface DocumentSummary {
   status?: 'pending' | 'processing' | 'completed' | 'failed'
   indexingProgress?: number
   indexingPhase?: 'parsing' | 'embedding'
+  processing?: DocumentProcessingInfo
+  processingProgress?: ProcessingProgress
   createdAt: number
   updatedAt?: number
 }
@@ -171,6 +187,7 @@ export interface ChunkView {
   text: string
   heading?: string
   context?: string
+  sourceSpans?: readonly DocumentSourceSpan[]
 }
 
 export interface KnowledgeConfig {
@@ -204,11 +221,18 @@ export interface KnowledgeConfig {
   localModelCacheDir: string
   siblingChunks: number
   hfEndpoint: string
-  documentProcessorProvider: 'builtin' | 'mineru'
+  mineruPythonIndexUrl?: string
+  documentProcessorProvider: 'builtin' | 'mineru' | 'mineru-local'
   mineruApiKey: string
   mineruApiHost: string
+  mineruLocalUrl?: string
+  mineruLocalApiKey?: string
+  mineruTier?: MineruTier
+  documentProcessingTimeoutMs?: number
+  structuredChunking?: boolean
   resumeInterruptedOnStartup: boolean
   autoRetrieve: boolean
+  injectUsagePrompt?: boolean
   autoRetrieveWeight: number
   /** Local-model worker idle timeout in ms (0 = never release; keeps the
    *  model hot and avoids an onnxruntime binding reload on respawn). */
@@ -231,6 +255,7 @@ export interface SearchHit {
   score: number
   vectorScore?: number
   lexicalScore?: number
+  sourceSpans?: readonly DocumentSourceSpan[]
 }
 
 export interface ContextChunkExcerpt {
@@ -243,6 +268,7 @@ export interface ContextChunkExcerpt {
   textEnd: number
   truncatedStart: boolean
   truncatedEnd: boolean
+  sourceSpans?: readonly DocumentSourceSpan[]
 }
 
 export interface ContextWindow {
@@ -318,6 +344,18 @@ export interface DocumentDetail {
   chunkCount: number
   createdAt: number
   chunks?: ChunkView[]
+  processing?: DocumentProcessingInfo
+}
+
+export interface DocumentEvidence {
+  documentId: string
+  title: string
+  processing?: DocumentProcessingInfo
+  blocks: ParsedBlock[]
+  assets: ParsedAsset[]
+  estimatedTokens: number
+  truncated: boolean
+  next?: { blockId: string; blockOffset: number }
 }
 
 export interface DirectoryImportStatus {
@@ -341,7 +379,7 @@ export class KnowledgeApi {
   private async call<T>(method: string, path: string, body?: unknown, timeoutMs = 60_000): Promise<T> {
     const response = await fetch(`/knowledge${path}`, {
       method,
-      headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
+      headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(path.startsWith('/processors/managed/') ? { 'x-dsh-mineru-management': '1' } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       // A hung host must not pin the panel's busy state forever: fail the
       // call with a clear error instead of an indefinite spinner. Long-running
@@ -364,6 +402,20 @@ export class KnowledgeApi {
 
   getConfig(): Promise<KnowledgeConfig> {
     return this.call('GET', '/config')
+  }
+
+  planMineruDeployment(root: string, existingModels?: string, pythonExecutable?: string): Promise<MineruDeploymentPlan> {
+    return this.call('POST', '/processors/managed/plan', { root, existingModels, pythonExecutable }, 310_000)
+  }
+  detectMineruPython(executable?: string): Promise<MineruPythonDiscovery> { return this.call('POST', '/processors/managed/python', { executable }, 70_000) }
+
+  mineruDeploymentStatus(): Promise<MineruDeploymentStatus> { return this.call('GET', '/processors/managed/status') }
+  prepareMineruDeployment(planId: string): Promise<MineruDeploymentStatus> { return this.call('POST', '/processors/managed/prepare', { planId, confirm: true }) }
+  mineruDeploymentAction(action: 'start' | 'stop' | 'cancel'): Promise<MineruDeploymentStatus> { return this.call('POST', `/processors/managed/${action}`, {}) }
+  useManagedMineru(): Promise<{ applied: boolean }> { return this.call('POST', '/processors/managed/use', {}) }
+
+  checkProcessor(baseId?: string): Promise<ProcessorCapabilities> {
+    return this.call('POST', '/processors/check', baseId === undefined ? {} : { baseId })
   }
 
   getLocalModelStatus(model?: string): Promise<LocalModelStatus> {
@@ -622,6 +674,7 @@ export class KnowledgeApi {
     phase: 'parsing' | 'embedding'
     progress: number
     status?: 'running' | 'failed'
+    processingProgress?: ProcessingProgress
     error?: { code: string; message: string }
   }>> {
     return this.call('GET', '/indexing-status')
@@ -638,8 +691,18 @@ export class KnowledgeApi {
     return this.call('PATCH', `/documents/${encodeURIComponent(documentId)}`, { title })
   }
 
-  reindexDocument(documentId: string): Promise<{ id: string; chunkCount: number; sync?: DirectorySyncResult }> {
-    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/reindex`, undefined, 30 * 60_000)
+  reindexDocument(documentId: string, mode?: 'reparse' | 'rechunk'): Promise<{ id: string; chunkCount: number; sync?: DirectorySyncResult }> {
+    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/reindex`, mode === undefined ? undefined : { mode }, 2 * 60 * 60_000 + 30_000)
+  }
+
+  cancelProcessing(documentId: string): Promise<{ cancelled: boolean }> {
+    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/cancel`)
+  }
+
+  readDocumentEvidence(documentId: string, options: { revision?: string; pageIndex?: number; blockId?: string; blockOffset?: number; maxTokens?: number } = {}): Promise<DocumentEvidence> {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(options)) if (value !== undefined) params.set(key, String(value))
+    return this.call('GET', `/documents/${encodeURIComponent(documentId)}/evidence?${params}`)
   }
 
   refreshUrlDocument(documentId: string): Promise<{ changed: boolean; title: string; chunkCount: number }> {

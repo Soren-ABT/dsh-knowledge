@@ -28,6 +28,7 @@ const base: Config = {
   siblingChunks: 1,
   localModelCacheDir: '',
   hfEndpoint: '',
+  mineruPythonIndexUrl: 'https://pypi.org/simple',
   chunkStorePath: '',
   documentProcessorProvider: 'builtin',
   mineruApiKey: '',
@@ -50,7 +51,15 @@ const base: Config = {
 describe('resolveConfig', () => {
   it('uses deployment defaults with empty overrides', () => {
     const { chunkStorePath: _chunkStorePath, ...expected } = base
-    expect(resolveConfig(base, {})).toEqual(expected)
+    expect(resolveConfig(base, {})).toEqual({
+      ...expected,
+      mineruLocalUrl: 'http://127.0.0.1:8000',
+      mineruLocalApiKey: '',
+      mineruTier: 'basic',
+      documentProcessingTimeoutMs: 1_800_000,
+      structuredChunking: true,
+      injectUsagePrompt: true,
+    })
   })
   it('applies runtime overrides', () => {
     const resolved = resolveConfig(base, { embeddingProvider: 'openai', chunkSize: 1000, searchMode: 'hybrid', rerankModel: 'jina-reranker-v2-base-multilingual' })
@@ -58,6 +67,21 @@ describe('resolveConfig', () => {
     expect(resolved.chunkSize).toBe(1000)
     expect(resolved.searchMode).toBe('hybrid')
     expect(resolved.rerankModel).toBe('jina-reranker-v2-base-multilingual')
+  })
+  it('persists and resolves the prompt switch independently of auto-retrieval', () => {
+    expect(configOverridesSchema.parse({ injectUsagePrompt: false })).toEqual({ injectUsagePrompt: false })
+    expect(baseConfigSchema.parse({ injectUsagePrompt: false })).toEqual({ injectUsagePrompt: false })
+    const global = resolveConfig(base, { injectUsagePrompt: false })
+    expect(global.injectUsagePrompt).toBe(false)
+    expect(global.autoRetrieve).toBe(true)
+    expect(resolveConfigFor(base, { injectUsagePrompt: false }, { injectUsagePrompt: true }).injectUsagePrompt).toBe(true)
+    expect(() => configOverridesSchema.parse({ injectUsagePrompt: 'false' })).toThrow()
+  })
+  it('keeps the managed MinerU package index global and defaults to public PyPI', () => {
+    expect(resolveConfig(base, {}).mineruPythonIndexUrl).toBe('https://pypi.org/simple')
+    expect(resolveConfig(base, { mineruPythonIndexUrl: 'https://mirror.example/simple' }).mineruPythonIndexUrl).toBe('https://mirror.example/simple')
+    expect(configOverridesSchema.parse({ mineruPythonIndexUrl: 'https://mirror.example/simple' })).toEqual({ mineruPythonIndexUrl: 'https://mirror.example/simple' })
+    expect(baseConfigSchema.parse({ mineruPythonIndexUrl: 'https://mirror.example/simple' })).toEqual({})
   })
 
   it('clamps out-of-range values', () => {

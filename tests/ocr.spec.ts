@@ -94,6 +94,30 @@ function makeScannedPdf(bits: 1 | 8, width: number, height: number): Buffer {
   return Buffer.concat(chunks)
 }
 
+/** A pixel-sized 26-page scan reproduces the old 350MB-per-pixmap allocation. */
+function makeLargeRepeatedScan(): Buffer {
+  const width = 2800, height = 4600, count = 26
+  const stream = deflateSync(Buffer.alloc(width * height, 180))
+  const content = `q ${width} 0 0 ${height} 0 0 cm /Im1 Do Q`
+  const objects = [
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'),
+    Buffer.from(`<< /Type /Pages /Kids [${Array.from({ length: count }, (_, i) => `${i + 5} 0 R`).join(' ')}] /Count ${count} >>`),
+    Buffer.concat([Buffer.from(`<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${stream.length} >>\nstream\n`), stream, Buffer.from('\nendstream')]),
+    Buffer.from(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`),
+    ...Array.from({ length: count }, () => Buffer.from(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /XObject << /Im1 3 0 R >> >> /Contents 4 0 R >>`)),
+  ]
+  const chunks = [Buffer.from('%PDF-1.4\n')]
+  const offsets: number[] = []
+  for (const [index, body] of objects.entries()) {
+    offsets.push(Buffer.concat(chunks).length)
+    chunks.push(Buffer.concat([Buffer.from(`${index + 1} 0 obj\n`), body, Buffer.from('\nendobj\n')]))
+  }
+  const xrefPos = Buffer.concat(chunks).length
+  const xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}`
+  chunks.push(Buffer.from(`${xref}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`))
+  return Buffer.concat(chunks)
+}
+
 describe('rgbaToPng', () => {
   it('emits a valid PNG header with the right dimensions', () => {
     const rgba = new Uint8ClampedArray(2 * 2 * 4)
@@ -244,6 +268,15 @@ describe('pdfjs scanned-raster decode (real pipeline)', () => {
 })
 
 describe('full-page rendering (mupdf, Cherry pdfPageOcr path)', () => {
+  it('renders all 26 large scan pages at their native size without exhausting the WASM heap (#37)', { timeout: 45_000 }, async () => {
+    const pages = await renderPdfPages(makeLargeRepeatedScan(), 100)
+    expect(pages).toHaveLength(26)
+    expect(pages?.map(page => page.page)).toEqual(Array.from({ length: 26 }, (_, index) => index + 1))
+    for (const { png } of pages ?? []) {
+      expect(png.readUInt32BE(16)).toBe(2800)
+      expect(png.readUInt32BE(20)).toBe(4600)
+    }
+  })
   it('renders a raster-only page into one PNG', async () => {
     const pages = await renderPdfPages(makeScannedPdf(8, 40, 30), 10)
     expect(pages).not.toBeNull()

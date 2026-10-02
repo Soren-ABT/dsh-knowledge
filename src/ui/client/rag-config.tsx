@@ -46,6 +46,9 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   const [saveError, setSaveError] = useState<string | null>(null)
   /** Cherry's dimension probe is running (save button shows a pending state). */
   const [probing, setProbing] = useState(false)
+  const [processorChecking, setProcessorChecking] = useState(false)
+  const [processorCheckResult, setProcessorCheckResult] = useState<string | null>(null)
+  const [processorCheckError, setProcessorCheckError] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -143,6 +146,22 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
   }), [globalConfig, base.config])
 
   const dirty = JSON.stringify(values) !== JSON.stringify(initial)
+  const processorDirty = (['documentProcessorProvider', 'mineruLocalUrl', 'mineruLocalApiKey', 'mineruTier'] as const)
+    .some(key => values[key] !== initial[key])
+  const checkProcessor = async (): Promise<void> => {
+    setProcessorChecking(true)
+    setProcessorCheckResult(null)
+    try {
+      const result = await api.checkProcessor(base.id)
+      setProcessorCheckError(false)
+      setProcessorCheckResult(`${t('processorCheckSuccess')} · MinerU ${result.version} · ${result.tiers.join(', ')}`)
+    } catch (error) {
+      setProcessorCheckError(true)
+      setProcessorCheckResult(error instanceof Error ? error.message : String(error))
+    } finally {
+      setProcessorChecking(false)
+    }
+  }
 
   // Cherry semantics: switching the embedding model of a NON-EMPTY base that
   // already HAS vectors is refused by the host (the user must rebuild via
@@ -177,6 +196,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
     rrfVectorWeight: { min: 0.1, max: 5 },
     semanticChunkThreshold: { min: 0, max: 1 },
     localRerankTimeoutMs: { min: 10_000, max: 300_000, int: true },
+    documentProcessingTimeoutMs: { min: 10_000, max: 7_200_000, int: true },
     localWorkerIdleTimeoutMs: { min: 0, int: true },
   }
 
@@ -244,19 +264,21 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
-      <div style={{ ...style.card, flex: 1, overflowY: 'auto' }} className="kb-scroll">
+      <div style={{ ...style.card, flex: 1, overflowY: 'auto' }} className="kb-scroll kb-rag-config">
         {/* 文档处理 */}
         <Section title={t('docProcessing')} hint={t('docProcessingHint')}>
           <select
             style={style.input}
             value={values.documentProcessorProvider}
-            onChange={(e) => patch({ documentProcessorProvider: e.target.value as 'builtin' | 'mineru' })}
+            aria-label={t('docProcessing')}
+            onChange={(e) => { patch({ documentProcessorProvider: e.target.value as KnowledgeConfig['documentProcessorProvider'] }); setProcessorCheckResult(null) }}
           >
             <option value="builtin">{t('processorBuiltin')}</option>
+            <option value="mineru-local">{t('mineruLocalOption')}</option>
             <option value="mineru">{t('mineruOption')}</option>
           </select>
           {values.documentProcessorProvider === 'mineru' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
               <input
                 style={style.input}
                 type="password"
@@ -270,14 +292,40 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 value={values.mineruApiHost}
                 onChange={(e) => patch({ mineruApiHost: e.target.value })}
               />
-              <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
+              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
                 {t('processorMineruDesc')}
               </div>
             </div>
           )}
+          {values.documentProcessorProvider === 'mineru-local' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
+              <label style={{ display: 'block', fontSize: 13, lineHeight: 1.5 }}>{t('mineruLocalUrl')}
+                <input style={{ ...style.input, marginTop: 6 }} value={values.mineruLocalUrl ?? 'http://127.0.0.1:8000'} onChange={e => patch({ mineruLocalUrl: e.target.value })} spellCheck={false} />
+              </label>
+              <label style={{ display: 'block', fontSize: 13, lineHeight: 1.5 }}>{t('mineruLocalKey')}
+                <input style={{ ...style.input, marginTop: 6 }} type="password" autoComplete="new-password" value={values.mineruLocalApiKey ?? ''} onChange={e => patch({ mineruLocalApiKey: e.target.value })} />
+              </label>
+              <label style={{ display: 'block', fontSize: 13, lineHeight: 1.5 }}>{t('mineruTier')}
+                <select style={{ ...style.input, marginTop: 6 }} value={values.mineruTier ?? 'basic'} onChange={e => patch({ mineruTier: e.target.value as KnowledgeConfig['mineruTier'] })}>
+                  <option value="flash">{t('mineruFlash')}</option><option value="basic">{t('mineruBasic')}</option>
+                  <option value="standard">{t('mineruStandard')}</option><option value="advanced">{t('mineruAdvanced')}</option>
+                </select>
+              </label>
+              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{t('mineruLocalDesc')} <a href="https://github.com/opendatalab/MinerU/blob/mineru-4.0.6-released/LICENSE.md" target="_blank" rel="noreferrer">MinerU license</a></div>
+              <button type="button" style={style.button} disabled={busy || processorChecking || processorDirty} onClick={() => void checkProcessor()}>{t(processorChecking ? 'processorChecking' : 'processorCheck')}</button>
+              <div style={{ fontSize: 13, color: C.muted }}>{t('processorCheckSaved')}</div>
+              {!processorDirty && processorCheckResult !== null && <div role="status" style={{ fontSize: 12, color: processorCheckError ? C.danger : C.success }}>{processorCheckResult}</div>}
+            </div>
+          )}
+          <FieldRow label={t('processingTimeout')}>
+            <input type="number" style={style.input} min={10000} max={7200000} step={1000} value={values.documentProcessingTimeoutMs ?? 1_800_000} onChange={e => patchNumber('documentProcessingTimeoutMs', e.target.value)} />
+          </FieldRow>
+          <FieldRow label={t('structuredChunking')} hint={t('structuredChunkingHint')}>
+            <Switch checked={values.structuredChunking ?? true} onChange={v => patch({ structuredChunking: v })} />
+          </FieldRow>
           {/* 图表描述（VLM） */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-            <div style={{ fontSize: 12, color: C.muted }}>{t('imageCaptionHint')}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 16 }}>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{t('imageCaptionHint')}</div>
             <select
               style={style.input}
               value={values.imageCaptionProvider}
@@ -442,8 +490,8 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
             </div>
           )}
           {values.embeddingProvider === 'ollama' && (
-            <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-              <div style={{ flex: 1 }}>
+            <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 220px', minWidth: 0 }}>
                 <label style={style.label}>{t('embeddingModel')}</label>
                 <select
                   style={style.input}
@@ -463,7 +511,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   {ollamaEmbeddingModels.map(name => <option key={name} value={name}>{name}</option>)}
                 </select>
               </div>
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: '1 1 220px', minWidth: 0 }}>
                 <label style={style.label}>{t('embeddingBaseUrl')}</label>
                 <input style={style.input} value={values.embeddingBaseUrl} onChange={(e) => patch({ embeddingBaseUrl: e.target.value })} />
               </div>
@@ -471,8 +519,8 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
           )}
           {values.embeddingProvider === 'openai' && (
             <>
-              <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-                <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+                <div style={{ flex: '1 1 220px', minWidth: 0 }}>
                   <label style={style.label}>{t('embeddingModel')}</label>
                   <input
                     list={listId('embedding')}
@@ -481,7 +529,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                     onChange={(e) => patch({ embeddingModel: e.target.value })}
                   />
                 </div>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: '1 1 220px', minWidth: 0 }}>
                   <label style={style.label}>{t('embeddingBaseUrl')}</label>
                   <input style={style.input} value={values.embeddingBaseUrl} onChange={(e) => patch({ embeddingBaseUrl: e.target.value })} />
                 </div>
@@ -505,8 +553,8 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
 
         {/* 重排模型 */}
         <Section title={t('rerankModel')} hint={t('rerankHint')}>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
               <label style={style.label}>{t('modelLabel')}</label>
               <input
                 list={listId('rerank')}
@@ -515,7 +563,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 onChange={(e) => patch({ rerankModel: e.target.value })}
               />
             </div>
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
               <label style={style.label}>{t('rerankBaseUrl')}</label>
               <input style={style.input} value={values.rerankBaseUrl} onChange={(e) => patch({ rerankBaseUrl: e.target.value })} />
             </div>
@@ -545,47 +593,50 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
           )}
         </Section>
 
-        {/* Top K + 阈值 */}
-        <Section title={t('topK')} hint={t('topKHint')}>
-          <Slider
-            value={values.topK}
-            min={1}
-            max={50}
-            step={1}
-            onChange={(v) => patch({ topK: v })}
-            minLabel="1"
-            maxLabel="50"
-            format={(v) => String(v)}
-          />
-        </Section>
-        {usesThreshold && (
-          <Section title={t('threshold')} hint={t('thresholdHint')}>
+        <section aria-label={t('retrievalTuning')} style={{ marginBottom: 20, padding: '18px 18px 4px', border: `1px solid ${C.border}`, borderRadius: 14, background: C.surface2 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, margin: '0 0 18px', color: C.text }}>{t('retrievalTuning')}</h3>
+          {/* Top K + 阈值 */}
+          <Section title={t('topK')} hint={t('topKHint')}>
             <Slider
-              value={values.similarityThreshold}
-              min={0}
-              max={1}
-              step={0.01}
-              onChange={(v) => patch({ similarityThreshold: v })}
-              minLabel="0.00"
-              maxLabel="1.00"
-              format={(v) => v.toFixed(2)}
+              value={values.topK}
+              min={1}
+              max={50}
+              step={1}
+              onChange={(v) => patch({ topK: v })}
+              minLabel="1"
+              maxLabel="50"
+              format={(v) => String(v)}
             />
           </Section>
-        )}
+          {usesThreshold && (
+            <Section title={t('threshold')} hint={t('thresholdHint')}>
+              <Slider
+                value={values.similarityThreshold}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(v) => patch({ similarityThreshold: v })}
+                minLabel="0.00"
+                maxLabel="1.00"
+                format={(v) => v.toFixed(2)}
+              />
+            </Section>
+          )}
 
-        {/* 上下文拼接 */}
-        <Section title={t('siblingChunks')} hint={t('siblingChunksHint')}>
-          <Slider
-            value={values.siblingChunks}
-            min={0}
-            max={3}
-            step={1}
-            onChange={(v) => patch({ siblingChunks: v })}
-            minLabel="0"
-            maxLabel="3"
-            format={(v) => String(v)}
-          />
-        </Section>
+          {/* 上下文拼接 */}
+          <Section title={t('siblingChunks')} hint={t('siblingChunksHint')}>
+            <Slider
+              value={values.siblingChunks}
+              min={0}
+              max={3}
+              step={1}
+              onChange={(v) => patch({ siblingChunks: v })}
+              minLabel="0"
+              maxLabel="3"
+              format={(v) => String(v)}
+            />
+          </Section>
+        </section>
 
         {/* 高级设置 */}
         <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
@@ -667,6 +718,14 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   onChange={(e) => patchNumber('autoRetrieveWeight', e.target.value)}
                 />
               </FieldRow>
+              <FieldRow label={t('injectUsagePrompt')} hint={t('injectUsagePromptHint')}>
+                <input
+                  type="checkbox"
+                  aria-label={t('injectUsagePrompt')}
+                  checked={values.injectUsagePrompt !== false}
+                  onChange={(e) => patch({ injectUsagePrompt: e.target.checked })}
+                />
+              </FieldRow>
               <FieldRow label={t('chunkSeparator')} hint={t('chunkSeparatorHint')}>
                 <input
                   style={{ ...style.input, width: 140 }}
@@ -742,9 +801,9 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
 
 function Section(props: { title: string; hint?: string; children: React.ReactNode }): JSX.Element {
   return (
-    <div style={{ marginBottom: 18 }}>
-      <p style={style.sectionTitle}>{props.title}</p>
-      {props.hint !== undefined && <p style={style.sectionHint}>{props.hint}</p>}
+    <div style={{ marginBottom: 24 }}>
+      <p style={{ ...style.sectionTitle, fontSize: 15, margin: '0 0 5px', lineHeight: 1.45 }}>{props.title}</p>
+      {props.hint !== undefined && <p style={{ ...style.sectionHint, fontSize: 13, margin: '0 0 14px', lineHeight: 1.65, maxWidth: 680 }}>{props.hint}</p>}
       {props.children}
     </div>
   )
@@ -752,12 +811,12 @@ function Section(props: { title: string; hint?: string; children: React.ReactNod
 
 function FieldRow(props: { label: string; hint?: string; children: React.ReactNode }): JSX.Element {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>{props.label}</div>
-        {props.hint !== undefined && <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>{props.hint}</div>}
+    <div className="kb-rag-config-field">
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.45 }}>{props.label}</div>
+        {props.hint !== undefined && <div style={{ fontSize: 12, color: C.muted, marginTop: 4, lineHeight: 1.55 }}>{props.hint}</div>}
       </div>
-      {props.children}
+      <div className="kb-rag-config-control">{props.children}</div>
     </div>
   )
 }

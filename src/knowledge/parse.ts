@@ -262,13 +262,9 @@ async function extractTextWithLayout(bytes: Uint8Array): Promise<string> {
 
 /** OCR fallback shared by the empty-text and corrupt-text-layer paths. */
 async function ocrFallback(bytes: Uint8Array): Promise<string> {
-  try {
-    const { isOcrReady, ocrPdfText } = await import('./ocr.js')
-    if (!isOcrReady()) return ''
-    return await ocrPdfText(bytes)
-  } catch {
-    return ''
-  }
+  const { isOcrReady, ocrPdfText } = await import('./ocr.js')
+  if (!isOcrReady()) return ''
+  return await ocrPdfText(bytes)
 }
 
 async function parsePdf(buffer: Uint8Array): Promise<string> {
@@ -321,7 +317,7 @@ async function parsePdf(buffer: Uint8Array): Promise<string> {
   // local OCR models are downloaded, recognize the full-page renders. Without
   // the models the original error stands, pointing at the settings panel.
   let ocrReady = false
-  let ocrFailure: string | undefined
+  let ocrFailure: Error | undefined
   try {
     const { isOcrReady, ocrPdfText } = await import('./ocr.js')
     ocrReady = isOcrReady()
@@ -333,14 +329,15 @@ async function parsePdf(buffer: Uint8Array): Promise<string> {
     // The models ARE downloaded (isOcrReady() was true), so this is an engine
     // failure — telling the user to download models they already have sends them
     // in the wrong direction (issue #17).
-    ocrFailure = error instanceof Error ? error.message : String(error)
-    console.warn(`[dsh-knowledge] OCR failed for a scanned PDF: ${ocrFailure}`)
+    ocrFailure = error instanceof Error ? error : new Error(String(error))
+    console.warn(`[dsh-knowledge] OCR failed for a scanned PDF: ${ocrFailure.message}`)
+  }
+  if (ocrFailure !== undefined) {
+    throw Object.assign(new Error(`PDF contains no extractable text and OCR failed: ${ocrFailure.message}`),
+      { code: (ocrFailure as { code?: string }).code ?? 'ocr_failed' })
   }
   if (primaryError !== null) {
     throw new Error(`PDF parsing failed: ${primaryError.message}`)
-  }
-  if (ocrFailure !== undefined) {
-    throw new Error(`PDF contains no extractable text and OCR failed: ${ocrFailure}`)
   }
   throw new Error(
     ocrReady

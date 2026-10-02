@@ -14,13 +14,19 @@
  */
 import { build } from 'esbuild'
 import { mkdirSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const PACKAGE_ID = 'dsh-knowledge'
 
 mkdirSync('lib', { recursive: true })
+
+// Incremental local builds must not pack retired thread entry points.
+for (const file of ['lib/knowledge/ocr-worker.mjs', 'lib/knowledge/ocr-worker.mjs.map',
+  'lib/types/knowledge/ocr-worker.d.ts', 'lib/types/knowledge/ocr-worker.d.ts.map']) {
+  await rm(new URL(file, import.meta.url), { force: true })
+}
 
 /**
  * esbuild stamps inlined module file markers with the source file's path. For
@@ -80,6 +86,9 @@ const hostExternal = [
 const hostEntries = [
   ['src/index.ts', 'lib/index.js'],
   ['src/knowledge/index.ts', 'lib/knowledge/index.js'],
+  // Managed MinerU deployment controller used by the local release smoke.
+  // Kept as a bundled public runtime entry so smoke tests exercise production code.
+  ['src/knowledge/mineru-deployment.ts', 'lib/knowledge/mineru-deployment.mjs'],
   ['src/tool-knowledge/index.ts', 'lib/tool-knowledge/index.js'],
   // Local embedding inference process: a separate ESM bundle loaded via
   // child_process IPC, so a native ONNX crash or timeout can be recovered
@@ -89,9 +98,8 @@ const hostEntries = [
   // worker, so a hard timeout can terminate it without blocking embeddings or
   // reloading onnxruntime in a replacement worker thread on Linux.
   ['src/knowledge/rerank-process.ts', 'lib/knowledge/rerank-process.mjs'],
-  // OCR inference worker: Tesseract.js rethrows worker errors on
-  // process.nextTick, so it must run in its own thread (own-worker OCR).
-  ['src/knowledge/ocr-worker.ts', 'lib/knowledge/ocr-worker.mjs'],
+  // OCR inference process: native ONNX/V8 fatals require process isolation.
+  ['src/knowledge/ocr-process.ts', 'lib/knowledge/ocr-process.mjs'],
   // pdf-parse worker: pdf-parse v1 leaks an unhandled rejection when a document
   // fails to load (its unawaited doc.destroy() never runs), which Node 22
   // escalates to a host-level unhandled rejection on every scanned/corrupt PDF.

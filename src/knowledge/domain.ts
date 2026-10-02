@@ -8,6 +8,7 @@
 
 import { z } from 'zod'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
+import type { MineruTier } from './processing-types.js'
 import type {
   KnowledgeBase,
   KnowledgeConfig,
@@ -37,9 +38,14 @@ export const baseConfigSchema = z.object({
   siblingChunks: z.number().int().gte(0).lte(3).optional(),
   // Mirrors BaseConfig: every base-settable field must survive the durable
   // boundary — a missing key here makes zod strip the override on save.
-  documentProcessorProvider: z.enum(['builtin', 'mineru']).optional(),
+  documentProcessorProvider: z.enum(['builtin', 'mineru', 'mineru-local']).optional(),
   mineruApiKey: z.string().optional(),
   mineruApiHost: z.string().optional(),
+  mineruLocalUrl: z.string().optional(),
+  mineruLocalApiKey: z.string().optional(),
+  mineruTier: z.enum(['flash', 'basic', 'standard', 'advanced']).optional(),
+  documentProcessingTimeoutMs: z.number().int().gte(10_000).lte(7_200_000).optional(),
+  structuredChunking: z.boolean().optional(),
   semanticChunk: z.boolean().optional(),
   semanticChunkThreshold: z.number().gte(0).lte(1).optional(),
   chunkTokenLimit: z.number().int().gte(0).optional(),
@@ -55,6 +61,7 @@ export const baseConfigSchema = z.object({
   resumeInterruptedOnStartup: z.boolean().optional(),
   /** Proactive auto-retrieval on every user message. */
   autoRetrieve: z.boolean().optional(),
+  injectUsagePrompt: z.boolean().optional(),
 })
 
 const baseSchema = z.object({
@@ -65,6 +72,21 @@ const baseSchema = z.object({
   config: baseConfigSchema.optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
+})
+
+export const documentProcessingInfoSchema = z.object({
+  revision: z.string().min(1),
+  artifactId: z.string().min(1),
+  sourceHash: z.string(),
+  provider: z.enum(['builtin', 'mineru', 'mineru-local']),
+  processorVersion: z.string().optional(),
+  optionsFingerprint: z.string(),
+  parsedAt: z.number(),
+  completeness: z.enum(['complete', 'partial', 'unknown']),
+  pageCount: z.number().int().gte(0).optional(),
+  processedPages: z.array(z.number().int().gte(0)).optional(),
+  warnings: z.array(z.object({ code: z.string(), message: z.string() })),
+  reused: z.boolean().optional(),
 })
 
 const documentSchema = z.object({
@@ -83,6 +105,7 @@ const documentSchema = z.object({
   contentHash: z.string().optional(),
   rawFilePath: z.string().optional(),
   rawText: z.string().optional(),
+  processing: documentProcessingInfoSchema.optional(),
   charCount: z.number().int().gte(0),
   tokenCount: z.number().int().gte(0).optional(),
   chunkCount: z.number().int().gte(0),
@@ -115,9 +138,15 @@ export const configOverridesSchema = z.object({
   embeddingBatchSize: z.number().int().gt(0).optional(),
   siblingChunks: z.number().int().gte(0).lte(3).optional(),
   hfEndpoint: z.string().optional(),
-  documentProcessorProvider: z.enum(['builtin', 'mineru']).optional(),
+  mineruPythonIndexUrl: z.string().optional(),
+  documentProcessorProvider: z.enum(['builtin', 'mineru', 'mineru-local']).optional(),
   mineruApiKey: z.string().optional(),
   mineruApiHost: z.string().optional(),
+  mineruLocalUrl: z.string().optional(),
+  mineruLocalApiKey: z.string().optional(),
+  mineruTier: z.enum(['flash', 'basic', 'standard', 'advanced']).optional(),
+  documentProcessingTimeoutMs: z.number().int().gte(10_000).lte(7_200_000).optional(),
+  structuredChunking: z.boolean().optional(),
   semanticChunk: z.boolean().optional(),
   semanticChunkThreshold: z.number().gte(0).lte(1).optional(),
   chunkTokenLimit: z.number().int().gte(0).optional(),
@@ -129,6 +158,7 @@ export const configOverridesSchema = z.object({
   imageCaptionApiKey: z.string().optional(),
   resumeInterruptedOnStartup: z.boolean().optional(),
   autoRetrieve: z.boolean().optional(),
+  injectUsagePrompt: z.boolean().optional(),
   autoRetrieveWeight: z.number().int().gte(0).lte(5).optional(),
   localModelCacheDir: z.string().optional(),
   localWorkerIdleTimeoutMs: z.number().int().gte(0).optional(),
@@ -156,9 +186,15 @@ export interface ConfigOverrides {
   embeddingBatchSize?: number
   siblingChunks?: number
   hfEndpoint?: string
+  mineruPythonIndexUrl?: string
   documentProcessorProvider?: KnowledgeConfig['documentProcessorProvider']
   mineruApiKey?: string
   mineruApiHost?: string
+  mineruLocalUrl?: string
+  mineruLocalApiKey?: string
+  mineruTier?: MineruTier
+  documentProcessingTimeoutMs?: number
+  structuredChunking?: boolean
   semanticChunk?: boolean
   semanticChunkThreshold?: number
   chunkTokenLimit?: number
@@ -170,6 +206,7 @@ export interface ConfigOverrides {
   imageCaptionApiKey?: string
   resumeInterruptedOnStartup?: boolean
   autoRetrieve?: boolean
+  injectUsagePrompt?: boolean
   autoRetrieveWeight?: number
   localModelCacheDir?: string
   localWorkerIdleTimeoutMs?: number

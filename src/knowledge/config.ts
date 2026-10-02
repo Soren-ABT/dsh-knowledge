@@ -9,6 +9,7 @@
 import Schema from '@deepseek-ai/schemastery'
 import type { ConfigOverrides } from './domain.js'
 import type { BaseConfig, EmbeddingProvider, KnowledgeConfig, SearchMode } from './types.js'
+import type { DocumentProcessor, MineruTier } from './processing-types.js'
 
 export interface Config {
   embeddingProvider: EmbeddingProvider
@@ -37,14 +38,21 @@ export interface Config {
   localModelCacheDir: string
   /** Hugging Face endpoint override (mirror); empty = official hub / `HF_ENDPOINT` env. */
   hfEndpoint: string
+  /** Optional package index for the isolated managed MinerU environment. */
+  mineruPythonIndexUrl?: string
   /** Chunk SQLite file; empty = `<DSH_HOME>/storages/knowledge-chunks.sqlite`. */
   chunkStorePath: string
-  /** Document processor: `builtin` (local parsers + OCR) or `mineru` (remote MinerU API). */
-  documentProcessorProvider: 'builtin' | 'mineru'
+  /** Built-in parsing, legacy MinerU cloud, or an independently deployed V1 service. */
+  documentProcessorProvider: DocumentProcessor
   /** MinerU API key (required when provider is `mineru`). */
   mineruApiKey: string
   /** MinerU API host; empty = https://mineru.net */
   mineruApiHost: string
+  mineruLocalUrl?: string
+  mineruLocalApiKey?: string
+  mineruTier?: MineruTier
+  documentProcessingTimeoutMs?: number
+  structuredChunking?: boolean
   /** Semantic chunking: embed paragraph-level segments and merge similar adjacent ones. */
   semanticChunk: boolean
   /** Cosine threshold below which adjacent segments start a new chunk (0–1). */
@@ -76,6 +84,8 @@ export interface Config {
    * "use the knowledge base" instruction or a knowledge_search call.
    */
   autoRetrieve: boolean
+  /** Include the short available-base list in the system prompt. */
+  injectUsagePrompt?: boolean
   /**
    * Auto-retrieve seat cap per base (0–5, default 3; 0 excludes a base):
    * how many of THIS base's chunks may enter one injection.
@@ -114,10 +124,16 @@ export const Config: Schema<Config> = Schema.object({
   siblingChunks: Schema.number().default(1),
   localModelCacheDir: Schema.string().default(''),
   hfEndpoint: Schema.string().default(''),
+  mineruPythonIndexUrl: Schema.string().default('https://pypi.org/simple'),
   chunkStorePath: Schema.string().default(''),
-  documentProcessorProvider: Schema.union(['builtin', 'mineru']).default('builtin'),
+  documentProcessorProvider: Schema.union(['builtin', 'mineru', 'mineru-local']).default('builtin'),
   mineruApiKey: Schema.string().default(''),
   mineruApiHost: Schema.string().default(''),
+  mineruLocalUrl: Schema.string().default('http://127.0.0.1:8000'),
+  mineruLocalApiKey: Schema.string().default(''),
+  mineruTier: Schema.union(['flash', 'basic', 'standard', 'advanced']).default('basic'),
+  documentProcessingTimeoutMs: Schema.number().default(1_800_000),
+  structuredChunking: Schema.boolean().default(true),
   semanticChunk: Schema.boolean().default(false),
   semanticChunkThreshold: Schema.number().default(0.75),
   chunkTokenLimit: Schema.number().default(0),
@@ -129,6 +145,7 @@ export const Config: Schema<Config> = Schema.object({
   imageCaptionApiKey: Schema.string().default(''),
   resumeInterruptedOnStartup: Schema.boolean().default(true),
   autoRetrieve: Schema.boolean().default(true),
+  injectUsagePrompt: Schema.boolean().default(true),
   autoRetrieveWeight: Schema.number().default(3),
   localWorkerIdleTimeoutMs: Schema.number().default(60000),
 })
@@ -168,9 +185,15 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     embeddingBatchSize,
     siblingChunks,
     hfEndpoint: overrides.hfEndpoint ?? config.hfEndpoint,
+    mineruPythonIndexUrl: overrides.mineruPythonIndexUrl ?? config.mineruPythonIndexUrl ?? 'https://pypi.org/simple',
     documentProcessorProvider: overrides.documentProcessorProvider ?? config.documentProcessorProvider,
     mineruApiKey: overrides.mineruApiKey ?? config.mineruApiKey,
     mineruApiHost: overrides.mineruApiHost ?? config.mineruApiHost,
+    mineruLocalUrl: overrides.mineruLocalUrl ?? config.mineruLocalUrl ?? 'http://127.0.0.1:8000',
+    mineruLocalApiKey: overrides.mineruLocalApiKey ?? config.mineruLocalApiKey ?? '',
+    mineruTier: overrides.mineruTier ?? config.mineruTier ?? 'basic',
+    documentProcessingTimeoutMs: clampInt(overrides.documentProcessingTimeoutMs ?? config.documentProcessingTimeoutMs ?? 1_800_000, 10_000, 7_200_000, 1_800_000),
+    structuredChunking: overrides.structuredChunking ?? config.structuredChunking ?? true,
     semanticChunk: overrides.semanticChunk ?? config.semanticChunk,
     semanticChunkThreshold: clampNumber(overrides.semanticChunkThreshold ?? config.semanticChunkThreshold, 0, 1, 0.75),
     chunkTokenLimit: clampInt(overrides.chunkTokenLimit ?? config.chunkTokenLimit, 0, 1_000_000, 0),
@@ -182,6 +205,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     imageCaptionApiKey: overrides.imageCaptionApiKey ?? config.imageCaptionApiKey,
     resumeInterruptedOnStartup: overrides.resumeInterruptedOnStartup ?? config.resumeInterruptedOnStartup,
     autoRetrieve: overrides.autoRetrieve ?? config.autoRetrieve,
+    injectUsagePrompt: overrides.injectUsagePrompt ?? config.injectUsagePrompt ?? true,
     autoRetrieveWeight: clampInt(overrides.autoRetrieveWeight ?? config.autoRetrieveWeight, 0, 5, 3),
     localWorkerIdleTimeoutMs: clampInt(overrides.localWorkerIdleTimeoutMs ?? config.localWorkerIdleTimeoutMs, 0, 24 * 3600 * 1000, 60000),
     localModelCacheDir: overrides.localModelCacheDir ?? config.localModelCacheDir,
@@ -223,6 +247,11 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     documentProcessorProvider: baseConfig.documentProcessorProvider ?? resolved.documentProcessorProvider,
     mineruApiKey: baseConfig.mineruApiKey ?? resolved.mineruApiKey,
     mineruApiHost: baseConfig.mineruApiHost ?? resolved.mineruApiHost,
+    mineruLocalUrl: baseConfig.mineruLocalUrl ?? resolved.mineruLocalUrl,
+    mineruLocalApiKey: baseConfig.mineruLocalApiKey ?? resolved.mineruLocalApiKey,
+    mineruTier: baseConfig.mineruTier ?? resolved.mineruTier,
+    documentProcessingTimeoutMs: clampInt(baseConfig.documentProcessingTimeoutMs ?? resolved.documentProcessingTimeoutMs ?? 1_800_000, 10_000, 7_200_000, 1_800_000),
+    structuredChunking: baseConfig.structuredChunking ?? resolved.structuredChunking,
     semanticChunk: baseConfig.semanticChunk ?? resolved.semanticChunk,
     semanticChunkThreshold: clampNumber(baseConfig.semanticChunkThreshold ?? resolved.semanticChunkThreshold, 0, 1, 0.75),
     chunkTokenLimit: clampInt(baseConfig.chunkTokenLimit ?? resolved.chunkTokenLimit, 0, 1_000_000, 0),
@@ -234,6 +263,7 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     imageCaptionApiKey: baseConfig.imageCaptionApiKey ?? resolved.imageCaptionApiKey,
     resumeInterruptedOnStartup: baseConfig.resumeInterruptedOnStartup ?? resolved.resumeInterruptedOnStartup,
     autoRetrieve: baseConfig.autoRetrieve ?? resolved.autoRetrieve,
+    injectUsagePrompt: baseConfig.injectUsagePrompt ?? resolved.injectUsagePrompt,
     autoRetrieveWeight: clampInt(baseConfig.autoRetrieveWeight ?? resolved.autoRetrieveWeight, 0, 5, 3),
   }
 }

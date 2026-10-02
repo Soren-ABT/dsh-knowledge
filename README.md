@@ -78,7 +78,7 @@ dsh plugin --profile <name> add dsh-knowledge
 
 ```bash
 # GitHub Release 或 npm pack 生成的 tarball
-dsh plugin --profile <name> add ./dsh-knowledge-0.4.1.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.0.tgz
 
 # 本地源码目录，需要先完成构建
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -168,7 +168,9 @@ allowBuilds:
 - 可选语义分块会合并相邻的相似段落；可选 Token 上限会继续在句号、逗号或空格附近细分超长块。
 - 扫描 PDF、无文本层矢量 PDF、损坏文本层和逐字符排版 PDF 可自动进入整页 OCR 路径。
 - PaddleOCR PP-OCRv5 为首选本地识别器，识别失败时回退 Tesseract；1-bit JBIG2/CCITT 扫描件也包含在处理路径中。
+- OCR 推理在独立子进程中运行，原生崩溃或超时会使文档导入失败，不会带走 DSH。页面光栅分配前按 64 MiB 预算选择缩放，逐页释放 pixmap；漏页、超出页数或内存预算时明确报错，不再把残缺正文标为成功。旧版本已丢页的扫描件需手动重新解析。
 - 可选 MinerU 远程处理可将公式、表格和复杂版式恢复为 Markdown；未配置时继续使用本地解析与 OCR。
+- 设置中提供 MinerU Basic/ONNX 本地托管实验入口：使用独立 Python 环境、固定模型 revision 与文件校验值，并可配置 Hugging Face 镜像和 Python 包源。真实托管推理仍按平台验收；安装不会修改全局 Python 包，也不会自动改用云端。参见 [MinerU 自部署与验证说明](docs/mineru-self-hosted.md)。
 
 ### 模型与管理界面
 
@@ -225,6 +227,19 @@ allowBuilds:
 - 词法检索使用 SQLite FTS5 trigram 索引；向量使用 Float32Array 常驻缓存并精确失效。
 - 旧 JSON 分块数据在首次启动时执行幂等迁移；没有存储后端时自动退化为内存模式。
 - 修改分块或 embedding 配置后，可以重建单条资料或整个知识库的索引。
+
+---
+
+## v0.5.0 更新重点
+
+- **结构化证据链**：保留解析器输出中的页码、块范围、表格/公式等结构信息，并贯穿分块、索引、检索上下文和证据续读；重分块可复用已保存的解析产物，不必重复解析。
+- **可选托管 MinerU（实验性）**：提供独立 Python 环境预检、模型文件校验、Hugging Face / Python 包源设置和部署状态显示。候选安装仅在真实 PDF 解析探针通过后才成为可用部署；现有云 API 和外部自部署服务仍可继续使用。
+- **可恢复处理流程**：统一导入和重建入口，增加处理队列与可见状态；替换索引失败时保留上一代可用数据。
+- **验证边界**：自动化单测、检索 benchmark、打包与 worker 检查已通过。托管 MinerU 的 Windows/Linux 实机部署矩阵和浏览器设置页验收尚未完成，因此该能力仍标注为实验性，不宣称 OCR 准确率或跨平台稳定性已获认证。
+
+本版本新增结构化证据及处理能力。已有数据的升级兼容性以发布候选的独立实测结果为准；托管 MinerU 默认不下载模型，只有用户显式预检并确认安装才会创建独立环境。
+
+[查看 v0.5.0 发布说明](./docs/releases/v0.5.0.md) · [查看 CHANGELOG](./CHANGELOG.md)
 
 ---
 
@@ -348,7 +363,7 @@ dsh-knowledge 的检索目标不只是返回一组 Top K 文本，而是生成�
 
 ## 架构
 
-一个 bundle 挂载三个插件行。本地 embedding 与本地 rerank 分别运行在可终止、可重建的独立 child process，OCR 仍运行在独立 worker thread；本地推理故障不会直接进入 DSH host 的执行空间。
+一个 bundle 挂载三个插件行。本地 embedding、本地 rerank 与 OCR 推理分别运行在可终止、可重建的独立 child process。mupdf 页面渲染仍在 host 中同步执行，受页面尺寸和光栅预算约束。
 
 | 组件 | 平台 | 职责 |
 |---|---|---|
@@ -356,7 +371,7 @@ dsh-knowledge 的检索目标不只是返回一组 Top K 文本，而是生成�
 | `tool-knowledge` | host | 注册并执行 14 个模型工具 |
 | `ui-knowledge` | client | 侧边栏入口、工作区管理面板及同源 API 调用 |
 | `embed-process` | child process | transformers.js 本地 embedding 推理；严格 IPC、staging/readiness probe 与可恢复的原生模型生命周期 |
-| `ocr-worker` | worker thread | mupdf 页面渲染、PaddleOCR、OpenCV 和 Tesseract 识别 |
+| `ocr-process` | child process | PaddleOCR、OpenCV 和 Tesseract 识别；串行推理、超时终止及退出感知 |
 | `rerank-process.mjs` | child process | 本地 cross-encoder 重排、超时隔离和进程级恢复 |
 
 业务状态中的 `bases`、`documents` 和全局配置位于 `knowledge` storage domain；chunk 与可选 embedding 位于插件自己的 SQLite 存储；文件原始字节位于 SQLite 同级的 `knowledge-raw` 目录。
@@ -440,15 +455,19 @@ dsh-knowledge 的定位是“一体化文档知识库”。下面的对照用于
 | `imageCaptionBaseUrl` | `''` | 图表描述 API 基址 |
 | `imageCaptionApiKey` | `''` | OpenAI 兼容视觉服务密钥 |
 | `hfEndpoint` | `''` | Hugging Face 下载端点或镜像 |
-| `documentProcessorProvider` | `builtin` | `builtin` 本地解析或 `mineru` 远程处理 |
+| `mineruPythonIndexUrl` | `https://pypi.org/simple` | 托管 MinerU 隔离环境使用的 Python 包源 |
+| `documentProcessorProvider` | `builtin` | `builtin` 内置解析、`mineru` 云 API、`mineru-local` 自部署 MinerU 4 V1（Basic 本地托管为实验性） |
 | `mineruApiKey` | `''` | MinerU 模式需要的 API Key |
 | `mineruApiHost` | `''` | 空值使用 `https://mineru.net` |
-| `resumeInterruptedOnStartup` | `true` | 启动时恢复中断的导入 |
+| `resumeInterruptedOnStartup` | `true` | 启动时恢复中断的导入；自动解析恢复最多 3 次，失败后保留来源供手动重建 |
 | `autoRetrieve` | `true` | 用户消息进入时自动检索并注入相关背景 |
+| `injectUsagePrompt` | `true` | 每次请求仅列出可用库名；可在每库高级设置中关闭，不影响工具和自动检索 |
 | `autoRetrieveWeight` | `3` | 每库自动注入席位上限，范围 0–5；`0` 表示排除 |
 | `localModelCacheDir` | `''` | 空值使用 `<DSH_HOME>/cache/dsh-knowledge/local-models` |
 | `localWorkerIdleTimeoutMs` | `60000` | 本地 embedding process 空闲释放模型 session 的时间；`0` 表示常驻 |
 | `chunkStorePath` | `''` | 空值使用 `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
+
+`knowledge:usage` 不再重复 `knowledge_search` 的行为指令，只提供库名；部署配置或全局覆盖可设置 `injectUsagePrompt: false`，每库配置可以单独覆盖。自动检索消息使用插件自己的 `dsh-knowledge` 来源名称，符合 DSH v4 的来源准入要求。桌面面板通过 Window Controls Overlay 几何和 CSS 标题栏环境变量动态避让窗口按钮，关闭按钮、知识库开关和通知随面板一起进入安全区。
 
 按库设置中的空字段继承全局配置。`localModelCacheDir`、`localWorkerIdleTimeoutMs` 和 `chunkStorePath` 是进程级设置。API Key 以明文保存在本地机器，请保护 profile 数据目录。
 
@@ -493,7 +512,8 @@ pnpm run build
 
 - 模型选择器是带建议的可编辑组合框，不是 provider 的实时模型列表；可以手动输入自定义 ID。
 - embedding 按批次运行在导入流程内；本地模型第一次下载会阻塞对应导入，但管理页面会显示进度。
-- MinerU 需要官方或自托管服务的 API Key；未配置时使用本地解析与 OCR。
+- `mineru` 云模式需要 API Key；`mineru-local` 使用独立服务地址和可选的服务令牌，不会自动降级到云 API。自部署服务不等于完全离线：文件会发送到配置的服务及其上传存储地址。
+- 开发分支新增结构化证据、页码/区域来源、解析产物复用及「重新解析 / 重新分块」。旧文档不会自动重建；真实模型效果仍须验证。参见 [MinerU 自部署与验证说明](docs/mineru-self-hosted.md)。
 - 文本入口适合轻量笔记，不提供富文本编辑器。
 - Intel Mac 无法运行基于 onnxruntime 的本地 embedding 和 OCR。
 

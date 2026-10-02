@@ -101,11 +101,20 @@ body, .kb-panel-in {
 .kb-scroll::-webkit-scrollbar { width: 8px; height: 8px }
 .kb-scroll::-webkit-scrollbar-thumb { background: var(--dsw-alias-border-l2, #c7ccd4); border-radius: 999px }
 .kb-scroll::-webkit-scrollbar-track { background: transparent }
+.kb-rag-config { container-type: inline-size }
+.kb-rag-config-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 42%); align-items: center; gap: 12px 20px; margin-bottom: 18px }
+.kb-rag-config-control { min-width: 0 }
+@container (max-width: 640px) {
+  .kb-rag-config-field { grid-template-columns: minmax(0, 1fr); align-items: start; gap: 8px; margin-bottom: 20px }
+  .kb-rag-config-control { width: 100% }
+  .kb-rag-config-control:has([role="switch"]) { width: auto; justify-self: start }
+}
 `
 
 export const style = {
   panel: {
     position: 'fixed', inset: 0, zIndex: 300, display: 'flex', flexDirection: 'column',
+    top: 'max(var(--kb-titlebar-inset, 0px), calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 0px)))',
     background: C.bg, color: C.text, pointerEvents: 'auto',
   } as CSSProperties,
   header: {
