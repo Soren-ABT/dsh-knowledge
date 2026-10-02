@@ -133,16 +133,18 @@ async function main() {
     // native build approvals — writing a workspace one directory above the
     // profile would not affect the pnpm command whose cwd is profiles/web.
     run(dsh, [...dshPrefix, '--profile', 'web', '--dump-config'], { env })
-    // The pinned public CLI checks for HMR before its dynamic fallback has
-    // finished loading. Enable its watch-only service during normal boot in
-    // this temporary profile so the smoke can reach the installed plugin.
-    await writeFile(join(profiles, 'web', 'cordis.patch.yml'), [
-      '- id: hmr',
-      '  disabled: false',
-      '  config:',
-      '    root: []',
-      '',
-    ].join('\n'))
+    // The legacy public CLI checks for HMR before its dynamic fallback has
+    // finished loading. Newer hosts own a different HMR configuration.
+    const dshVersion = run(dsh, [...dshPrefix, '--version'], { env }).trim()
+    if (dshVersion === '0.1.1-rc.2') {
+      await writeFile(join(profiles, 'web', 'cordis.patch.yml'), [
+        '- id: hmr',
+        '  disabled: false',
+        '  config:',
+        '    root: []',
+        '',
+      ].join('\n'))
+    }
     await writeFile(join(profiles, 'web', 'pnpm-workspace.yaml'), [
       'packages:',
       '  - .',
