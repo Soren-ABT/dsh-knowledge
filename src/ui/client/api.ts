@@ -746,7 +746,9 @@ export class KnowledgeApi {
     threshold?: number
     filter?: {
       docIds?: string[]
+      excludeDocIds?: string[]
       titleIncludes?: string
+      titleExcludes?: string[]
       sourceTypes?: string[]
       updatedAfter?: number
       updatedBefore?: number

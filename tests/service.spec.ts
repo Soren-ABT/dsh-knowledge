@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { createServer } from 'node:http'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -9,6 +10,8 @@ import { estimateContextTokens, serializeContextWindow } from '../src/knowledge/
 import type { Config } from '../src/knowledge/config.js'
 import type { KnowledgeService as KnowledgeServiceType } from '../src/knowledge/index.js'
 import type { SearchHit, SearchResult } from '../src/knowledge/types.js'
+import type { Store } from '../src/knowledge/store.js'
+import { knowledgeRoute } from '../src/knowledge/http.js'
 
 const DEFAULT_CONFIG: Config = {
   embeddingProvider: 'none',
@@ -487,6 +490,107 @@ describe('KnowledgeService', () => {
     // updatedAfter excludes everything when the documents are old.
     const byTime = await service.search({ query: '排队论', baseId: base.id, filter: { updatedAfter: Date.now() + 1000 } })
     expect(byTime.hits).toHaveLength(0)
+  })
+
+  it('combines exact ID and literal title exclusions with inclusion metadata (#39)', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'exclusions' })
+    const foreignBase = await service.createBase({ name: 'foreign' })
+    const body = await service.addTextDocument({ baseId: base.id, title: 'Manual 正文', content: 'needle body evidence' })
+    const catalog = await service.addTextDocument({ baseId: base.id, title: 'Manual CATALOG', content: 'needle appendixonlymarker' })
+    const record = await service.addTextDocument({ baseId: base.id, title: 'Manual [Record]%', content: 'needle processing log' })
+    const foreign = await service.addTextDocument({ baseId: foreignBase.id, title: 'Manual 正文', content: 'needle foreign evidence' })
+    const query = { query: 'needle', baseId: base.id, topK: 10 }
+    const combined = await service.search({ ...query, filter: {
+      docIds: [body.id, catalog.id, record.id, foreign.id], titleIncludes: 'manual',
+      sourceTypes: ['text'], updatedAfter: 0, updatedBefore: Date.now() + 1_000,
+      excludeDocIds: [catalog.id, catalog.id, 'unknown'], titleExcludes: [' [RECORD]% ', ''],
+    } })
+    expect(combined.hits.map(hit => hit.docId)).toEqual([body.id])
+
+    const byTitle = await service.search({ ...query, filter: { titleExcludes: [' CATALOG ', '[record]%', 'catalog'] } })
+    expect(byTitle.hits.map(hit => hit.docId)).toEqual([body.id])
+    const appendix = await service.search({ query: 'appendixonlymarker', baseId: base.id, filter: { excludeDocIds: [catalog.id] } })
+    expect(appendix.hits.every(hit => hit.docId !== catalog.id)).toBe(true)
+
+    const baseline = await service.search(query)
+    const noop = await service.search({ ...query, filter: { excludeDocIds: ['unknown', foreign.id], titleExcludes: ['', '  '] } })
+    expect(noop.hits).toEqual(baseline.hits)
+    expect((await service.search({ ...query, filter: { excludeDocIds: [], titleExcludes: [] } })).hits).toEqual(baseline.hits)
+    expect((await service.search({ ...query, filter: { docIds: [body.id], excludeDocIds: [body.id] } })).hits).toEqual([])
+    expect((await service.search({ ...query, filter: { docIds: [], titleExcludes: ['catalog'] } })).hits).toEqual([])
+    expect((await service.search({ ...query, baseId: undefined, baseIds: [], filter: { excludeDocIds: [catalog.id] } })).hits).toEqual([])
+  })
+
+  it('fills TopK from eligible memory-store documents in every retrieval mode (#39)', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'memory-exclusion-pool' })
+    const catalogs = []
+    for (let index = 0; index < 40; index += 1) {
+      catalogs.push(await service.addTextDocument({ baseId: base.id, title: `目录 ${index}`, content: `needle needle needle catalog-${index}` }))
+    }
+    const bodies = []
+    for (let index = 0; index < 2; index += 1) {
+      bodies.push(await service.addTextDocument({ baseId: base.id, title: `正文 ${index}`, content: `needle body-${index} ${'body context '.repeat(20)}` }))
+    }
+    const store = (service as unknown as { store: Store }).store
+    const catalogIds = catalogs.map(doc => doc.id)
+    await store.putChunkBatch(store.listChunks(base.id).map(chunk => ({
+      ...chunk, embedding: catalogIds.includes(chunk.docId) ? [1, 0] : [0.9, 0.1],
+    })))
+    await service.setConfig({ embeddingProvider: 'openai', embeddingBaseUrl: 'https://embed.invalid', embeddingModel: 'test', mmrDiversity: 0.5 })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }))))
+    try {
+      for (const mode of ['lexical', 'vector', 'hybrid', 'auto'] as const) {
+        const baseline = await service.search({ query: 'needle', baseId: base.id, topK: 2, mode, mmr: false })
+        expect(baseline.hits.every(hit => catalogIds.includes(hit.docId)), mode).toBe(true)
+        for (const filter of [{ excludeDocIds: catalogIds }, { titleExcludes: ['目录'] }]) {
+          const result = await service.search({ query: 'needle', baseId: base.id, topK: 2, mode, filter })
+          expect(new Set(result.hits.map(hit => hit.docId)), mode).toEqual(new Set(bodies.map(doc => doc.id)))
+          expect(result.total).toBe(2)
+        }
+      }
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('honors exclusion arrays through the HTTP route and rejects malformed values (#39)', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'http-exclusions' })
+    const body = await service.addTextDocument({ baseId: base.id, title: '正文', content: 'needle body evidence' })
+    const catalog = await service.addTextDocument({ baseId: base.id, title: 'CATALOG 书目信息', content: 'needle appendixonlymarker' })
+    const route = knowledgeRoute(service)
+    if (route.kind !== 'prefix') throw new Error('expected prefix route')
+    const server = createServer((req, res) => { void route.handler(req, res) })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing server address')
+    const post = (filter: unknown, query = 'needle') => fetch(`http://127.0.0.1:${address.port}/knowledge/search`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query, baseId: base.id, topK: 5, filter }),
+    })
+    try {
+      for (const filter of [{ excludeDocIds: [catalog.id] }, { titleExcludes: [' CATALOG '] }, { excludeDocIds: [catalog.id], titleExcludes: ['书目信息'] }]) {
+        const response = await post(filter)
+        expect(response.status).toBe(200)
+        const envelope = await response.json() as { ok: boolean; value: SearchResult }
+        expect(envelope.ok).toBe(true)
+        expect(envelope.value.hits.map(hit => hit.docId)).toEqual([body.id])
+      }
+      expect(await (await post({ docIds: [catalog.id], excludeDocIds: [catalog.id] }, 'appendixonlymarker')).json())
+        .toMatchObject({ ok: true, value: { hits: [] } })
+      for (const filter of [null, [], 'invalid', { excludeDocIds: catalog.id }, { excludeDocIds: [42] }, { titleExcludes: 'catalog' }, { titleExcludes: [null] }]) {
+        const response = await post(filter)
+        expect(response.status, JSON.stringify(filter)).toBe(400)
+        expect(await response.json()).toMatchObject({ ok: false, error: { code: 'invalid_request' } })
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve())
+        server.closeAllConnections()
+      })
+    }
   })
 
   it('reads a bounded context window by a stable chunk anchor', async () => {
@@ -1193,6 +1297,7 @@ describe('KnowledgeService', () => {
     const base = await service.createBase({ name: 'multi-query-rerank' })
     await service.addTextDocument({ baseId: base.id, title: `oversized-${'title '.repeat(700)}`, content: 'alpha reimbursement process and approval' })
     await service.addTextDocument({ baseId: base.id, title: 'two', content: 'beta reimbursement invoice workflow' })
+    const excluded = await service.addTextDocument({ baseId: base.id, title: '处理记录', content: 'alpha beta reimbursement MUST-NOT-REACH-RERANKER' })
     await service.setConfig({ rerankModel: 'test-reranker', rerankBaseUrl: 'https://rerank.invalid' })
     let requests = 0
     let rerankBody: { query: string; documents: string[] } | undefined
@@ -1211,6 +1316,7 @@ describe('KnowledgeService', () => {
         baseId: base.id,
         queries: ['beta invoice', 'reimbursement workflow'],
         topK: 2,
+        filter: { titleExcludes: ['处理记录'] },
       })
       expect(requests).toBe(1)
       expect(rerankBody).toBeDefined()
@@ -1218,6 +1324,8 @@ describe('KnowledgeService', () => {
       expect(rerankBody!.query).toContain('alpha reimbursement')
       expect(rerankBody!.query).toContain('final-condition')
       expect(rerankBody!.documents.every(document => estimateContextTokens(document) <= 352)).toBe(true)
+      expect(rerankBody!.documents.every(document => !document.includes('MUST-NOT-REACH-RERANKER'))).toBe(true)
+      expect(result.hits.every(hit => hit.docId !== excluded.id)).toBe(true)
       expect(rerankBody!.documents.every(document =>
         estimateContextTokens(document) + estimateContextTokens(rerankBody!.query) <= 480)).toBe(true)
       expect(result.reranked).toBe(true)

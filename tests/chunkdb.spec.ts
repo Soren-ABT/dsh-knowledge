@@ -61,8 +61,55 @@ describe('ChunkDatabase lexical lane', () => {
 
   it('treats an empty document allow-list as match-nothing', async () => {
     const db = openSeeded()
-    await expect(db.lexical('hello', ['b1'], 20, [])).resolves.toEqual({ total: 0, hits: [] })
+    await expect(db.lexical('hello', ['b1'], 20, { docIds: [] })).resolves.toEqual({ total: 0, hits: [] })
     db.close()
+  })
+
+  it('excludes documents before FTS, LIKE, and relaxed-query limits', async () => {
+    const db = open()
+    try {
+      db.putChunks([
+        { id: 'blocked', docId: 'catalog', baseId: 'b1', index: 0, text: 'alpha zz 年假' },
+        { id: 'kept', docId: 'body', baseId: 'b1', index: 0, text: 'alpha 年假 body evidence with extra context' },
+        { id: 'foreign', docId: 'foreign', baseId: 'b2', index: 0, text: 'alpha zz 年假' },
+      ])
+      for (const query of ['alpha', '年假', 'alpha zz']) {
+        const result = await db.lexical(query, ['b1'], 1, {
+          docIds: ['catalog', 'body', 'foreign'],
+          excludeDocIds: ['catalog'],
+        })
+        expect(result.total, query).toBe(1)
+        expect(result.hits.map(hit => hit.docId), query).toEqual(['body'])
+      }
+      await expect(db.lexical('alpha', ['b1'], 1, { excludeDocIds: ['catalog', 'body'] }))
+        .resolves.toEqual({ total: 0, hits: [] })
+      const unrestricted = await db.lexical('alpha', ['b1'], 1)
+      expect(await db.lexical('alpha', ['b1'], 1, { excludeDocIds: [] })).toEqual(unrestricted)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('uses large literal ID sets without exhausting SQL bind parameters', async () => {
+    const db = open()
+    try {
+      const blockedIds = Array.from({ length: 600 }, (_, index) => `catalog-${index}`)
+      const keptId = `body'\"%_[literal]`
+      db.putChunks([
+        ...blockedIds.map((docId, index) => ({
+          id: `c${index}`, docId, baseId: 'b1', index: 0, text: 'needle',
+        })),
+        { id: 'kept', docId: keptId, baseId: 'b1', index: 0, text: 'needle body evidence' },
+      ])
+      const result = await db.lexical('needle', ['b1'], 1, {
+        docIds: [...blockedIds, keptId],
+        excludeDocIds: blockedIds,
+      })
+      expect(result.total).toBe(1)
+      expect(result.hits.map(hit => hit.docId)).toEqual([keptId])
+    } finally {
+      db.close()
+    }
   })
 
   it('interrupts a synchronous SQLite lexical scan at its absolute deadline', async () => {
@@ -109,8 +156,44 @@ describe('ChunkDatabase vector lane', () => {
     db.putChunkBatch([
       { id: 'v1', docId: 'd1', baseId: 'b1', index: 0, text: 'a', embedding: [1, 0], embeddingModel: 'm' },
     ])
-    await expect(db.vector([1, 0], ['b1'], 20, [])).resolves.toEqual({ total: 0, hits: [] })
+    await expect(db.vector([1, 0], ['b1'], 20, { docIds: [] })).resolves.toEqual({ total: 0, hits: [] })
     db.close()
+  })
+
+  it('excludes higher-scoring documents before counting and limiting vectors', async () => {
+    const db = open()
+    try {
+      db.putChunks([
+        { id: 'blocked', docId: 'catalog', baseId: 'b1', index: 0, text: 'catalog', embedding: [1, 0] },
+        { id: 'kept', docId: 'body', baseId: 'b1', index: 0, text: 'body', embedding: [0.9, 0.1] },
+        { id: 'foreign', docId: 'foreign', baseId: 'b2', index: 0, text: 'foreign', embedding: [1, 0] },
+      ])
+      const result = await db.vector([1, 0], ['b1'], 1, {
+        docIds: ['catalog', 'body', 'foreign'], excludeDocIds: ['catalog'],
+      })
+      expect(result.total).toBe(1)
+      expect(result.hits.map(hit => hit.docId)).toEqual(['body'])
+      await expect(db.vector([1, 0], ['b1'], 1, { excludeDocIds: ['catalog', 'body'] }))
+        .resolves.toEqual({ total: 0, hits: [] })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('checks deadlines while skipping excluded vectors', async () => {
+    const db = open()
+    db.putChunks(Array.from({ length: 300 }, (_, index) => ({
+      id: `c${index}`, docId: index === 0 ? 'body' : 'catalog', baseId: 'b1', index,
+      text: 'needle', embedding: [1, 0],
+    })))
+    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(1_000)
+    try {
+      await expect(db.vector([1, 0], ['b1'], 1, { excludeDocIds: ['catalog'] }, 500))
+        .rejects.toMatchObject({ name: 'TimeoutError' })
+    } finally {
+      now.mockRestore()
+      db.close()
+    }
   })
 })
 

@@ -220,6 +220,38 @@ allowBuilds:
 
 </details>
 
+#### 按请求排除篇目（issue #39，待发布）
+
+HTTP `POST /knowledge/search` 在 `filter` 内接受 `excludeDocIds` 和 `titleExcludes`；`knowledge_search` 工具使用同名顶层参数。例如，只检索正文、排除书目与处理记录：
+
+```json
+{
+  "query": "方剂用法",
+  "topK": 5,
+  "filter": {
+    "titleExcludes": ["书目信息", "目录", "处理记录"]
+  }
+}
+```
+
+以上是 HTTP 请求体。工具参数为：
+
+```json
+{
+  "query": "方剂用法",
+  "topK": 5,
+  "titleExcludes": ["书目信息", "目录", "处理记录"]
+}
+```
+
+- `excludeDocIds` 按文档 ID 精确排除，可由 `GET /knowledge/bases/<baseId>/documents` 或 `knowledge_list_documents` 取得 ID。规范字段名为 `excludeDocIds`，不支持 `notDocIds` 别名。
+- `titleExcludes` 是字符串数组。每项去除首尾空白后按大小写不敏感的普通子串匹配，任一非空项命中即排除；不解释正则表达式。
+- 两项可以与 `docIds`、`titleIncludes`、`sourceTypes`、`updatedAfter` 和 `updatedBefore` 叠加；包含与排除重叠时，排除优先。空排除数组、空白标题项和未知 ID 无影响；`docIds: []` 仍匹配零篇。
+- 排除在词法、向量和内存检索的候选截断前生效，覆盖短词回退、多查询、融合、MMR 和重排；被排除的篇目不占用 TopK 配额。ID 过滤集合支持超过 500 项。
+- HTTP 的两个新增字段必须是字符串数组，否则返回 `400 invalid_request`；工具按参数 schema 校验。省略 `baseId` 的 HTTP 请求搜索全部库，工具仍遵守已启用知识库范围；限定单库时传入真实 `baseId`，不要传空字符串。
+
+这些条件仅作用于本次请求，无需数据库迁移、重新索引或移动书籍；未传排除条件的请求保持原有行为。
+
 ### 存储与索引
 
 - 知识库、文档和运行时配置通过 DSH `storageDomain` 持久化。
