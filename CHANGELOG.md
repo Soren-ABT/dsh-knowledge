@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fix #39: add per-request `filter.excludeDocIds` and `filter.titleExcludes` to HTTP search, matching top-level `knowledge_search` arguments and client types. Exact ID exclusions and trimmed, case-insensitive literal title exclusions combine with existing inclusion filters; exclusion wins on overlap.
+- Apply document exclusions before FTS/LIKE/relaxed-query limits, vector scoring, memory ranking, multi-query fusion, MMR, and reranking, so excluded documents cannot consume TopK slots. Bind ID sets through SQLite `json_each` to support more than 500 IDs without enumerating all remaining documents.
+- Reject malformed new HTTP fields with `400 invalid_request`; validate tool arguments through the parameter schema. Empty exclusions and unknown IDs are harmless, and `docIds: []` still matches no documents. No database migration or reindex is required.
+- Add regressions for large exclusion sets, candidate backfill, ID/title combinations, scope, every retrieval mode, HTTP validation, tool execution, and reranker input; document both interfaces in English and Chinese.
+
 ## 0.5.0 — 2026-09-29 — Structured evidence and optional managed MinerU
 
 - Fix #34: use a producer-owned `dsh-knowledge` source for auto-retrieval messages, avoiding DSH v4's rejection of legacy `plugin` wrappers.

@@ -218,6 +218,38 @@ The plugin exposes 14 tools. Reads, writes, and proactive retrieval all obey the
 
 </details>
 
+#### Exclude documents per request (issue #39, pending release)
+
+HTTP `POST /knowledge/search` accepts `excludeDocIds` and `titleExcludes` inside `filter`. The `knowledge_search` tool accepts the same names as top-level arguments. For example, exclude bibliography, table-of-contents, and processing-log documents by title:
+
+```json
+{
+  "query": "formula usage",
+  "topK": 5,
+  "filter": {
+    "titleExcludes": ["bibliography", "table of contents", "processing log"]
+  }
+}
+```
+
+The example above is an HTTP request body. Tool arguments are:
+
+```json
+{
+  "query": "formula usage",
+  "topK": 5,
+  "titleExcludes": ["bibliography", "table of contents", "processing log"]
+}
+```
+
+- `excludeDocIds` excludes exact document IDs. Obtain IDs with `GET /knowledge/bases/<baseId>/documents` or `knowledge_list_documents`. The canonical field is `excludeDocIds`; `notDocIds` is not a supported alias.
+- `titleExcludes` is an array of strings. Terms are trimmed and matched as case-insensitive literal substrings; any nonblank match excludes the document. Terms are not regular expressions.
+- Both fields combine with `docIds`, `titleIncludes`, `sourceTypes`, `updatedAfter`, and `updatedBefore`. Exclusion wins over inclusion. Empty exclusion arrays, blank title terms, and unknown IDs have no effect; `docIds: []` still matches zero documents.
+- Exclusions apply before candidate limits in lexical, vector, and memory retrieval, including short-query fallback, multiple queries, fusion, MMR, and reranking. Excluded documents cannot consume TopK slots. ID filter sets can exceed 500 entries.
+- Both new HTTP fields must be arrays of strings; malformed values return `400 invalid_request`. The tool validates its parameter schema. HTTP requests without `baseId` search all bases; the tool still obeys enabled-base scope. To target one base, pass its actual ID rather than an empty string.
+
+Filters apply only to the current request. No database migration, reindex, or document move is required, and requests without exclusions retain their existing behavior.
+
 ### Storage and indexes
 
 - Bases, documents, and runtime configuration are persisted through DSH `storageDomain`.

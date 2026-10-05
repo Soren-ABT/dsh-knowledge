@@ -115,20 +115,23 @@ function extractShortTerms(query: string): string[] {
 
 /**
  * SQL fragment + params narrowing a chunk query to a document subset, or
- * `null` when unrestricted. Bounded to SQLite's parameter limit (500/batch);
- * a larger set is refused loudly instead of silently dropping documents
- * (silent truncation would return wrong results for the caller).
+ * `null` when unrestricted. Each id set uses one JSON parameter, so large
+ * metadata filters do not exceed SQLite's bound-parameter limit.
  */
-function docFilterSql(docIds: readonly string[] | undefined, column: string): { sql: string; params: string[] } | null {
-  if (docIds === undefined) return null
-  if (docIds.length === 0) return { sql: ' AND 0 = 1', params: [] }
-  if (docIds.length > EMBEDDING_HASH_QUERY_BATCH) {
-    throw new Error(`too many document ids in filter (${docIds.length} > ${EMBEDDING_HASH_QUERY_BATCH})`)
+function docFilterSql(filter: RetrievalDocumentFilter | undefined, column: string): { sql: string; params: string[] } | null {
+  if (filter === undefined) return null
+  if (filter.docIds !== undefined && filter.docIds.length === 0) return { sql: ' AND 0 = 1', params: [] }
+  const conditions: string[] = []
+  const params: string[] = []
+  if (filter.docIds !== undefined) {
+    conditions.push(` AND ${column} IN (SELECT value FROM json_each(?))`)
+    params.push(JSON.stringify(filter.docIds))
   }
-  return {
-    sql: ` AND ${column} IN (${docIds.map(() => '?').join(',')})`,
-    params: [...docIds],
+  if (filter.excludeDocIds !== undefined && filter.excludeDocIds.length > 0) {
+    conditions.push(` AND ${column} NOT IN (SELECT value FROM json_each(?))`)
+    params.push(JSON.stringify(filter.excludeDocIds))
   }
+  return conditions.length > 0 ? { sql: conditions.join(''), params } : null
 }
 
 const UNSEGMENTED_SCRIPT = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}]/u
@@ -227,11 +230,19 @@ export interface LaneResult {
   hits: LaneHit[]
 }
 
+/** Document selection shared by lexical and vector candidate retrieval. */
+export interface RetrievalDocumentFilter {
+  /** Absent means unrestricted; an empty array matches no documents. */
+  readonly docIds?: readonly string[]
+  /** Exact ids removed before counting, scoring, or limiting candidates. */
+  readonly excludeDocIds?: readonly string[]
+}
+
 export interface RetrievalLane {
   /** FTS5 BM25 hits over the scope (score normalized into [0, 1)). */
-  lexical(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult>
+  lexical(query: string, baseIds: readonly string[], limit: number, filter?: RetrievalDocumentFilter, deadlineAt?: number): Promise<LaneResult>
   /** Brute-force cosine hits over the scope's stored vectors. */
-  vector(embedding: readonly number[], baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult>
+  vector(embedding: readonly number[], baseIds: readonly string[], limit: number, filter?: RetrievalDocumentFilter, deadlineAt?: number): Promise<LaneResult>
 }
 
 export interface StagedDocumentGeneration {
@@ -947,9 +958,9 @@ export class ChunkDatabase implements RetrievalLane {
 
   // ── retrieval lanes ────────────────────────────────────────────────────────
 
-  async lexical(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult> {
+  async lexical(query: string, baseIds: readonly string[], limit: number, filter?: RetrievalDocumentFilter, deadlineAt?: number): Promise<LaneResult> {
     try {
-      return await this.lexicalUnchecked(query, baseIds, limit, docIds, deadlineAt)
+      return await this.lexicalUnchecked(query, baseIds, limit, filter, deadlineAt)
     } catch (error) {
       // node:sqlite wraps exceptions raised by a user-defined function. Restore
       // the public timeout identity once the absolute clock confirms that the
@@ -961,15 +972,15 @@ export class ChunkDatabase implements RetrievalLane {
     }
   }
 
-  private async lexicalUnchecked(query: string, baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult> {
+  private async lexicalUnchecked(query: string, baseIds: readonly string[], limit: number, filter?: RetrievalDocumentFilter, deadlineAt?: number): Promise<LaneResult> {
     throwIfDeadlineExpired(deadlineAt)
     const scope = [...baseIds]
     if (scope.length === 0) return { total: 0, hits: [] }
-    if (docIds !== undefined && docIds.length === 0) return { total: 0, hits: [] }
+    if (filter?.docIds !== undefined && filter.docIds.length === 0) return { total: 0, hits: [] }
     // An empty query must never scan the whole corpus (LIKE '%%' matches
     // everything) — the service layer guards too, but the lane stands alone.
     if (query.trim().length === 0) return { total: 0, hits: [] }
-    const docFilter = docFilterSql(docIds, 'c.doc_id')
+    const docFilter = docFilterSql(filter, 'c.doc_id')
     const placeholders = scope.map(() => '?').join(',')
     const deadlineSql = deadlineAt !== undefined ? ' AND knowledge_before_deadline(?, c.chunk_id)' : ''
     const scopeSql = `c.base_id IN (${placeholders})${docFilter?.sql ?? ''}${deadlineSql}`
@@ -1037,19 +1048,21 @@ export class ChunkDatabase implements RetrievalLane {
     return { total, hits }
   }
 
-  async vector(embedding: readonly number[], baseIds: readonly string[], limit: number, docIds?: readonly string[], deadlineAt?: number): Promise<LaneResult> {
+  async vector(embedding: readonly number[], baseIds: readonly string[], limit: number, filter?: RetrievalDocumentFilter, deadlineAt?: number): Promise<LaneResult> {
     throwIfDeadlineExpired(deadlineAt)
     const scope = [...baseIds]
     if (scope.length === 0) return { total: 0, hits: [] }
-    if (docIds !== undefined && docIds.length === 0) return { total: 0, hits: [] }
+    if (filter?.docIds !== undefined && filter.docIds.length === 0) return { total: 0, hits: [] }
     const query = embedding.length > 0 ? Float32Array.from(embedding) : null
-    const docFilter = docIds !== undefined ? new Set(docIds) : undefined
+    const allowed = filter?.docIds !== undefined ? new Set(filter.docIds) : undefined
+    const excluded = new Set(filter?.excludeDocIds)
     const scored: LaneHit[] = []
     let total = 0
+    let scanned = 0
     for (const baseId of scope) {
       for (const entry of this.ensureVectorCache(baseId)) {
-        if ((total & 255) === 0) throwIfDeadlineExpired(deadlineAt)
-        if (docFilter !== undefined && !docFilter.has(entry.docId)) continue
+        if ((scanned++ & 255) === 0) throwIfDeadlineExpired(deadlineAt)
+        if ((allowed !== undefined && !allowed.has(entry.docId)) || excluded.has(entry.docId)) continue
         total += 1
         if (query === null || entry.vector.length !== query.length) continue
         scored.push({ ...rowToChunk(entry.row), score: cosineFloat32(query, entry.vector) })

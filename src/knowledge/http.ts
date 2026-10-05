@@ -525,6 +525,18 @@ async function route(
     if (typeof body.query !== 'string' || body.query.trim() === '') {
       throw new InvalidRequestError('search requires a non-empty "query"')
     }
+    if (body.filter !== undefined) {
+      if (typeof body.filter !== 'object' || body.filter === null || Array.isArray(body.filter)) {
+        throw new InvalidRequestError('filter must be an object')
+      }
+      const filter = body.filter as Record<string, unknown>
+      for (const key of ['excludeDocIds', 'titleExcludes'] as const) {
+        const value = filter[key]
+        if (value !== undefined && (!Array.isArray(value) || !value.every(item => typeof item === 'string'))) {
+          throw new InvalidRequestError(`filter.${key} must be an array of strings`)
+        }
+      }
+    }
     return service.search(body as unknown as SearchRequest)
   }
 

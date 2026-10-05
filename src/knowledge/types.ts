@@ -572,13 +572,20 @@ export interface ImportUrlRequest {
   readonly parentDirectoryId?: string
 }
 
-/** Metadata filters narrowing a search to a subset of documents (all optional, ANDed). */
+/** Metadata filters applied before candidate limits and ranking. Inclusion
+ * conditions are ANDed; either exclusion condition removes a document. */
 export interface SearchFilter {
   /** Restrict to these document ids. `undefined` is unrestricted; `[]`
    * deliberately matches no documents. */
   readonly docIds?: readonly string[]
+  /** Exclude these exact document ids, including ids also present in docIds.
+   * Empty arrays and unknown ids have no effect. */
+  readonly excludeDocIds?: readonly string[]
   /** Case-insensitive substring match on the document title. */
   readonly titleIncludes?: string
+  /** Exclude titles containing any of these case-insensitive literal
+   * substrings. Terms are trimmed; blank terms and empty arrays are ignored. */
+  readonly titleExcludes?: readonly string[]
   /** Restrict to these source types (file / text / url / directory).
    * `undefined` is unrestricted; `[]` deliberately matches nothing. */
   readonly sourceTypes?: readonly DocumentSourceType[]

@@ -278,6 +278,46 @@ describe('model-facing knowledge tool contracts', () => {
     expect(emptySourceTypes.hits).toEqual([])
   })
 
+  it('forwards ID and title exclusions while retaining the enabled-base scope (#39)', async () => {
+    await harness.knowledge.setEnabledBaseIds([harness.primaryBase.id])
+    for (const exclusions of [
+      { excludeDocIds: [harness.primaryDoc.id] },
+      { titleExcludes: [' PRIMARY ', '', 'primary'] },
+    ]) {
+      const result = valueOf<{ hits: Array<{ docId: string; baseId: string }> }>(await execute(harness.ctx, 'knowledge_search', {
+        query: 'needle', topK: 10, ...exclusions,
+      }))
+      expect(result.hits.map(hit => hit.docId)).toEqual([harness.grepDoc.id])
+      expect(result.hits.every(hit => hit.baseId === harness.primaryBase.id)).toBe(true)
+    }
+    const overlapping = valueOf<{ hits: unknown[] }>(await execute(harness.ctx, 'knowledge_search', {
+      query: 'needle', docIds: [harness.primaryDoc.id], excludeDocIds: [harness.primaryDoc.id],
+    }))
+    expect(overlapping.hits).toEqual([])
+    const baseline = valueOf<{ hits: Array<{ docId: string }> }>(await execute(harness.ctx, 'knowledge_search', {
+      query: 'needle', topK: 10,
+    }))
+    const noop = valueOf<{ hits: Array<{ docId: string }> }>(await execute(harness.ctx, 'knowledge_search', {
+      query: 'needle', topK: 10, excludeDocIds: ['unknown'], titleExcludes: ['  '],
+    }))
+    expect(noop.hits.map(hit => hit.docId)).toEqual(baseline.hits.map(hit => hit.docId))
+    const combined = valueOf<{ hits: Array<{ docId: string }> }>(await execute(harness.ctx, 'knowledge_search', {
+      query: 'invoice', extraQueries: ['needle'],
+      docIds: [harness.primaryDoc.id, harness.grepDoc.id, harness.foreignDoc.id],
+      excludeDocIds: [harness.primaryDoc.id], titleExcludes: ['foreign'],
+    }))
+    expect(combined.hits.map(hit => hit.docId)).toEqual([harness.grepDoc.id])
+  })
+
+  it('rejects exclusion values that do not match the tool array schemas (#39)', async () => {
+    for (const exclusions of [
+      { excludeDocIds: 'not-an-array' }, { excludeDocIds: [42] },
+      { titleExcludes: 'not-an-array' }, { titleExcludes: [null] },
+    ]) {
+      expectToolError(await execute(harness.ctx, 'knowledge_search', { query: 'needle', ...exclusions }), /array|string|excludeDocIds|titleExcludes/i)
+    }
+  })
+
   it('renders chunkIndex in every source label and one continuation hint', async () => {
     const result = await execute(harness.ctx, 'knowledge_search', {
       query: 'alpha evidence',

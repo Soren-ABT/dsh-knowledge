@@ -52,6 +52,7 @@ import { maximalMarginalRelevance, reciprocalRankFusion, RRF_K } from './retriev
 import type { RankedHit } from './retrieval.js'
 import { rerankCandidates, rerankErrorDetail, rerankTechnicalMessage } from './rerank.js'
 import { hashEmbeddingText, resolveChunkStorePath } from './chunkdb.js'
+import type { RetrievalDocumentFilter } from './chunkdb.js'
 import { openStore, StorageUnavailableError } from './store.js'
 import type { StorageDomainFacility, Store } from './store.js'
 import {
@@ -2476,23 +2477,28 @@ export class KnowledgeService extends Service {
   }
 
   /**
-   * Resolve the request's metadata filter into a document-id allow-list, or
-   * `undefined` when no filter is present (unrestricted search). A filter that
-   * matches nothing yields an empty set, so the caller returns no hits.
+   * Resolve inclusion metadata and title exclusions within the requested base
+   * scope. Exclusion-only requests leave docIds absent rather than enumerating
+   * every remaining document. An empty docIds array matches no documents.
    */
-  private resolveSearchFilter(request: SearchRequest): Set<string> | undefined {
+  private resolveSearchFilter(request: SearchRequest): RetrievalDocumentFilter | undefined {
     const filter = request.filter
     if (filter === undefined) return undefined
-    const { docIds, titleIncludes, sourceTypes, updatedAfter, updatedBefore } = filter
+    const { docIds, excludeDocIds, titleIncludes, titleExcludes, sourceTypes, updatedAfter, updatedBefore } = filter
     // Presence is semantically distinct from absence: callers use an empty
     // allow-list to mean "match no documents", never "remove the filter".
-    if (docIds !== undefined && docIds.length === 0) return new Set()
-    if (sourceTypes !== undefined && sourceTypes.length === 0) return new Set()
+    if (docIds !== undefined && docIds.length === 0) return { docIds: [] }
+    if (sourceTypes !== undefined && sourceTypes.length === 0) return { docIds: [] }
     const hasDocIds = docIds !== undefined
-    const hasTitle = titleIncludes !== undefined && titleIncludes.trim().length > 0
+    const title = titleIncludes?.trim().toLowerCase()
+    const hasTitle = title !== undefined && title.length > 0
     const hasTypes = sourceTypes !== undefined
     const hasTime = updatedAfter !== undefined || updatedBefore !== undefined
-    if (!hasDocIds && !hasTitle && !hasTypes && !hasTime) return undefined
+    const hasInclusion = hasDocIds || hasTitle || hasTypes || hasTime
+    const excludedTitles = [...new Set((titleExcludes ?? []).map(term => term.trim().toLowerCase()).filter(term => term.length > 0))]
+    const excluded = new Set(excludeDocIds)
+    if (!hasInclusion && excluded.size === 0 && excludedTitles.length === 0) return undefined
+    if (!hasInclusion && excludedTitles.length === 0) return { excludeDocIds: [...excluded] }
 
     const store = this.requireStore()
     const scope = request.baseId !== undefined
@@ -2500,19 +2506,25 @@ export class KnowledgeService extends Service {
       : request.baseIds !== undefined && request.baseIds.length > 0
         ? [...request.baseIds]
         : store.listBases().map(base => base.id)
-    const title = hasTitle ? filter!.titleIncludes!.trim().toLowerCase() : undefined
-    const allowed = new Set<string>()
+    const included = hasDocIds ? new Set(docIds) : undefined
+    const allowed = hasInclusion ? new Set<string>() : undefined
     for (const baseId of scope) {
       for (const doc of store.listDocuments(baseId)) {
-        if (hasDocIds && !docIds!.includes(doc.id)) continue
-        if (title !== undefined && !doc.title.toLowerCase().includes(title)) continue
+        const normalizedTitle = doc.title.toLowerCase()
+        if (excludedTitles.some(term => normalizedTitle.includes(term))) excluded.add(doc.id)
+        if (allowed === undefined || excluded.has(doc.id)) continue
+        if (included !== undefined && !included.has(doc.id)) continue
+        if (hasTitle && !normalizedTitle.includes(title!)) continue
         if (hasTypes && !sourceTypes!.includes(doc.sourceType)) continue
         if (updatedAfter !== undefined && (doc.updatedAt ?? doc.createdAt) < updatedAfter) continue
         if (updatedBefore !== undefined && (doc.updatedAt ?? doc.createdAt) > updatedBefore) continue
         allowed.add(doc.id)
       }
     }
-    return allowed
+    return {
+      ...(allowed !== undefined ? { docIds: [...allowed] } : {}),
+      ...(excluded.size > 0 ? { excludeDocIds: [...excluded] } : {}),
+    }
   }
 
   /**
@@ -3212,13 +3224,13 @@ export class KnowledgeService extends Service {
 
     const threshold = request.threshold ?? config.similarityThreshold
 
-    // Metadata filters narrow the search to a subset of documents. Resolved
-    // once here into a docId allow-list shared by both retrieval paths.
-    const filterDocIds = this.resolveSearchFilter(request)
+    // Both retrieval paths apply the same document selection before their
+    // candidate limits, so excluded rows cannot consume retrieval seats.
+    const documentFilter = this.resolveSearchFilter(request)
     // A present-but-empty allow-list is an explicit "match nothing" result.
     // Never pass it to a storage implementation that might interpret [] as
     // unrestricted scope.
-    if (filterDocIds !== undefined && filterDocIds.size === 0) {
+    if (documentFilter?.docIds !== undefined && documentFilter.docIds.length === 0) {
       return emptySearchResult(query, requestedMode, Date.now() - startedAt)
     }
 
@@ -3260,7 +3272,6 @@ export class KnowledgeService extends Service {
       }
 
       const useVector = queryVector !== undefined && requestedMode !== 'lexical'
-      const filterList = filterDocIds !== undefined ? [...filterDocIds] : undefined
       let ranked: RankedHit[] = []
       const byId = new Map<string, KnowledgeChunk>()
       let total = 0
@@ -3277,7 +3288,7 @@ export class KnowledgeService extends Service {
       if (useVector) {
         vectorAttempted = true
         try {
-          vec = await lane.vector(queryVector!, scope, poolSize, filterList, deadlineAt)
+          vec = await lane.vector(queryVector!, scope, poolSize, documentFilter, deadlineAt)
           vectorSucceeded = true
           vectorReturned = vec.hits.length
           total = Math.max(total, vec.total)
@@ -3297,7 +3308,7 @@ export class KnowledgeService extends Service {
       if (requestedMode !== 'vector' || vec === undefined) {
         lexicalAttempted = true
         try {
-          lex = await lane.lexical(query, scope, poolSize, filterList, deadlineAt)
+          lex = await lane.lexical(query, scope, poolSize, documentFilter, deadlineAt)
           lexicalSucceeded = true
           lexicalReturned = lex.hits.length
           total = Math.max(total, lex.total)
@@ -3351,12 +3362,14 @@ export class KnowledgeService extends Service {
       return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, total, startedAt, laneStatus, allowRerank, signal)
     }
 
+    const allowed = documentFilter?.docIds !== undefined ? new Set(documentFilter.docIds) : undefined
+    const excluded = new Set(documentFilter?.excludeDocIds)
     const chunks = (request.baseId !== undefined
       ? store.listChunks(request.baseId)
       : request.baseIds !== undefined && request.baseIds.length > 0
         ? request.baseIds.flatMap(id => store.listChunks(id))
         : store.listBases().flatMap(base => store.listChunks(base.id)))
-      .filter(chunk => filterDocIds === undefined || filterDocIds.has(chunk.docId))
+      .filter(chunk => (allowed === undefined || allowed.has(chunk.docId)) && !excluded.has(chunk.docId))
     if (chunks.length === 0) return emptySearchResult(query, requestedMode, 0)
 
     const byId = new Map(chunks.map(chunk => [chunk.id, chunk]))

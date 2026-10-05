@@ -324,7 +324,9 @@ export function apply(ctx: Context): void {
       topK: { type: 'number', description: 'Optional number of results (default from config).' },
       mode: { type: 'string', enum: ['auto', 'hybrid', 'vector', 'lexical'], description: 'Optional search mode.' },
       docIds: { type: 'array', items: { type: 'string' }, description: 'Optional document ids to restrict the search to.' },
+      excludeDocIds: { type: 'array', items: { type: 'string' }, description: 'Optional exact document ids to exclude before candidate limits and TopK. Exclusion takes precedence over docIds; an empty array has no effect.' },
       titleIncludes: { type: 'string', description: 'Optional case-insensitive substring filter on the document title (e.g. "排队论").' },
+      titleExcludes: { type: 'array', items: { type: 'string' }, description: 'Optional literal title substrings to exclude before candidate limits and TopK. Any case-insensitive match excludes the document; terms are trimmed and blank terms are ignored.' },
       sourceTypes: { type: 'array', items: { type: 'string', enum: ['file', 'text', 'url', 'directory'] }, description: 'Optional source types to restrict to.' },
       updatedAfter: { type: 'number', description: 'Optional epoch-ms lower bound on the document update time.' },
       updatedBefore: { type: 'number', description: 'Optional epoch-ms upper bound on the document update time.' },
@@ -433,7 +435,9 @@ export function apply(ctx: Context): void {
       if (args.baseId !== undefined) requireBaseEnabled(args.baseId)
       const filter: Record<string, unknown> = {}
       if (args.docIds !== undefined) filter.docIds = args.docIds
+      if (args.excludeDocIds !== undefined) filter.excludeDocIds = args.excludeDocIds
       if (args.titleIncludes !== undefined && args.titleIncludes.trim() !== '') filter.titleIncludes = args.titleIncludes
+      if (args.titleExcludes !== undefined) filter.titleExcludes = args.titleExcludes
       if (args.sourceTypes !== undefined) filter.sourceTypes = args.sourceTypes
       if (args.updatedAfter !== undefined) filter.updatedAfter = args.updatedAfter
       if (args.updatedBefore !== undefined) filter.updatedBefore = args.updatedBefore

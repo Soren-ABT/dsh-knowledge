@@ -3,6 +3,7 @@ import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { Context } from '@deepseek-ai/cordis'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { knowledgeDomainSpec } from '../src/knowledge/domain.js'
@@ -10,8 +11,9 @@ import { ChunkDatabase, hashEmbeddingText, migrateLegacyChunkFile } from '../src
 import { openStore, StorageUnavailableError } from '../src/knowledge/store.js'
 import type { StorageDomainFacility, Store } from '../src/knowledge/store.js'
 import { KnowledgeService } from '../src/knowledge/index.js'
+import { knowledgeRoute } from '../src/knowledge/http.js'
 import type { Config } from '../src/knowledge/config.js'
-import type { KnowledgeChunk, KnowledgeDocument } from '../src/knowledge/types.js'
+import type { KnowledgeChunk, KnowledgeDocument, SearchResult } from '../src/knowledge/types.js'
 
 const TEST_CONFIG: Config = {
   embeddingProvider: 'none',
@@ -458,11 +460,11 @@ describe('ChunkDatabase (per-chunk SQL layout)', () => {
         embedded('c3', 'd3', 'gamma queuing theory text', [0.8, 0.2, 0]),
       ])
       // Lexical lane with docIds: only d2's chunk is visible.
-      const lex = await db.lexical('queuing', ['b1'], 10, ['d2'])
+      const lex = await db.lexical('queuing', ['b1'], 10, { docIds: ['d2'] })
       expect(lex.total).toBe(1)
       expect(lex.hits[0].id).toBe('c2')
       // Vector lane with docIds: only d1 + d3 are scanned.
-      const vec = await db.vector([1, 0, 0], ['b1'], 10, ['d1', 'd3'])
+      const vec = await db.vector([1, 0, 0], ['b1'], 10, { docIds: ['d1', 'd3'] })
       expect(vec.hits.map(h => h.id)).toEqual(['c1', 'c3'])
       // No docIds = unrestricted (existing behavior).
       const all = await db.lexical('queuing', ['b1'], 10)
@@ -653,6 +655,104 @@ describe('DomainStore wiring', () => {
       // Release the SQLite handle so the temp dir can be removed.
       await (service as unknown as { store: { close(): Promise<void> } }).store.close()
     } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('excludes large ID and title sets before SQLite candidate pools in every mode (#39)', async () => {
+    const dir = await tempDir()
+    vi.stubEnv('DSH_HOME', dir)
+    const ctx = new Context()
+    ctx.provide('webServer', { routes: [], register: () => () => {} })
+    ctx.provide('storageDomain', { open: async () => fakeDomain() })
+    const fiber = await ctx.plugin(KnowledgeService, { ...TEST_CONFIG, chunkStorePath: join(dir, 'chunks.sqlite') })
+    const service = ctx.get('knowledge') as KnowledgeService
+    try {
+      const base = await service.createBase({ name: 'exclusion-pool' })
+      const foreignBase = await service.createBase({ name: 'foreign' })
+      const store = (service as unknown as { store: Store }).store
+      const catalogIds = Array.from({ length: 600 }, (_, index) => `catalog-${index}`)
+      const bodyIds = ['body-0', 'body-1']
+      const documents = [
+        ...catalogIds.map(id => ({ id, title: `处理记录 ${id}`, baseId: base.id, text: 'needle needle needle 年假 appendixonlymarker', vector: [1, 0] })),
+        ...bodyIds.map(id => ({ id, title: `正文 ${id}`, baseId: base.id, text: `needle 年假 ${'body evidence '.repeat(20)}`, vector: [0.9, 0.1] })),
+        { id: 'foreign-body', title: 'foreign 正文', baseId: foreignBase.id, text: 'needle 年假', vector: [1, 0] },
+      ]
+      for (const doc of documents) {
+        await store.putDocument({
+          id: doc.id, baseId: doc.baseId, title: doc.title, sourceType: 'text',
+          rawText: doc.text, charCount: doc.text.length, chunkCount: 1, createdAt: 10, updatedAt: 20,
+        })
+      }
+      await store.putChunkBatch(documents.map(doc => ({
+        id: `${doc.id}-chunk`, docId: doc.id, baseId: doc.baseId, index: 0,
+        text: doc.text, context: doc.title, embedding: doc.vector, embeddingModel: 'openai:test',
+      })))
+      await service.setConfig({ embeddingProvider: 'openai', embeddingBaseUrl: 'https://embed.invalid', embeddingModel: 'test', mmrDiversity: 0.5 })
+      const httpFetch = fetch
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }))))
+
+      for (const mode of ['lexical', 'vector', 'hybrid', 'auto'] as const) {
+        const request = { query: 'needle', baseId: base.id, topK: 2, mode }
+        const baseline = await service.search({ ...request, mmr: false })
+        expect(baseline.hits).toHaveLength(2)
+        expect(baseline.hits.every(hit => catalogIds.includes(hit.docId)), mode).toBe(true)
+        for (const filter of [{ excludeDocIds: catalogIds }, { titleExcludes: [' 处理记录 ', '', '处理记录'] }]) {
+          const result = await service.search({ ...request, filter })
+          expect(new Set(result.hits.map(hit => hit.docId)), mode).toEqual(new Set(bodyIds))
+          expect(result.total).toBe(2)
+          if (mode !== 'vector') expect(result.retrieval?.lexical.succeeded).toBe(true)
+          if (mode !== 'lexical') expect(result.retrieval?.vector.succeeded).toBe(true)
+        }
+      }
+
+      const combined = await service.search({ query: 'needle', baseId: base.id, mode: 'hybrid', filter: {
+        docIds: [...catalogIds, ...bodyIds, 'foreign-body'], excludeDocIds: ['body-0'], titleExcludes: ['处理记录'],
+        titleIncludes: 'body', sourceTypes: ['text'], updatedAfter: 10, updatedBefore: 20,
+      } })
+      expect(combined.hits.map(hit => hit.docId)).toEqual(['body-1'])
+      expect(combined.total).toBe(1)
+      const appendix = await service.search({ query: 'appendixonlymarker', baseId: base.id, mode: 'lexical', filter: { excludeDocIds: catalogIds } })
+      expect(appendix.hits).toEqual([])
+      const multi = await service.search({ query: 'needle', queries: ['年假'], baseId: base.id, topK: 2, mode: 'hybrid', filter: { titleExcludes: ['处理记录'] } })
+      expect(new Set(multi.hits.map(hit => hit.docId))).toEqual(new Set(bodyIds))
+      expect(multi.total).toBe(2)
+      const acrossBases = await service.search({ query: 'needle', baseIds: [base.id, foreignBase.id], topK: 3, mode: 'lexical', filter: { titleExcludes: ['处理记录'] } })
+      expect(new Set(acrossBases.hits.map(hit => hit.docId))).toEqual(new Set([...bodyIds, 'foreign-body']))
+
+      const route = knowledgeRoute(service)
+      if (route.kind !== 'prefix') throw new Error('expected prefix route')
+      const server = createServer((req, res) => { void route.handler(req, res) })
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+      try {
+        const address = server.address()
+        if (address === null || typeof address === 'string') throw new Error('missing server address')
+        const post = async (query: string, filter?: { excludeDocIds?: string[]; titleExcludes?: string[] }) => {
+          const response = await httpFetch(`http://127.0.0.1:${address.port}/knowledge/search`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query, baseId: base.id, topK: 2, mode: 'lexical', filter }),
+          })
+          expect(response.status).toBe(200)
+          const envelope = await response.json() as { ok: boolean; value: SearchResult }
+          expect(envelope.ok).toBe(true)
+          return envelope.value
+        }
+        expect((await post('appendixonlymarker')).hits).toHaveLength(2)
+        expect((await post('appendixonlymarker', { excludeDocIds: catalogIds })).hits).toEqual([])
+        for (const filter of [{ excludeDocIds: catalogIds }, { titleExcludes: [' 处理记录 '] }]) {
+          const result = await post('needle', filter)
+          expect(new Set(result.hits.map(hit => hit.docId))).toEqual(new Set(bodyIds))
+          expect(result.total).toBe(2)
+        }
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          server.close(error => error ? reject(error) : resolve())
+          server.closeAllConnections()
+        })
+      }
+    } finally {
+      vi.unstubAllGlobals()
+      await fiber.dispose()
       await rm(dir, { recursive: true, force: true })
     }
   })
