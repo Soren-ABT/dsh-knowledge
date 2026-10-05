@@ -76,7 +76,7 @@ Lexical retrieval works without downloading a model. Scanned-document OCR, local
 
 ```bash
 # Tarball from GitHub Releases or npm pack
-dsh plugin --profile <name> add ./dsh-knowledge-0.5.0.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.1.tgz
 
 # Local source directory; build it first
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -179,7 +179,7 @@ The first-token proactive path never launches a local reranker. A remote reranke
 - Ollama management supports listing, pulling, cancelling, and deleting models. Browsing or pulling never changes the active embedding configuration implicitly.
 - The management panel provides base navigation, document tables, batch rebuild/delete actions, source and chunk previews, recall testing, global/per-base settings, and toast feedback.
 
-**Unreleased fix (issue #42):** Cache-directory Browse/Open and the MinerU installation-directory picker support DSH 0.2's new interfaces and the older interfaces. Cancelling preserves the existing input. If the Host lacks a capability, cache-directory actions display a notice and MinerU hides the picker button; paths remain editable manually.
+**v0.5.1 fix (issue #42):** Cache-directory Browse/Open and the MinerU installation-directory picker support DSH 0.2's new interfaces and the older interfaces. Cancelling preserves the existing input. If the Host lacks a capability, cache-directory actions display a notice and MinerU hides the picker button; paths remain editable manually.
 
 Open uses the effective cache directory when the input is empty. The backend expands `~` and can create a missing target directory. Opening does not save configuration, move models, or start a download.
 
@@ -261,6 +261,16 @@ Filters apply only to the current request. No database migration, reindex, or do
 - Lexical retrieval uses a SQLite FTS5 trigram index; vectors use a resident Float32Array cache with precise invalidation.
 - Legacy JSON chunk data is migrated idempotently on first start. The service falls back to memory storage when no persistent backend is available.
 - After changing chunk or embedding settings, rebuild one document or the entire base from the panel or model tools.
+
+---
+
+## v0.5.1 highlights
+
+- **Search exclusions (#39):** HTTP `filter` and `knowledge_search` support `excludeDocIds` and `titleExcludes` alongside inclusion filters. Exclusions apply before candidate and TopK limits.
+- **Directory compatibility (#42):** restore cache Browse/Open and MinerU directory selection on DSH 0.2, retain legacy interfaces, and preserve cancellation and manual entry.
+- **Upgrade:** no database migration, reindexing or document relocation is required when upgrading from 0.5.0. No dependencies are added.
+
+[Read the v0.5.1 release notes](./docs/releases/v0.5.1.md) · [Read the changelog](./CHANGELOG.md)
 
 ---
 
