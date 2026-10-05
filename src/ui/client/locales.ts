@@ -328,6 +328,8 @@ export type KnowledgeKey =
   | 'timeHours'
   | 'timeDays'
   | 'cacheDirPickUnavailable'
+  | 'cacheDirOpenUnavailable'
+  | 'cacheDirOpenFailed'
   | 'cacheDirMigrated'
   | 'mineruOption'
   | 'mineruHostPlaceholder'
@@ -722,6 +724,8 @@ export const zh: Record<KnowledgeKey, string> = {
   timeHours: '{n} 小时前',
   timeDays: '{n} 天前',
   cacheDirPickUnavailable: '文件夹选择不可用（当前环境无目录选择能力）',
+  cacheDirOpenUnavailable: '打开目录不可用（当前环境无原生桌面打开器）',
+  cacheDirOpenFailed: '打开目录失败',
   cacheDirMigrated: '模型缓存已迁移到 {to}（移动条目：{count}）',
   mineruOption: 'MinerU（云 API，文件将上传）',
   mineruHostPlaceholder: 'API Host（默认 https://mineru.net）',
@@ -1097,6 +1101,8 @@ export const en: Record<KnowledgeKey, string> = {
   timeHours: '{n} h ago',
   timeDays: '{n} d ago',
   cacheDirPickUnavailable: 'Folder picking is unavailable (this environment has no directory picker)',
+  cacheDirOpenUnavailable: 'Opening folders is unavailable (this environment has no native desktop opener)',
+  cacheDirOpenFailed: 'Opening the folder failed',
   cacheDirMigrated: 'Model cache migrated to {to} ({count} entries moved)',
   mineruOption: 'MinerU (cloud API, uploads files)',
   mineruHostPlaceholder: 'API Host (default https://mineru.net)',

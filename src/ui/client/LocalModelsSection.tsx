@@ -14,20 +14,26 @@ import { C, style } from './theme.js'
 import { IconBot, IconBox, IconDownload, IconFolderInput, IconFolderOpen, IconFolderSearch, IconRefresh, IconScanText, IconTrash, IconX } from './icons.js'
 import type { Translate } from './locales.js'
 import { MineruDeploymentSection } from './MineruDeploymentSection.js'
+import { resolveWorkspaceBridge } from './workspace-bridge.js'
+import type { LegacyWorkspaceMethods, WorkspaceBridgeServices } from './workspace-bridge.js'
 
-export interface LocalModelsSectionProps {
+export interface LocalModelsSectionProps extends WorkspaceBridgeServices {
   close: () => void
   api: KnowledgeApi
   t: Translate
-  /** DSH's native directory picker + path opener (optional; absent in tests). */
-  workspaces?: {
-    pickDirectory(): Promise<string | null>
-    openPath(path: string): Promise<void>
-  }
+  /** Legacy DSH `workspaces` helper (pre-0.2.0; see workspace-bridge.ts). */
+  workspaces?: LegacyWorkspaceMethods
 }
 
 export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element {
   const { api, t } = props
+  // DSH 0.2.0 moved pick/open off `workspaces`; resolve per method so the
+  // panel keeps working on both generations (issue #42).
+  const { pickDirectory, openPath } = resolveWorkspaceBridge({
+    workspaces: props.workspaces,
+    uiWorkspace: props.uiWorkspace,
+    remote: props.remote,
+  })
   const [models, setModels] = useState<LocalModelSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   /** Success/info line from the last action. Kept apart from `error` so the two
@@ -137,27 +143,32 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const browseCacheDir = useCallback(async (): Promise<void> => {
     setError(null)
     setNotice(null)
-    if (props.workspaces === undefined) {
+    if (pickDirectory === undefined) {
       setNotice(t('cacheDirPickUnavailable'))
       return
     }
     try {
-      const picked = await props.workspaces.pickDirectory()
+      const picked = await pickDirectory()
       if (picked !== null) setCacheDir(picked)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [props.workspaces, t])
+  }, [pickDirectory, t])
 
   const openCacheDir = useCallback(async (): Promise<void> => {
     setError(null)
-    if (props.workspaces === undefined) return
+    setNotice(null)
+    if (openPath === undefined) {
+      setNotice(t('cacheDirOpenUnavailable'))
+      return
+    }
     try {
-      await props.workspaces.openPath(cacheDir.trim() === '' ? '~' : cacheDir.trim())
+      const opened = await openPath(cacheDir.trim() === '' ? '~' : cacheDir.trim())
+      if (!opened) setError(t('cacheDirOpenFailed'))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [props.workspaces, cacheDir])
+  }, [openPath, cacheDir, t])
 
   const [migrating, setMigrating] = useState(false)
   const migrateCacheDir = useCallback(async (): Promise<void> => {
@@ -388,7 +399,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     <div style={{ minWidth: 0 }}>
       <h2 style={{ fontSize: 17, fontWeight: 650, color: C.text, margin: '0 0 6px' }}>{t('localModelsTitle')}</h2>
       <p style={{ marginTop: 0, marginBottom: 16, fontSize: 13, color: C.muted, lineHeight: 1.65, maxWidth: 760 }}>{t('localModelsDesc')}</p>
-      <MineruDeploymentSection api={api} t={t} pickDirectory={props.workspaces ? () => props.workspaces!.pickDirectory() : undefined} />
+      <MineruDeploymentSection api={api} t={t} pickDirectory={pickDirectory} />
 
       {mirrorLoaded && (
         <div style={{ marginBottom: 14, padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>

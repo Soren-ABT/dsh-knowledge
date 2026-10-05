@@ -61,6 +61,14 @@ export function apply(ctx: Context): void {
     id: 'local-models',
     order: 60,
     label: () => t('localModelsNav'),
-    inject: () => ({ api, t, workspaces: ctx.get('workspaces') }),
+    // `workspaces` is the pre-0.2.0 helper; `uiWorkspace`/`remote` carry the
+    // same capabilities on DSH 0.2.0+ (see workspace-bridge.ts, issue #42).
+    inject: () => ({
+      api,
+      t,
+      workspaces: ctx.get('workspaces'),
+      uiWorkspace: ctx.get('uiWorkspace'),
+      remote: ctx.get('remote'),
+    }),
   }, LocalModelsSection))
 }
