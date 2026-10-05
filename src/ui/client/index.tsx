@@ -13,6 +13,7 @@ import type { Translate } from './KnowledgeSection.js'
 import { LocalModelsSection } from './LocalModelsSection.js'
 import { en, zh } from './locales.js'
 import { createKnowledgePanelStore } from './panel-store.js'
+import { createDirectoryActions } from './directory-actions.js'
 
 /** Dictionary namespace owned by this plugin. */
 const NS = 'settings.knowledge'
@@ -61,6 +62,15 @@ export function apply(ctx: Context): void {
     id: 'local-models',
     order: 60,
     label: () => t('localModelsNav'),
-    inject: () => ({ api, t, workspaces: ctx.get('workspaces') }),
+    inject: () => ({
+      api,
+      t,
+      directoryActions: createDirectoryActions({
+        nativePicker: (globalThis as typeof globalThis & { __DSH_DIRECTORY_PICKER__?: unknown }).__DSH_DIRECTORY_PICKER__,
+        uiWorkspace: ctx.get('uiWorkspace'),
+        remote: ctx.get('remote'),
+        workspaces: ctx.get('workspaces'),
+      }),
+    }),
   }, LocalModelsSection))
 }

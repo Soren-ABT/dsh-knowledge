@@ -14,20 +14,18 @@ import { C, style } from './theme.js'
 import { IconBot, IconBox, IconDownload, IconFolderInput, IconFolderOpen, IconFolderSearch, IconRefresh, IconScanText, IconTrash, IconX } from './icons.js'
 import type { Translate } from './locales.js'
 import { MineruDeploymentSection } from './MineruDeploymentSection.js'
+import type { DirectoryActions } from './directory-actions.js'
 
 export interface LocalModelsSectionProps {
   close: () => void
   api: KnowledgeApi
   t: Translate
-  /** DSH's native directory picker + path opener (optional; absent in tests). */
-  workspaces?: {
-    pickDirectory(): Promise<string | null>
-    openPath(path: string): Promise<void>
-  }
+  /** Verified native/host capabilities; picker and opener are independent. */
+  directoryActions?: DirectoryActions
 }
 
 export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element {
-  const { api, t } = props
+  const { api, t, directoryActions } = props
   const [models, setModels] = useState<LocalModelSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   /** Success/info line from the last action. Kept apart from `error` so the two
@@ -137,27 +135,38 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
   const browseCacheDir = useCallback(async (): Promise<void> => {
     setError(null)
     setNotice(null)
-    if (props.workspaces === undefined) {
+    if (typeof directoryActions?.pickDirectory !== 'function') {
       setNotice(t('cacheDirPickUnavailable'))
       return
     }
     try {
-      const picked = await props.workspaces.pickDirectory()
+      const picked = await directoryActions.pickDirectory()
       if (picked !== null) setCacheDir(picked)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [props.workspaces, t])
+  }, [directoryActions, t])
 
   const openCacheDir = useCallback(async (): Promise<void> => {
     setError(null)
-    if (props.workspaces === undefined) return
+    setNotice(null)
+    if (typeof directoryActions?.openPath !== 'function') {
+      setNotice(t('cacheDirOpenUnavailable'))
+      return
+    }
     try {
-      await props.workspaces.openPath(cacheDir.trim() === '' ? '~' : cacheDir.trim())
+      if (typeof directoryActions.canOpenPath === 'function' && !await directoryActions.canOpenPath()) {
+        setNotice(t('cacheDirOpenUnavailable'))
+        return
+      }
+      // The backend resolves DSH_HOME, the configured default, and '~'. DSH 0.2's
+      // opener expects an absolute path, and a first-time cache may not exist.
+      const { path } = await api.prepareLocalModelCacheDirectory(cacheDir.trim())
+      await directoryActions.openPath(path)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [props.workspaces, cacheDir])
+  }, [directoryActions, api, cacheDir, t])
 
   const [migrating, setMigrating] = useState(false)
   const migrateCacheDir = useCallback(async (): Promise<void> => {
@@ -388,7 +397,7 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
     <div style={{ minWidth: 0 }}>
       <h2 style={{ fontSize: 17, fontWeight: 650, color: C.text, margin: '0 0 6px' }}>{t('localModelsTitle')}</h2>
       <p style={{ marginTop: 0, marginBottom: 16, fontSize: 13, color: C.muted, lineHeight: 1.65, maxWidth: 760 }}>{t('localModelsDesc')}</p>
-      <MineruDeploymentSection api={api} t={t} pickDirectory={props.workspaces ? () => props.workspaces!.pickDirectory() : undefined} />
+      <MineruDeploymentSection api={api} t={t} pickDirectory={typeof directoryActions?.pickDirectory === 'function' ? directoryActions.pickDirectory.bind(directoryActions) : undefined} />
 
       {mirrorLoaded && (
         <div style={{ marginBottom: 14, padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.surface }}>

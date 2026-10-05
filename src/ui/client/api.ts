@@ -467,6 +467,11 @@ export class KnowledgeApi {
     return this.call('POST', '/local-models/migrate', { to })
   }
 
+  /** Prepare the selected/default cache directory without saving or moving models. */
+  prepareLocalModelCacheDirectory(path = ''): Promise<{ path: string }> {
+    return this.call('POST', '/local-models/cache-directory', { path })
+  }
+
   listOllamaModels(baseUrl: string): Promise<{ models: Array<{ name: string; size?: number }> }> {
     return this.call('GET', `/local-ollama/tags?baseUrl=${encodeURIComponent(baseUrl)}`)
   }

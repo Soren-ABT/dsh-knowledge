@@ -239,6 +239,10 @@ async function route(
 
   // /local-models (list) and /local-models/download|remove|cancel?model=...
   if (segments[0] === 'local-models') {
+    if (segments[1] === 'cache-directory' && segments.length === 2 && method === 'POST') {
+      if (body.path !== undefined && typeof body.path !== 'string') throw new InvalidRequestError('path must be a directory path string')
+      return service.prepareLocalModelCacheDirectory(body.path as string | undefined)
+    }
     if (method === 'GET') return service.listLocalModels()
     if (segments[1] === 'custom' && method === 'POST') {
       return service.registerCustomLocalReranker(typeof body.id === 'string' ? body.id : '')

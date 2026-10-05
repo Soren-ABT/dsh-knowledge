@@ -179,6 +179,10 @@ The first-token proactive path never launches a local reranker. A remote reranke
 - Ollama management supports listing, pulling, cancelling, and deleting models. Browsing or pulling never changes the active embedding configuration implicitly.
 - The management panel provides base navigation, document tables, batch rebuild/delete actions, source and chunk previews, recall testing, global/per-base settings, and toast feedback.
 
+**Unreleased fix (issue #42):** Cache-directory Browse/Open and the MinerU installation-directory picker support DSH 0.2's new interfaces and the older interfaces. Cancelling preserves the existing input. If the Host lacks a capability, cache-directory actions display a notice and MinerU hides the picker button; paths remain editable manually.
+
+Open uses the effective cache directory when the input is empty. The backend expands `~` and can create a missing target directory. Opening does not save configuration, move models, or start a download.
+
 <details>
 <summary>How local models run</summary>
 
