@@ -6,6 +6,8 @@
 - Apply document exclusions before FTS/LIKE/relaxed-query limits, vector scoring, memory ranking, multi-query fusion, MMR, and reranking, so excluded documents cannot consume TopK slots. Bind ID sets through SQLite `json_each` to support more than 500 IDs without enumerating all remaining documents.
 - Reject malformed new HTTP fields with `400 invalid_request`; validate tool arguments through the parameter schema. Empty exclusions and unknown IDs are harmless, and `docIds: []` still matches no documents. No database migration or reindex is required.
 - Add regressions for large exclusion sets, candidate backfill, ID/title combinations, scope, every retrieval mode, HTTP validation, tool execution, and reranker input; document both interfaces in English and Chinese.
+- Fix #42: restore Local Models cache-directory Browse/Open and the MinerU installation-directory picker on DSH 0.2, retaining compatibility with older directory interfaces. Check each Host capability independently, preserve the input on cancellation, and offer manual path entry when a capability is unavailable.
+- Resolve Open's empty input to the effective model-cache directory and expand `~` on the backend. Create a missing target directory only for the explicit Open action; opening does not save configuration, migrate models, or start downloads.
 
 ## 0.5.0 — 2026-09-29 — Structured evidence and optional managed MinerU
 

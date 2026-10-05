@@ -3,8 +3,8 @@ import { Context } from '@deepseek-ai/cordis'
 import { createServer } from 'node:http'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { basename, join, relative, resolve } from 'node:path'
 import { clampRawTextLimit, KnowledgeService, MAX_RAW_TEXT_LIMIT, NotFoundError } from '../src/knowledge/index.js'
 import { estimateContextTokens, serializeContextWindow } from '../src/knowledge/context.js'
 import type { Config } from '../src/knowledge/config.js'
@@ -12,6 +12,7 @@ import type { KnowledgeService as KnowledgeServiceType } from '../src/knowledge/
 import type { SearchHit, SearchResult } from '../src/knowledge/types.js'
 import type { Store } from '../src/knowledge/store.js'
 import { knowledgeRoute } from '../src/knowledge/http.js'
+import { KnowledgeApi } from '../src/ui/client/api.js'
 
 const DEFAULT_CONFIG: Config = {
   embeddingProvider: 'none',
@@ -1392,6 +1393,110 @@ describe('KnowledgeService', () => {
     const result = await service.search({ query: 'candidate', baseId: base.id, topK: 1 })
     expect(result.rerank).toMatchObject({ status: 'not_needed', attempted: false, applied: false, candidateCount: 1 })
     expect(result.reranked).toBe(false)
+  })
+
+  it('prepares the effective default cache only on explicit directory opening (#42)', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'kb-open-default-'))
+    vi.stubEnv('DSH_HOME', tmp)
+    const service = await mountService()
+    const expected = join(tmp, 'cache', 'dsh-knowledge', 'local-models')
+    const save = vi.spyOn(service, 'setConfig')
+    try {
+      await service.listLocalModels()
+      expect(existsSync(expected)).toBe(false)
+      expect(await service.prepareLocalModelCacheDirectory('   ')).toEqual({ path: expected })
+      expect(existsSync(expected)).toBe(true)
+      expect(service.getConfig().localModelCacheDir).toBe('')
+      expect(save).not.toHaveBeenCalled()
+    } finally {
+      save.mockRestore()
+      vi.unstubAllEnvs()
+      await rm(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('normalizes draft and configured cache paths without saving or moving models (#42)', async () => {
+    const service = await mountService()
+    const tmp = await mkdtemp(join(tmpdir(), 'kb-open-draft-'))
+    const configured = join(tmp, 'configured')
+    mkdirSync(join(configured, 'fake-model'), { recursive: true })
+    writeFileSync(join(configured, 'fake-model', 'model.onnx'), 'fake weights')
+    const { setLocalModelCacheDir } = await import('../src/knowledge/embed.js')
+    await service.setConfig({ localModelCacheDir: configured })
+    const save = vi.spyOn(service, 'setConfig')
+    const migrate = vi.spyOn(service, 'migrateLocalModels')
+    try {
+      expect(await service.prepareLocalModelCacheDirectory()).toEqual({ path: resolve(configured) })
+      const draft = join(tmp, 'draft')
+      expect(await service.prepareLocalModelCacheDirectory(`  ${relative(process.cwd(), draft)}  `))
+        .toEqual({ path: resolve(draft) })
+      // Both ~/ and ~\ expand to the host home; traversal resolves into our
+      // own temp fixture, so the test creates no directories in the real home.
+      for (const prefix of ['~/', '~\\']) {
+        const target = join(tmp, prefix === '~/' ? 'tilde-slash' : 'tilde-backslash')
+        expect(await service.prepareLocalModelCacheDirectory(prefix + relative(homedir(), target)))
+          .toEqual({ path: resolve(target) })
+        expect(existsSync(target)).toBe(true)
+      }
+      const file = join(tmp, 'not-a-directory')
+      await writeFile(file, 'file')
+      await expect(service.prepareLocalModelCacheDirectory(file)).rejects.toThrow()
+      expect(existsSync(join(configured, 'fake-model', 'model.onnx'))).toBe(true)
+      expect(service.getConfig().localModelCacheDir).toBe(configured)
+      expect(save).not.toHaveBeenCalled()
+      expect(migrate).not.toHaveBeenCalled()
+    } finally {
+      save.mockRestore()
+      migrate.mockRestore()
+      setLocalModelCacheDir(undefined)
+      await rm(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('prepares cache directories through the real HTTP route and client (#42)', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'kb-open-http-'))
+    vi.stubEnv('DSH_HOME', tmp)
+    const service = await mountService()
+    const route = knowledgeRoute(service)
+    if (route.kind !== 'prefix') throw new Error('expected prefix route')
+    const server = createServer((req, res) => { void route.handler(req, res) })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing server address')
+    const origin = `http://127.0.0.1:${address.port}`
+    const nativeFetch = globalThis.fetch
+    const transport = vi.fn((input: RequestInfo | URL, init?: RequestInit) => nativeFetch(`${origin}${input}`, init))
+    vi.stubGlobal('fetch', transport)
+    const api = new KnowledgeApi()
+    try {
+      const expected = join(tmp, 'cache', 'dsh-knowledge', 'local-models')
+      await api.listLocalModels()
+      expect(existsSync(expected)).toBe(false)
+      expect(await api.prepareLocalModelCacheDirectory()).toEqual({ path: expected })
+      expect(transport).toHaveBeenLastCalledWith('/knowledge/local-models/cache-directory', expect.objectContaining({
+        method: 'POST', body: JSON.stringify({ path: '' }),
+      }))
+      expect(existsSync(expected)).toBe(true)
+      const draft = join(tmp, 'chosen folder')
+      expect(await api.prepareLocalModelCacheDirectory(` ${draft} `)).toEqual({ path: resolve(draft) })
+      expect(existsSync(draft)).toBe(true)
+      for (const path of [null, 42, [], {}, true]) {
+        const response = await nativeFetch(`${origin}/knowledge/local-models/cache-directory`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }),
+        })
+        expect(response.status).toBe(400)
+        expect(await response.json()).toMatchObject({ ok: false, error: { code: 'invalid_request' } })
+      }
+      expect(service.getConfig().localModelCacheDir).toBe('')
+    } finally {
+      vi.unstubAllGlobals()
+      vi.unstubAllEnvs()
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve())
+        server.closeAllConnections()
+      })
+      await rm(tmp, { recursive: true, force: true })
+    }
   })
 
   it('migrates local models to a new cache directory and switches the config', async () => {

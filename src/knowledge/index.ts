@@ -2837,6 +2837,14 @@ export class KnowledgeService extends Service {
     return activeOllamaPullsHelper()
   }
 
+  /** Resolve and create the directory only when the settings page opens it. */
+  async prepareLocalModelCacheDirectory(path?: string): Promise<{ path: string }> {
+    const requested = path?.trim()
+    const target = requested ? resolve(expandHomePath(requested)) : localModelCacheDir()
+    await mkdir(target, { recursive: true })
+    return { path: target }
+  }
+
   /**
    * Migrate downloaded local models (and OCR files) from the current cache
    * directory to `to`, then point the config there. Loaded models are
