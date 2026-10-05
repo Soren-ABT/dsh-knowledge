@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 — 2026-10-05 — Search exclusions and DSH directory compatibility
 
 - Fix #39: add per-request `filter.excludeDocIds` and `filter.titleExcludes` to HTTP search, matching top-level `knowledge_search` arguments and client types. Exact ID exclusions and trimmed, case-insensitive literal title exclusions combine with existing inclusion filters; exclusion wins on overlap.
 - Apply document exclusions before FTS/LIKE/relaxed-query limits, vector scoring, memory ranking, multi-query fusion, MMR, and reranking, so excluded documents cannot consume TopK slots. Bind ID sets through SQLite `json_each` to support more than 500 IDs without enumerating all remaining documents.

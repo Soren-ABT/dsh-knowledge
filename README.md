@@ -78,7 +78,7 @@ dsh plugin --profile <name> add dsh-knowledge
 
 ```bash
 # GitHub Release 或 npm pack 生成的 tarball
-dsh plugin --profile <name> add ./dsh-knowledge-0.5.0.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.1.tgz
 
 # 本地源码目录，需要先完成构建
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -181,7 +181,7 @@ allowBuilds:
 - Ollama 页面支持查看、拉取、取消和删除模型；浏览或拉取不会隐式更改当前 embedding 配置。
 - 管理面板提供知识库导航、资料表格、批量重建/删除、原文与分块预览、召回测试、全局和每库设置及 Toast 反馈。
 
-**待发布修复（issue #42）：** 本地模型缓存目录的「浏览／打开目录」与 MinerU 安装目录选择兼容 DSH 0.2 的新接口及旧版接口。取消选择保留原输入；宿主缺少对应能力时，缓存目录显示提示，MinerU 隐藏选择按钮，路径仍可手动填写。
+**v0.5.1 修复（issue #42）：** 本地模型缓存目录的「浏览／打开目录」与 MinerU 安装目录选择兼容 DSH 0.2 的新接口及旧版接口。取消选择保留原输入；宿主缺少对应能力时，缓存目录显示提示，MinerU 隐藏选择按钮，路径仍可手动填写。
 
 「打开目录」在输入为空时使用实际缓存目录，由后端展开 `~`，并可创建尚不存在的目标目录。此操作不保存配置、不移动模型，也不启动下载。
 
@@ -263,6 +263,16 @@ HTTP `POST /knowledge/search` 在 `filter` 内接受 `excludeDocIds` 和 `titleE
 - 词法检索使用 SQLite FTS5 trigram 索引；向量使用 Float32Array 常驻缓存并精确失效。
 - 旧 JSON 分块数据在首次启动时执行幂等迁移；没有存储后端时自动退化为内存模式。
 - 修改分块或 embedding 配置后，可以重建单条资料或整个知识库的索引。
+
+---
+
+## v0.5.1 更新重点
+
+- **检索排除（#39）**：HTTP `filter` 和 `knowledge_search` 新增 `excludeDocIds`、`titleExcludes`，可与包含条件叠加，排除条件在候选池与 TopK 截断前生效。
+- **目录操作兼容（#42）**：恢复 DSH 0.2 的缓存目录选择／打开与 MinerU 目录选择，兼容旧版接口，并保留取消选择和手动输入。
+- **升级方式**：从 0.5.0 升级无需数据库迁移、重新索引或迁移书籍；本版本没有新增依赖。
+
+[查看 v0.5.1 发布说明](./docs/releases/v0.5.1.md) · [查看 CHANGELOG](./CHANGELOG.md)
 
 ---
 
