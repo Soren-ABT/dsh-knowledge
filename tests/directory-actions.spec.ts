@@ -117,6 +117,24 @@ describe('host directory actions (#42)', () => {
     await expect(openOnly.openPath?.('C:\\cache')).resolves.toBeUndefined()
   })
 
+  it('treats a gated remote accessor as "no session" instead of crashing (#47)', async () => {
+    // The real failure shape: reading `.session` on the Remote service throws
+    // when the reading context did not inject `remote.session`.
+    const guarded = Object.defineProperty({}, 'session', {
+      get() { throw new Error('cannot get property "remote.session" without inject') },
+    })
+    const opened: string[] = []
+    const legacyOpen = async (path: string): Promise<void> => { opened.push(path) }
+    const withLegacy = createDirectoryActions({ remote: guarded, workspaces: { openPath: legacyOpen } })
+    await expect(withLegacy.canOpenPath?.()).resolves.toBe(true)
+    await withLegacy.openPath?.('C:\\cache')
+    expect(opened).toEqual(['C:\\cache'])
+
+    const alone = createDirectoryActions({ remote: guarded })
+    expect(alone.openPath).toBeUndefined()
+    expect(alone.canOpenPath).toBeUndefined()
+  })
+
   it('does not accept a wrapped result, malformed capability, or an unopened path as success', async () => {
     const session = {
       openWorkspacePath: vi.fn(async (): Promise<unknown> => ({ result: { ok: true, value: { opened: true } } })),

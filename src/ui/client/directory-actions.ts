@@ -25,6 +25,17 @@ function method(owner: unknown, name: string): Method | undefined {
   return typeof value === 'function' ? (value as Method).bind(owner) : undefined
 }
 
+/** Read `.session` defensively: a gated Remote accessor throws instead of
+ *  returning when the reading context did not inject `remote.session`
+ *  (issue #47); a refused read means "no session namespace", not a crash. */
+function sessionOf(remote: unknown): unknown {
+  try {
+    return record(remote)?.session
+  } catch {
+    return undefined
+  }
+}
+
 /** DSH 0.2 RemoteResult uses ok/value/error directly, without a result wrapper. */
 function remoteValue(response: unknown): unknown {
   const result = record(response)
@@ -51,7 +62,7 @@ export function createDirectoryActions(services: DirectoryServices): DirectoryAc
     }
   }
 
-  const session = record(services.remote)?.session
+  const session = sessionOf(services.remote)
   const open = method(session, 'openWorkspacePath')
   if (open !== undefined) {
     const canOpen = method(session, 'canOpenWorkspacePath')

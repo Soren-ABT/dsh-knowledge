@@ -289,7 +289,10 @@ describe('directory action injection (#42)', () => {
     // Optional host services may appear after registration, before the user
     // enters the settings section. Injection must resolve them at that point.
     services.uiWorkspace = uiWorkspace
-    services.remote = { session }
+    // The scoped namespace is looked up directly (`remote.session`): reading
+    // `.session` off the `remote` service object is inject-gated and crashed
+    // the settings slot (issue #47).
+    services['remote.session'] = session
     const registration = registrations.find(item => item.options.id === 'local-models')!
     const props = (registration.options.inject as () => { directoryActions: DirectoryActions })()
     expect(registration.component).toBe(mineruPlaceholder)
@@ -298,7 +301,8 @@ describe('directory action injection (#42)', () => {
     await props.directoryActions.openPath?.('C:\\absolute-cache')
     expect(session.openWorkspacePath).toHaveBeenCalledExactlyOnceWith({ path: 'C:\\absolute-cache' })
     expect(get).toHaveBeenCalledWith('uiWorkspace')
-    expect(get).toHaveBeenCalledWith('remote')
+    expect(get).toHaveBeenCalledWith('remote.session')
+    expect(get).not.toHaveBeenCalledWith('remote')
     expect(uiWorkspace.pickDirectory).not.toHaveBeenCalled()
   })
 })
