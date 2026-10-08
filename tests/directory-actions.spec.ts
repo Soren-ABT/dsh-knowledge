@@ -117,6 +117,96 @@ describe('host directory actions (#42)', () => {
     await expect(openOnly.openPath?.('C:\\cache')).resolves.toBeUndefined()
   })
 
+  it('discovers later capabilities on the same actions object supplied by a service resolver', async () => {
+    const services: Record<string, unknown> = {}
+    const actions = createDirectoryActions(() => services)
+    expect(actions.pickDirectory).toBeUndefined()
+    expect(actions.openPath).toBeUndefined()
+    expect(actions.canOpenPath).toBeUndefined()
+
+    services.uiWorkspace = { pickDirectory: async () => 'D:\\late-models' }
+    services.remote = { session: {
+      canOpenWorkspacePath: async () => ({ ok: true, value: true }),
+      openWorkspacePath: vi.fn(async () => ({ ok: true, value: { opened: true } })),
+    } }
+    await expect(actions.pickDirectory?.()).resolves.toBe('D:\\late-models')
+    await expect(actions.canOpenPath?.()).resolves.toBe(true)
+    await expect(actions.openPath?.('D:\\late-cache')).resolves.toBeUndefined()
+  })
+
+  it('keeps retained picker callbacks current across withdrawal, replacement and cancellation', async () => {
+    const firstPicker = { pickDirectory: vi.fn(async () => 'C:\\first') }
+    const legacyPicker = { pickDirectory: vi.fn(async () => 'C:\\legacy') }
+    const services: Record<string, unknown> = { uiWorkspace: firstPicker, workspaces: legacyPicker }
+    const actions = createDirectoryActions(() => services)
+    const retainedPicker = actions.pickDirectory!
+    expect(actions.pickDirectory).toBe(retainedPicker)
+    await expect(retainedPicker()).resolves.toBe('C:\\first')
+
+    const replacement = { pickDirectory: vi.fn(async (): Promise<string | null> => null) }
+    services.uiWorkspace = replacement
+    await expect(retainedPicker()).resolves.toBeNull()
+    expect(firstPicker.pickDirectory).toHaveBeenCalledOnce()
+    expect(legacyPicker.pickDirectory).not.toHaveBeenCalled()
+
+    replacement.pickDirectory.mockRejectedValueOnce(new Error('current picker failed'))
+    await expect(retainedPicker()).rejects.toThrow('current picker failed')
+    expect(legacyPicker.pickDirectory).not.toHaveBeenCalled()
+    delete services.uiWorkspace
+    await expect(retainedPicker()).resolves.toBe('C:\\legacy')
+    delete services.workspaces
+    expect(actions.pickDirectory).toBeUndefined()
+    await expect(retainedPicker()).rejects.toThrow(/picker.*unavailable/i)
+  })
+
+  it('updates retained opener callbacks without retrying a failed current Remote operation', async () => {
+    const oldSession = { openWorkspacePath: vi.fn(async () => ({ ok: true, value: { opened: true } })) }
+    const legacyOpen = vi.fn(async () => {})
+    const services: Record<string, unknown> = { remote: { session: oldSession }, workspaces: { openPath: legacyOpen } }
+    const actions = createDirectoryActions(() => services)
+    const retainedOpen = actions.openPath!
+    const retainedCanOpen = actions.canOpenPath!
+    expect(actions.openPath).toBe(retainedOpen)
+    expect(actions.canOpenPath).toBe(retainedCanOpen)
+
+    const replacement = {
+      canOpenWorkspacePath: vi.fn(async () => ({ ok: true, value: false })),
+      openWorkspacePath: vi.fn(async () => ({ ok: false, error: { message: 'current host refused the path' } })),
+    }
+    services.remote = { session: replacement }
+    await expect(retainedCanOpen()).resolves.toBe(false)
+    await expect(retainedOpen('D:\\cache')).rejects.toThrow('current host refused the path')
+    expect(oldSession.openWorkspacePath).not.toHaveBeenCalled()
+    expect(legacyOpen).not.toHaveBeenCalled()
+
+    delete services.remote
+    await expect(retainedOpen('C:\\legacy-cache')).resolves.toBeUndefined()
+    expect(legacyOpen).toHaveBeenCalledExactlyOnceWith('C:\\legacy-cache')
+    delete services.workspaces
+    expect(actions.openPath).toBeUndefined()
+    expect(actions.canOpenPath).toBeUndefined()
+    await expect(retainedCanOpen()).resolves.toBe(false)
+    await expect(retainedOpen('C:\\gone')).rejects.toThrow(/opener.*unavailable/i)
+  })
+
+  it('treats a gated remote accessor as "no session" instead of crashing (#47)', async () => {
+    // The real failure shape: reading `.session` on the Remote service throws
+    // when the reading context did not inject `remote.session`.
+    const guarded = Object.defineProperty({}, 'session', {
+      get() { throw new Error('cannot get property "remote.session" without inject') },
+    })
+    const opened: string[] = []
+    const legacyOpen = async (path: string): Promise<void> => { opened.push(path) }
+    const withLegacy = createDirectoryActions({ remote: guarded, workspaces: { openPath: legacyOpen } })
+    await expect(withLegacy.canOpenPath?.()).resolves.toBe(true)
+    await withLegacy.openPath?.('C:\\cache')
+    expect(opened).toEqual(['C:\\cache'])
+
+    const alone = createDirectoryActions({ remote: guarded })
+    expect(alone.openPath).toBeUndefined()
+    expect(alone.canOpenPath).toBeUndefined()
+  })
+
   it('does not accept a wrapped result, malformed capability, or an unopened path as success', async () => {
     const session = {
       openWorkspacePath: vi.fn(async (): Promise<unknown> => ({ result: { ok: true, value: { opened: true } } })),

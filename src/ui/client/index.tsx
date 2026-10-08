@@ -65,12 +65,20 @@ export function apply(ctx: Context): void {
     inject: () => ({
       api,
       t,
-      directoryActions: createDirectoryActions({
+      // Root slot props are cached. Resolve optional services again on each
+      // capability read and action so late registration/HMR stays usable.
+      directoryActions: createDirectoryActions(() => ({
         nativePicker: (globalThis as typeof globalThis & { __DSH_DIRECTORY_PICKER__?: unknown }).__DSH_DIRECTORY_PICKER__,
         uiWorkspace: ctx.get('uiWorkspace'),
-        remote: ctx.get('remote'),
+        // `remote.session` is a scoped Remote service: reading `.session` off
+        // the `remote` service object is gated by the fiber's inject
+        // declaration and throws `cannot get property "remote.session"
+        // without inject`, crashing this whole slot (issue #47). The optional
+        // `ctx.get('remote.session')` lookup resolves the namespace directly
+        // and stays undefined on DSH generations that do not provide it.
+        remote: { session: ctx.get('remote.session') },
         workspaces: ctx.get('workspaces'),
-      }),
+      })),
     }),
   }, LocalModelsSection))
 }
