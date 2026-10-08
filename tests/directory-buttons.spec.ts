@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises'
 import { runInNewContext } from 'node:vm'
 import { transform } from 'esbuild'
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { Context, Service } from '@deepseek-ai/cordis'
+import { beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { createDirectoryActions, type DirectoryActions } from '../src/ui/client/directory-actions.js'
 import { C, accentSoft, style } from '../src/ui/client/theme.js'
 
@@ -31,6 +32,65 @@ function load(file: string, modules: Record<string, unknown>, globals: Record<st
     ...globals,
   }, { filename: file })
   return module.exports
+}
+
+function clientEntry(globals: Record<string, unknown> = {}) {
+  return load('index.tsx', {
+    './api.js': { KnowledgeApi: class {} },
+    './KnowledgeSection.js': { KnowledgePanel: () => null, SidebarKnowledgeAction: () => null },
+    './LocalModelsSection.js': { LocalModelsSection: mineruPlaceholder },
+    './locales.js': { en: {}, zh: {} },
+    './panel-store.js': { createKnowledgePanelStore: () => ({}) },
+    './directory-actions.js': { createDirectoryActions },
+  }, globals)
+}
+
+class RemoteRoot extends Service {
+  constructor(ctx: Context) { super(ctx, 'remote') }
+}
+
+class DirectorySession extends Service {
+  readonly requests: Array<{ path: string }> = []
+  readonly callers: string[] = []
+
+  constructor(ctx: Context) { super(ctx, 'remote.session') }
+
+  async canOpenWorkspacePath() {
+    this.callers.push(this.ctx.fiber.name)
+    return { ok: true, value: true }
+  }
+
+  async openWorkspacePath(request: { path: string }) {
+    this.callers.push(this.ctx.fiber.name)
+    this.requests.push(request)
+    return { ok: true, value: { opened: true } }
+  }
+}
+
+/** Use the installed Cordis runtime for dependency resolution and its real
+ * traced Service proxy. Slot/locale rendering stays outside this harness. */
+async function cordisClientFixture(globals: Record<string, unknown> = {}, prepare?: (ctx: Context) => void | Promise<void>) {
+  const ctx = new Context()
+  onTestFinished(() => ctx.fiber.dispose())
+  const registrations: Array<{ options: Record<string, unknown>; component: unknown }> = []
+  ctx.provide('slots', {
+    inject: (_name: string, callback: () => void) => callback(),
+    register: (options: Record<string, unknown>, component: unknown) => { registrations.push({ options, component }) },
+  })
+  ctx.provide('locale', { register: () => () => {}, bind: () => translate })
+  new RemoteRoot(ctx)
+  await prepare?.(ctx)
+  const entry = clientEntry(globals)
+  const plugin = await ctx.plugin({
+    name: 'knowledge-directory-client-test',
+    inject: entry.inject as string[],
+    apply: entry.apply as (ctx: Context) => void,
+  })
+  const props = () => {
+    const registration = registrations.find(item => item.options.id === 'local-models')!
+    return (registration.options.inject as () => { directoryActions: DirectoryActions })()
+  }
+  return { ctx, plugin, registrations, props }
 }
 
 /** Execute the production component and its actual JSX callbacks without adding
@@ -289,7 +349,10 @@ describe('directory action injection (#42)', () => {
     // Optional host services may appear after registration, before the user
     // enters the settings section. Injection must resolve them at that point.
     services.uiWorkspace = uiWorkspace
-    services.remote = { session }
+    // The scoped namespace is looked up directly (`remote.session`): reading
+    // `.session` off the `remote` service object is inject-gated and crashed
+    // the settings slot (issue #47).
+    services['remote.session'] = session
     const registration = registrations.find(item => item.options.id === 'local-models')!
     const props = (registration.options.inject as () => { directoryActions: DirectoryActions })()
     expect(registration.component).toBe(mineruPlaceholder)
@@ -298,7 +361,123 @@ describe('directory action injection (#42)', () => {
     await props.directoryActions.openPath?.('C:\\absolute-cache')
     expect(session.openWorkspacePath).toHaveBeenCalledExactlyOnceWith({ path: 'C:\\absolute-cache' })
     expect(get).toHaveBeenCalledWith('uiWorkspace')
-    expect(get).toHaveBeenCalledWith('remote')
+    expect(get).toHaveBeenCalledWith('remote.session')
+    expect(get).not.toHaveBeenCalledWith('remote')
     expect(uiWorkspace.pickDirectory).not.toHaveBeenCalled()
+  })
+})
+
+describe('Cordis directory service integration (#47)', () => {
+  it('opens through a real scoped service even when the Remote property is inject-gated', async () => {
+    let session!: DirectorySession
+    const fixture = await cordisClientFixture({}, async ctx => {
+      // api-gateway creates each remote namespace in a separate provider
+      // fiber. A root-provided mock would grant every descendant access and
+      // never exercise the missing-inject failure.
+      await ctx.plugin({
+        name: 'directory-session-provider',
+        apply: (provider: Context) => { session = new DirectorySession(provider) },
+      })
+    })
+
+    // Reproduce the actual Cordis associate proxy path. The plugin only
+    // injects slots/locale; ctx.get('remote') does not authorize .session.
+    expect(() => fixture.plugin.ctx.get('remote').session)
+      .toThrow('cannot get property "remote.session" without inject')
+    expect(fixture.plugin.ctx.get('remote.session')).toBeDefined()
+
+    const { directoryActions } = fixture.props()
+    await expect(directoryActions.canOpenPath?.()).resolves.toBe(true)
+    await expect(directoryActions.openPath?.('E:\\cache with spaces')).resolves.toBeUndefined()
+    expect(session.requests).toEqual([{ path: 'E:\\cache with spaces' }])
+    // Cordis tracing must retain the calling plugin context, not rebind to
+    // the namespace provider's root context when the adapter binds methods.
+    expect(session.callers).toEqual(['knowledge-directory-client-test', 'knowledge-directory-client-test'])
+  })
+
+  it('discovers later legacy and uiWorkspace services at props injection without requiring remote.session', async () => {
+    const fixture = await cordisClientFixture()
+    const { directoryActions } = fixture.props()
+    expect(fixture.plugin.ctx.get('remote.session')).toBeUndefined()
+    expect(directoryActions.pickDirectory).toBeUndefined()
+    expect(directoryActions.openPath).toBeUndefined()
+    expect(directoryActions.canOpenPath).toBeUndefined()
+
+    const workspaces = {
+      selected: 'C:\\legacy',
+      opened: [] as string[],
+      async pickDirectory(this: { selected: string }) { return this.selected },
+      async openPath(this: { opened: string[] }, path: string) { this.opened.push(path) },
+    }
+    fixture.ctx.provide('workspaces', workspaces)
+    await expect(directoryActions.pickDirectory?.()).resolves.toBe('C:\\legacy')
+    await expect(directoryActions.canOpenPath?.()).resolves.toBe(true)
+    await directoryActions.openPath?.('D:\\legacy-cache')
+    expect(workspaces.opened).toEqual(['D:\\legacy-cache'])
+
+    const uiWorkspace = { pickDirectory: vi.fn(async () => 'C:\\ui') }
+    fixture.ctx.provide('uiWorkspace', uiWorkspace)
+    await expect(directoryActions.pickDirectory?.()).resolves.toBe('C:\\ui')
+    expect(uiWorkspace.pickDirectory).toHaveBeenCalledOnce()
+    expect(fixture.registrations.map(item => item.options.id)).toEqual(['knowledge', 'knowledge', 'local-models'])
+  })
+
+  it('keeps the native picker usable on a host without a session namespace or workspace picker', async () => {
+    const nativePicker = {
+      selected: 'D:\\native-models',
+      async pick(this: { selected: string }) { return this.selected },
+    }
+    const fixture = await cordisClientFixture({ __DSH_DIRECTORY_PICKER__: nativePicker })
+    const { directoryActions } = fixture.props()
+    await expect(directoryActions.pickDirectory?.()).resolves.toBe('D:\\native-models')
+    expect(directoryActions.openPath).toBeUndefined()
+    expect(directoryActions.canOpenPath).toBeUndefined()
+  })
+
+  it('keeps the picker already passed to MinerU current when the host service is replaced', async () => {
+    const fixture = await cordisClientFixture()
+    const firstPicker = vi.fn(async () => 'C:\\first-mineru')
+    const dispose = fixture.ctx.provide('uiWorkspace', { pickDirectory: firstPicker })
+    const { panel } = await localFixture(fixture.props().directoryActions)
+    const mineru = elements(panel.render()).find(element => element.type === mineruPlaceholder)!
+    const retainedPicker = mineru.props.pickDirectory as () => Promise<string | null>
+    await expect(retainedPicker()).resolves.toBe('C:\\first-mineru')
+
+    await dispose()
+    const replacement = vi.fn(async () => 'D:\\replacement-mineru')
+    fixture.ctx.provide('uiWorkspace', { pickDirectory: replacement })
+    await expect(retainedPicker()).resolves.toBe('D:\\replacement-mineru')
+    expect(firstPicker).toHaveBeenCalledOnce()
+    expect(replacement).toHaveBeenCalledOnce()
+  })
+
+  it('keeps cached slot props current across namespace registration, withdrawal and replacement', async () => {
+    const fixture = await cordisClientFixture()
+    const { directoryActions } = fixture.props()
+    expect(directoryActions.openPath).toBeUndefined()
+
+    let first!: DirectorySession
+    const provider = await fixture.ctx.plugin({
+      name: 'first-directory-session',
+      apply: (ctx: Context) => { first = new DirectorySession(ctx) },
+    })
+    const retainedOpen = directoryActions.openPath!
+    await retainedOpen('C:\\first-cache')
+    expect(first.requests).toEqual([{ path: 'C:\\first-cache' }])
+
+    await provider.dispose()
+    expect(fixture.plugin.ctx.get('remote.session')).toBeUndefined()
+    expect(directoryActions.openPath).toBeUndefined()
+
+    let replacement!: DirectorySession
+    await fixture.ctx.plugin({
+      name: 'replacement-directory-session',
+      apply: (ctx: Context) => { replacement = new DirectorySession(ctx) },
+    })
+    expect(directoryActions.openPath).toBe(retainedOpen)
+    await retainedOpen('C:\\replacement-cache')
+    expect(replacement.requests).toEqual([{ path: 'C:\\replacement-cache' }])
+    expect(first.requests).toHaveLength(1)
+    expect(fixture.registrations).toHaveLength(3)
   })
 })

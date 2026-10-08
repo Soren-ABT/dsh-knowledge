@@ -105,7 +105,7 @@
   ],
   "dependencies": {
     "@firecrawl/anydoc": "^0.1.9",
-    "@huggingface/transformers": "^3.7.0",
+    "@huggingface/transformers": "4.3.1",
     "@napi-rs/canvas": "^1.0.6",
     "jszip": "^3.10.1",
     "mammoth": "^1.8.0",
