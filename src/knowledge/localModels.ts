@@ -1,6 +1,7 @@
 /** Local embedding/reranker registry, downloads, health, and readiness records. */
 
 import { createHash } from 'node:crypto'
+import { LOCAL_MODEL_RUNTIME } from './local-model-runtime.js'
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative } from 'node:path'
 import {
@@ -53,7 +54,7 @@ interface ReadinessRecord {
   fingerprint: string
   validatedAt: number
   latencyMs: number
-  runtime: { transformers: '3.7.x'; onnxruntime: '1.21.0' }
+  runtime: typeof LOCAL_MODEL_RUNTIME
 }
 
 interface CustomRegistry {
@@ -211,7 +212,7 @@ async function readReadiness(modelId: string): Promise<ReadinessRecord | undefin
   try {
     const record = JSON.parse(await readFile(readinessPath(modelId), 'utf8')) as ReadinessRecord
     if (record.schemaVersion !== 1 || record.modelId !== modelId || record.kind !== 'reranking'
-      || record.runtime?.transformers !== '3.7.x' || record.runtime?.onnxruntime !== '1.21.0') return undefined
+      || record.runtime?.transformers !== LOCAL_MODEL_RUNTIME.transformers || record.runtime?.onnxruntime !== LOCAL_MODEL_RUNTIME.onnxruntime) return undefined
     const current = await modelFingerprint(modelId)
     if (!current.complete || current.fingerprint !== record.fingerprint) return undefined
     readinessCache.set(modelId, { cacheDir, record })
@@ -225,7 +226,7 @@ async function writeReadiness(descriptor: LocalModelDescriptor, latencyMs: numbe
   const record: ReadinessRecord = {
     schemaVersion: 1, modelId: descriptor.id, kind: 'reranking', support: descriptor.support ?? 'experimental',
     fingerprint: files.fingerprint, validatedAt: Date.now(), latencyMs,
-    runtime: { transformers: '3.7.x', onnxruntime: '1.21.0' },
+    runtime: LOCAL_MODEL_RUNTIME,
   }
   await writeJsonAtomic(readinessPath(descriptor.id), record)
   readinessCache.set(descriptor.id, { cacheDir: localModelCacheDir(), record })

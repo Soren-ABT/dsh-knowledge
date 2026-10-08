@@ -9,6 +9,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { LOCAL_MODEL_RUNTIME } from './local-model-runtime.js'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -152,7 +153,7 @@ export interface LocalEmbeddingReadiness {
   readonly fingerprint: string
   readonly dimensions: number
   readonly validatedAt: number
-  readonly runtime: { readonly node: string; readonly transformers: '3.7.x'; readonly onnxruntime: '1.21.0' }
+  readonly runtime: typeof LOCAL_MODEL_RUNTIME & { readonly node: string }
 }
 
 type Pooling = 'last_token' | 'cls' | 'mean'
@@ -249,7 +250,7 @@ export async function getLocalEmbeddingReadiness(modelId: string): Promise<Local
     const dimensions = record.dimensions
     if (record.schemaVersion !== 1 || record.modelId !== modelId || !Number.isInteger(dimensions) || dimensions === undefined || dimensions <= 0
       || typeof record.fingerprint !== 'string' || typeof record.validatedAt !== 'number' || typeof record.runtime?.node !== 'string'
-      || record.runtime.transformers !== '3.7.x' || record.runtime.onnxruntime !== '1.21.0') return undefined
+      || record.runtime.transformers !== LOCAL_MODEL_RUNTIME.transformers || record.runtime.onnxruntime !== LOCAL_MODEL_RUNTIME.onnxruntime) return undefined
     const fingerprint = await localModelFingerprint(modelId)
     return fingerprint !== undefined && fingerprint === record.fingerprint ? record as LocalEmbeddingReadiness : undefined
   } catch {
@@ -266,7 +267,7 @@ async function writeLocalEmbeddingReadiness(modelId: string, dimensions: number)
     fingerprint,
     dimensions,
     validatedAt: Date.now(),
-    runtime: { node: process.versions.node, transformers: '3.7.x', onnxruntime: '1.21.0' },
+    runtime: { node: process.versions.node, ...LOCAL_MODEL_RUNTIME },
   }
   const destination = embeddingReadinessPath(modelId)
   const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`

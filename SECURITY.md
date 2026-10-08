@@ -23,37 +23,44 @@ coordinate a fix when warranted, and credit the reporter unless anonymity is
 requested. No response-time guarantee is made for this volunteer-maintained
 project.
 
-## Accepted production dependency risk
+## Production dependency auditing
 
-As of 2026-08-30, `pnpm audit --prod` reports the high-severity advisory
-`GHSA-f88m-g3jw-g9cj` through:
+As of 2026-10-08, the repository uses `@huggingface/transformers@4.3.1`, whose
+published dependency range permits `sharp ^0.35.4`. The lockfile resolves
+`sharp@0.35.5`, which fixes all three previously reported high-severity sharp
+advisories:
 
-```text
-dsh-knowledge -> @huggingface/transformers@3.7.0 -> sharp@0.34.1
-```
+- [GHSA-f88m-g3jw-g9cj](https://github.com/advisories/GHSA-f88m-g3jw-g9cj)
+  (libvips; fixed in sharp 0.35.0);
+- [GHSA-rgj7-g3m4-5g8c](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c)
+  (libheif; fixed in sharp 0.35.4); and
+- [GHSA-wq5f-xc86-pv6w](https://github.com/advisories/GHSA-wq5f-xc86-pv6w)
+  (librsvg; fixed in sharp 0.35.5).
 
-The advisory concerns libvips behavior inherited by `sharp < 0.35.0`. This is
-an explicit, narrow exception rather than a claim that the upstream version is
-generally safe:
+The previous sharp exceptions have been removed. Every high or critical
+production advisory fails CI, including the previously accepted advisories.
+The audit also fails if its process fails or its JSON report is incomplete or
+inconsistent. Moderate and lower-severity advisories remain visible in the
+underlying `pnpm audit --prod` report and do not pass as accepted exceptions.
 
-- dsh-knowledge uses Transformers for text feature-extraction and text
-  classification (embedding and reranking);
-- user-controlled document images go through the PDF/OCR pipeline and are not
-  passed to the Transformers `sharp` image path;
-- Transformers 3.x and the current 4.x line constrain sharp below 0.35;
-- a package-local dependency override would not reliably propagate into the
-  user's DSH profile; and
-- maintaining an unreviewed Transformers fork would add greater supply-chain
-  risk for this release.
+Local embedding uses the text feature-extraction pipeline, and local reranking
+uses text tokenization and cross-encoder logits. Document images use the
+separate PDF/OCR pipeline. This reachability assessment does not exempt sharp
+or any other package from the production audit.
 
-The repository's audit policy permits only this advisory, only through the
-expected Transformers-to-sharp path, and only until **2026-09-30**. Any other
-high or critical production advisory fails CI. The exception must be removed
-earlier if the path becomes reachable or upstream publishes a compatible sharp
-upgrade.
+Published npm packages do not impose this repository's lockfile on a user's
+DSH profile. An existing profile lockfile can retain `sharp@0.35.4` within the
+upstream range, or another plugin can introduce an older sharp version. After
+upgrading, refresh and audit the profile's actual dependency graph and ensure
+that every installed sharp is at least 0.35.5. A repository-only dependency
+override would not guarantee this for downstream profiles.
 
-Run the policy locally with:
+Run the policy in this repository with:
 
 ```bash
 npm run audit:prod
 ```
+
+Inspect all reported severities with `pnpm audit --prod`. The checked-in
+lockfile records the tested dependency versions; use `pnpm install
+--frozen-lockfile` in CI to reproduce them.

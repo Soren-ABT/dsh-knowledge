@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fix #47: query the optional `remote.session` namespace directly so DSH's inject gate cannot crash the Local Models settings section. Retain legacy workspace and native-picker fallbacks without making the namespace a required service.
+- Resolve directory capabilities when they are used, including after the host caches the settings props, so later service registration or replacement does not leave stale picker/opener callbacks.
+- Fix #49: pin Transformers.js 4.3.1 and lock sharp 0.35.5, removing the three sharp high-severity advisories and all previous audit exceptions. Production auditing rejects every high/critical advisory and malformed, inconsistent or failed audit output.
+- Invalidate embedding/rerank readiness evidence from the previous Transformers/ONNX runtime while retaining cached model weights for revalidation. OCR continues to use its separate runtime.
+- Add real Cordis injection/lifecycle regressions, runtime-readiness regressions, and stronger real-model embedding checks for dimensions, normalization, relevance and recovery.
+
 ## 0.5.1 — 2026-10-05 — Search exclusions and DSH directory compatibility
 
 - Fix #39: add per-request `filter.excludeDocIds` and `filter.titleExcludes` to HTTP search, matching top-level `knowledge_search` arguments and client types. Exact ID exclusions and trimmed, case-insensitive literal title exclusions combine with existing inclusion filters; exclusion wins on overlap.

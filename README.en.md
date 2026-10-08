@@ -183,6 +183,8 @@ The first-token proactive path never launches a local reranker. A remote reranke
 
 Open uses the effective cache directory when the input is empty. The backend expands `~` and can create a missing target directory. Opening does not save configuration, move models, or start a download.
 
+**Development-branch fixes (#47 / #49):** Directory actions query the optional `remote.session` service when needed, preventing an inject-gate crash and following later service registration or replacement. Local text models use Transformers.js 4.3.1 / ONNX Runtime 1.30.0; the lockfile resolves sharp 0.35.5, fixing three high-severity advisories. Cached weights are retained, but health records from the old runtime require revalidation in Settings. See the [security policy](SECURITY.md).
+
 <details>
 <summary>How local models run</summary>
 
