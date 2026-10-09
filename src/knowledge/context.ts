@@ -1,6 +1,7 @@
 import type { ContextChunkExcerpt, ContextWindow, KnowledgeChunk } from './types.js'
 import { estimateContextTokens, serializeContextWindow, serializeExcerpt } from './context-protocol.js'
 import { sliceSourceSpans } from './source-spans.js'
+import { snapSliceEnd, snapSliceStart } from './text-safety.js'
 
 // The public surface of this module is unchanged: the protocol helpers are
 // re-exported from the pure module both host bundles share (see
@@ -306,8 +307,10 @@ function sentenceEnd(text: string, target: number): number {
 }
 
 function sliceExcerpt(excerpt: ContextChunkExcerpt, start: number, end: number): ContextChunkExcerpt {
-  const safeStart = Math.max(0, Math.min(excerpt.text.length, Math.trunc(start)))
-  const safeEnd = Math.max(safeStart, Math.min(excerpt.text.length, Math.trunc(end)))
+  const clampedStart = Math.max(0, Math.min(excerpt.text.length, Math.trunc(start)))
+  const safeStart = snapSliceStart(excerpt.text, clampedStart)
+  const clampedEnd = Math.max(safeStart, Math.min(excerpt.text.length, Math.trunc(end)))
+  const safeEnd = Math.max(safeStart, snapSliceEnd(excerpt.text, clampedEnd))
   return {
     ...excerpt,
     text: excerpt.text.slice(safeStart, safeEnd),

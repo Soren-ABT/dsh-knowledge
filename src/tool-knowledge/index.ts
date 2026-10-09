@@ -11,6 +11,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 // Activates the `Context.knowledge` merge declared by the knowledge service.
 import type {} from '../knowledge/index.js'
 import { estimateContextTokens, serializeContextWindow } from '../knowledge/context-protocol.js'
+import { ensureWellFormed, snapSliceEnd, snapSliceStart } from '../knowledge/text-safety.js'
 import type { KnowledgeService } from '../knowledge/index.js'
 import type { ContextWindow, SearchHit, SearchResult } from '../knowledge/types.js'
 import type { DocumentEvidence, DocumentProcessingInfo, DocumentSourceSpan } from '../knowledge/processing-types.js'
@@ -152,14 +153,14 @@ export function renderKnowledgeDocumentPage(value: {
     const more = value.contextWindow.hasMoreBefore || value.contextWindow.hasMoreAfter
       ? '\n\n[partial context; call knowledge_get_document again with a wider before/after or maxTokens when needed]'
       : '\n\n[complete context window]'
-    return `document "${value.title}" around chunk ${value.contextWindow.anchorIndex}:\n`
+    return ensureWellFormed(`document "${value.title}" around chunk ${value.contextWindow.anchorIndex}:\n`
       + serializeContextWindow(value.contextWindow)
-      + more
+      + more)
   }
-  return `document "${value.title}" (${value.chunkCount} chunks; returned ${value.chunks.length})\n`
+  return ensureWellFormed(`document "${value.title}" (${value.chunkCount} chunks; returned ${value.chunks.length})\n`
     + (value.processing ? `[processor ${value.processing.provider}; completeness=${value.processing.completeness}]\n` : '')
     + value.chunks.map(chunk => `[chunk ${chunk.index}${chunk.heading !== undefined ? `; ${chunk.heading}` : ''}]\n${sourceSpanLabel(chunk.sourceSpans)}${chunk.text}`).join('\n\n')
-    + (value.truncated ? `\n\n[truncated; continue with chunkOffset=${value.nextChunkOffset}]` : '\n\n[complete]')
+    + (value.truncated ? `\n\n[truncated; continue with chunkOffset=${value.nextChunkOffset}]` : '\n\n[complete]'))
 }
 
 export function renderKnowledgeEvidence(value: DocumentEvidence): string {
@@ -173,7 +174,7 @@ export function renderKnowledgeEvidence(value: DocumentEvidence): string {
     return `[${page}; block=${safeLabelValue(block.id)}; type=${block.type}${region}${assets}]\n${block.text}`
   }).join('\n\n')
   const continuation = value.truncated && value.next ? `[truncated; continue knowledge_read_evidence with documentId=${JSON.stringify(value.documentId)}, revision=${JSON.stringify(processing?.revision)}, blockId=${JSON.stringify(value.next.blockId)}, blockOffset=${value.next.blockOffset}]` : '[complete evidence selection]'
-  return [`document "${safeLabelValue(value.title)}"`, metadata, warnings, blocks, continuation].filter(Boolean).join('\n\n')
+  return ensureWellFormed([`document "${safeLabelValue(value.title)}"`, metadata, warnings, blocks, continuation].filter(Boolean).join('\n\n'))
 }
 
 export function renderKnowledgeReadResult(value: {
@@ -193,17 +194,17 @@ export function renderKnowledgeReadResult(value: {
     const continuation = value.documentId !== undefined && first?.charStart !== undefined && first.charEnd !== undefined
       ? `\n\n[continue around the first match with knowledge_read_document(documentId=${JSON.stringify(value.documentId)}, charStart=${Math.max(0, first.charStart - 1000)}, charEnd=${first.charEnd + 1000})]`
       : ''
-    return `${value.matches.length} returned match(es) of ${value.totalMatches ?? value.matches.length} total in "${value.title}":\n`
+    return ensureWellFormed(`${value.matches.length} returned match(es) of ${value.totalMatches ?? value.matches.length} total in "${value.title}":\n`
       + value.matches.map(match => {
         const offsets = match.charStart !== undefined && match.charEnd !== undefined
           ? ` [chars ${match.charStart}-${match.charEnd}]`
           : ''
         return `L${match.line}${offsets}: ${match.snippet}`
       }).join('\n')
-      + continuation
+      + continuation)
   }
-  return `"${value.title}" (${value.charStart}-${value.charEnd} of ${value.totalChars}):\n${value.content ?? ''}`
-    + (value.truncated ? `\n\n[truncated; continue with charStart=${value.charEnd}]` : '\n\n[complete]')
+  return ensureWellFormed(`"${value.title}" (${value.charStart}-${value.charEnd} of ${value.totalChars}):\n${value.content ?? ''}`
+    + (value.truncated ? `\n\n[truncated; continue with charStart=${value.charEnd}]` : '\n\n[complete]'))
 }
 
 /** Canonical model-visible rendering for explicit search. Keeping this as a
@@ -253,7 +254,7 @@ export function renderKnowledgeSearchResult(
     usedTokens += cost
   }
 
-  return `${header}${lines.join('\n\n')}${continuation}`
+  return ensureWellFormed(`${header}${lines.join('\n\n')}${continuation}`)
 }
 
 /** Services required before the tools can register. */
@@ -1512,7 +1513,7 @@ export async function buildAutoRetrieveMessage(
       usedTokens += separatorTokens + estimateContextTokens(line)
     }
     if (lines.length === 0) return undefined
-    const background = `${header}${lines.join('\n\n')}`
+    const background = ensureWellFormed(`${header}${lines.join('\n\n')}`)
     if (estimateContextTokens(background) > AUTO_RETRIEVE_TOTAL_MAX_TOKENS) return undefined
     if (signal?.aborted) return undefined
 
@@ -1736,7 +1737,7 @@ function fitSourceLabel(label: string, maxTokens: number): string {
   let trimmed = prefix
   let result = `${trimmed}${suffix}`
   while (result.length > 0 && estimateContextTokens(result) > maxTokens) {
-    trimmed = trimmed.slice(0, -1)
+    trimmed = trimmed.slice(0, snapSliceEnd(trimmed, trimmed.length - 1))
     result = `${trimmed}${suffix}`
   }
   return result
@@ -1948,10 +1949,12 @@ function cleanRetrieveQuery(text: string): string {
 function boundQueryChars(text: string, maxChars: number): string {
   const normalized = text.trim()
   if (normalized.length <= maxChars) return normalized
-  if (maxChars <= 2) return normalized.slice(0, maxChars)
+  if (maxChars <= 2) return normalized.slice(0, snapSliceEnd(normalized, maxChars))
   const head = Math.min(120, Math.ceil((maxChars - 1) * 0.6))
   const tail = maxChars - head - 1
-  return `${normalized.slice(0, head)} ${normalized.slice(-tail)}`
+  const headEnd = snapSliceEnd(normalized, head)
+  const tailStart = snapSliceStart(normalized, normalized.length - tail)
+  return `${normalized.slice(0, headEnd)} ${normalized.slice(tailStart)}`
 }
 
 /** Query-centred, deterministic token clipping shared by native search and
@@ -2011,8 +2014,10 @@ function cropAroundRange(text: string, focus: { start: number; end: number } | u
       start = Math.max(0, Math.min(text.length - length, start))
     }
   }
-  const end = Math.min(text.length, start + length)
-  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`
+  const safeStart = snapSliceStart(text, start)
+  const end = Math.min(text.length, safeStart + length)
+  const safeEnd = snapSliceEnd(text, end)
+  return `${safeStart > 0 ? '…' : ''}${text.slice(safeStart, safeEnd)}${safeEnd < text.length ? '…' : ''}`
 }
 
 function fitPrefixToTokens(text: string, maxTokens: number, suffix = '…'): string {
@@ -2023,7 +2028,8 @@ function fitPrefixToTokens(text: string, maxTokens: number, suffix = '…'): str
   let best = ''
   while (low <= high) {
     const length = Math.floor((low + high) / 2)
-    const candidate = `${text.slice(0, length)}${length < text.length ? suffix : ''}`
+    const cut = snapSliceEnd(text, length)
+    const candidate = `${text.slice(0, cut)}${cut < text.length ? suffix : ''}`
     if (estimateContextTokens(candidate) <= maxTokens) {
       best = candidate
       low = length + 1
@@ -2044,7 +2050,9 @@ function fitHeadTailToTokens(text: string, maxTokens: number): string {
     const length = Math.floor((low + high) / 2)
     const head = Math.ceil(length * 0.6)
     const tail = length - head
-    const candidate = `${text.slice(0, head)}…${tail > 0 ? text.slice(-tail) : ''}`
+    const headEnd = snapSliceEnd(text, head)
+    const tailStart = tail > 0 ? snapSliceStart(text, text.length - tail) : text.length
+    const candidate = `${text.slice(0, headEnd)}…${tail > 0 ? text.slice(tailStart) : ''}`
     if (estimateContextTokens(candidate) <= maxTokens) {
       best = candidate
       low = length + 1
@@ -2081,7 +2089,7 @@ function safeLabelValue(value: string): string {
     .replace(/\]/g, ')')
     .replace(/\s{2,}/g, ' ')
     .trim()
-  return normalized.length > 200 ? `${normalized.slice(0, 197)}...` : normalized
+  return normalized.length > 200 ? `${normalized.slice(0, snapSliceEnd(normalized, 197))}...` : normalized
 }
 
 /** A Markdown citation block for one search hit: quote + source line. */

@@ -11,6 +11,7 @@ import { httpFetch } from './net.js'
 import { rerankInLocalProcess, LocalRerankError } from './local-rerank.js'
 import { assertLocalRerankerReady, localRerankActionFor } from './localModels.js'
 import { getHfEndpoint, localModelCacheDir } from './embed.js'
+import { ensureWellFormed } from './text-safety.js'
 import type { RerankErrorDetail } from './types.js'
 
 export interface RerankCandidate {
@@ -104,6 +105,8 @@ export async function rerankCandidates(
   const options = normalizeExecutionOptions(optionsOrTopN, legacyTimeoutMs)
   throwIfAborted(options.signal)
   if (candidates.length === 0) return new Map()
+  const safeQuery = ensureWellFormed(query)
+  const safeTexts = candidates.map(candidate => ensureWellFormed(candidate.text))
   const keep = options.topN !== undefined
     ? Math.max(1, Math.min(Math.trunc(options.topN), candidates.length))
     : candidates.length
@@ -118,8 +121,8 @@ export async function rerankCandidates(
       modelId,
       localModelCacheDir(),
       getHfEndpoint(),
-      query,
-      candidates.map(candidate => candidate.text),
+      safeQuery,
+      safeTexts,
       timeoutMs,
       options.signal,
     ), options.signal)
@@ -148,8 +151,8 @@ export async function rerankCandidates(
       },
       body: JSON.stringify({
         model,
-        query,
-        documents: candidates.map(candidate => candidate.text),
+        query: safeQuery,
+        documents: safeTexts,
         top_n: keep,
       }),
       timeoutMs: options.timeoutMs,

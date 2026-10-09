@@ -23,6 +23,7 @@ import { composeDocumentEvidence } from './evidence.js'
 import { ProcessingQueue } from './processing-queue.js'
 import { processingBudget } from './processor-transport.js'
 import { composeContextWindow, estimateContextTokens, serializeContextWindow } from './context.js'
+import { snapSliceEnd, snapSliceStart } from './text-safety.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
 import type { ConfigOverrides } from './domain.js'
 import {
@@ -3022,7 +3023,7 @@ export class KnowledgeService extends Service {
       ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
       ...(doc.rawFilePath !== undefined ? { rawFilePath: doc.rawFilePath } : {}),
       ...(doc.processing !== undefined ? { processing: doc.processing } : {}),
-      rawText: truncated ? rawText.slice(0, rawTextLimit) : rawText,
+      rawText: truncated ? rawText.slice(0, snapSliceEnd(rawText, rawTextLimit)) : rawText,
       ...(truncated ? { rawTextTruncated: true } : {}),
       charCount: doc.charCount,
       ...(doc.tokenCount !== undefined ? { tokenCount: doc.tokenCount } : {}),
@@ -3059,11 +3060,13 @@ export class KnowledgeService extends Service {
     if (doc === undefined) throw new Error(`document not found: ${id}`)
     const text = doc.rawText ?? reconstructFromChunks(store.listChunksByDoc(id))
     const total = text.length
-    const start = clampInt(charStart ?? 0, 0, total, 0)
+    const rawStart = clampInt(charStart ?? 0, 0, total, 0)
+    const start = snapSliceStart(text, rawStart)
     // Where the caller would have ended without the cap (an omitted charEnd
     // reads to the document end) — Cherry's readConcept slice cap.
     const naturalEnd = clampInt(charEnd ?? total, start, total, total)
-    const end = Math.max(start, Math.min(naturalEnd, start + CONCEPT_READ_MAX_CHARS))
+    const rawEnd = Math.max(start, Math.min(naturalEnd, start + CONCEPT_READ_MAX_CHARS))
+    const end = Math.max(start, snapSliceEnd(text, rawEnd))
     return {
       id: doc.id,
       baseId: doc.baseId,
@@ -3110,7 +3113,7 @@ export class KnowledgeService extends Service {
       lineNumber += 1
       const newlineIndex = text.indexOf('\n', lineStart)
       const lineEnd = newlineIndex === -1 ? text.length : newlineIndex
-      const line = text.slice(lineStart, Math.min(lineEnd, lineStart + CONCEPT_GREP_MAX_LINE_CHARS))
+      const line = text.slice(lineStart, snapSliceEnd(text, Math.min(lineEnd, lineStart + CONCEPT_GREP_MAX_LINE_CHARS)))
       regex.lastIndex = 0
       for (let match = regex.exec(line); match !== null; match = regex.exec(line)) {
         totalMatches += 1
@@ -3118,8 +3121,8 @@ export class KnowledgeService extends Service {
         const matchStart = lineStart + match.index
         const matchEnd = matchStart + matchLength
         if (matches.length < cap) {
-          const snippetStart = Math.max(0, matchStart - CONCEPT_GREP_SNIPPET_PAD)
-          const snippetEnd = Math.min(text.length, matchEnd + CONCEPT_GREP_SNIPPET_PAD)
+          const snippetStart = snapSliceStart(text, Math.max(0, matchStart - CONCEPT_GREP_SNIPPET_PAD))
+          const snippetEnd = snapSliceEnd(text, Math.min(text.length, matchEnd + CONCEPT_GREP_SNIPPET_PAD))
           matches.push({
             line: lineNumber,
             charStart: matchStart,
@@ -4222,7 +4225,8 @@ function retrievalErrorCode(error: unknown): string {
 function safeIndexingErrorMessage(message: string): string {
   // Status polling must remain useful without copying document text or a
   // potentially huge provider payload into the API response.
-  return message.replace(/[\r\n]+/g, ' ').slice(0, 300)
+  const normalized = message.replace(/[\r\n]+/g, ' ')
+  return normalized.slice(0, snapSliceEnd(normalized, 300))
 }
 
 /** Bounded list of a base's top-level sources (directory roots / files / URLs /
@@ -4301,7 +4305,9 @@ function fitRerankQuery(query: string): string {
     const retained = Math.floor((low + high) / 2)
     const head = Math.ceil(retained * 0.6)
     const tail = retained - head
-    const candidate = `${query.slice(0, head).trimEnd()} … ${query.slice(query.length - tail).trimStart()}`
+    const headEnd = snapSliceEnd(query, head)
+    const tailStart = snapSliceStart(query, query.length - tail)
+    const candidate = `${query.slice(0, headEnd).trimEnd()} … ${query.slice(tailStart).trimStart()}`
     if (estimateContextTokens(candidate) <= RERANK_QUERY_TOKENS) {
       best = candidate
       low = retained + 1
@@ -4309,7 +4315,7 @@ function fitRerankQuery(query: string): string {
       high = retained - 1
     }
   }
-  return best || query.slice(0, 1)
+  return best || query.slice(0, snapSliceEnd(query, 1))
 }
 
 /** Bound untrusted document metadata before it enters the cross-encoder pair.
@@ -4323,7 +4329,7 @@ function fitRerankTitle(title: string): string {
   let best = ''
   while (low <= high) {
     const length = Math.floor((low + high) / 2)
-    const candidate = `${trimmed.slice(0, length).trimEnd()}…`
+    const candidate = `${trimmed.slice(0, snapSliceEnd(trimmed, length)).trimEnd()}…`
     if (estimateContextTokens(candidate) <= RERANK_TITLE_TOKENS) {
       best = candidate
       low = length + 1
