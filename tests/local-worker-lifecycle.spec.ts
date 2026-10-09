@@ -141,6 +141,15 @@ describe('local embedding process lifecycle', () => {
     expect(child.killed).toBe(false)
   })
 
+  it('repairs malformed text before passing it to the local embedding process', async () => {
+    const texts = Object.freeze(['before\uD83Dafter📝\uDCDDtail'])
+    await expect(embedTexts('local', '', 'test/model', '', texts)).resolves.toEqual([[1, 0]])
+    expect(processState.instances[0]?.messages).toContainEqual(expect.objectContaining({
+      operation: 'embed', modelId: 'test/model', texts: ['before\uFFFDafter📝\uFFFDtail'],
+    }))
+    expect(texts).toEqual(['before\uD83Dafter📝\uDCDDtail'])
+  })
+
   it('rearms a live positive timeout and cancels it when set to zero', async () => {
     setLocalWorkerIdleTimeoutMs(1_000)
     await loadLocalModel('test/model')

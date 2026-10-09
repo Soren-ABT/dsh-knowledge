@@ -37,6 +37,54 @@ describe('rerank provider validation', () => {
     expect([...result.keys()]).toEqual(['b', 'a'])
   })
 
+  it('replaces lone surrogates in the remote JSON body without mutating candidates or valid emoji', async () => {
+    const query = 'query \ud800 😀 \udc00'
+    const candidates = Object.freeze([
+      Object.freeze({ id: 'a', text: 'before \ud800 🧪 after' }),
+      Object.freeze({ id: 'b', text: 'before 🚀 \udc00 after' }),
+    ])
+    const fetchMock = vi.fn(async (_url: unknown, _init: RequestInit | undefined) => new Response(JSON.stringify({
+      results: [{ index: 0, relevance_score: 0.8 }, { index: 1, relevance_score: 0.5 }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await rerankCandidates('https://rerank.test', 'model', '', query, candidates, { retries: 0 })
+    const request = JSON.parse(fetchMock.mock.calls[0][1]!.body as string)
+
+    expect(request).toMatchObject({
+      query: 'query � 😀 �',
+      documents: ['before � 🧪 after', 'before 🚀 � after'],
+    })
+    expect(query).toBe('query \ud800 😀 \udc00')
+    expect(candidates).toEqual([
+      { id: 'a', text: 'before \ud800 🧪 after' },
+      { id: 'b', text: 'before 🚀 \udc00 after' },
+    ])
+    expect([...result.keys()]).toEqual(['a', 'b'])
+    expect(local.rerank).not.toHaveBeenCalled()
+  })
+
+  it('passes well-formed query and candidate text to the local runtime without mutating inputs', async () => {
+    const query = 'query \udc00 😀 \ud800'
+    const candidates = Object.freeze([
+      Object.freeze({ id: 'a', text: 'before \ud800 🧪 after' }),
+      Object.freeze({ id: 'b', text: 'before 🚀 \udc00 after' }),
+    ])
+
+    const result = await rerankCandidates('', 'local:Xenova/bge-reranker-base', '', query, candidates)
+
+    expect(local.rerank).toHaveBeenCalledWith(
+      'Xenova/bge-reranker-base', expect.any(String), undefined,
+      'query � 😀 �', ['before � 🧪 after', 'before 🚀 � after'], expect.any(Number), undefined,
+    )
+    expect(query).toBe('query \udc00 😀 \ud800')
+    expect(candidates).toEqual([
+      { id: 'a', text: 'before \ud800 🧪 after' },
+      { id: 'b', text: 'before 🚀 \udc00 after' },
+    ])
+    expect([...result.keys()]).toEqual(['b', 'a'])
+  })
+
   it('accepts execution options and applies the shared deadline to local inference', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1_000)
     const result = await rerankCandidates('', 'local:Xenova/bge-reranker-base', '', 'q', [

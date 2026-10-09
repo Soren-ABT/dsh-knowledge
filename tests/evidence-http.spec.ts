@@ -16,6 +16,29 @@ afterEach(async () => {
 })
 
 describe('evidence HTTP boundary', () => {
+  it('snaps a continuation inside a surrogate pair and keeps later cursors canonical', () => {
+    const text = `a📝${'b'.repeat(1200)}`
+    const doc: KnowledgeDocument = { id: 'doc', baseId: 'base', title: 'Fixture', sourceType: 'text', charCount: text.length, chunkCount: 1, createdAt: 0 }
+    const parsed = parsedTextDocument(text, new Uint8Array([1]), 'builtin', 'options').document
+    let evidence = composeDocumentEvidence(doc, parsed, { blockId: 'text:0', blockOffset: 2, maxTokens: 128 })
+    expect(evidence.blocks[0]?.textStart).toBe(3)
+    expect(evidence.blocks[0]?.text).toBe(text.slice(3, evidence.blocks[0]?.textEnd))
+    expect(evidence.truncated).toBe(true)
+    let retained = ''
+    for (let page = 0; ; page += 1) {
+      expect(page).toBeLessThan(10)
+      expect(evidence.estimatedTokens).toBeLessThanOrEqual(128)
+      const block = evidence.blocks[0]!
+      expect(block.text).toBe(text.slice(block.textStart, block.textEnd))
+      retained += block.text
+      if (!evidence.next) break
+      expect(evidence.next).toEqual({ blockId: block.id, blockOffset: block.textEnd })
+      evidence = composeDocumentEvidence(doc, parsed, { ...evidence.next, maxTokens: 128 })
+    }
+    expect(retained).toBe(text.slice(3))
+    expect(parsed.text).toBe(text)
+  })
+
   it('protects managed preflight before invoking filesystem work', async () => {
     const preflight = vi.fn(async (input: unknown) => ({ id: 'plan', input }))
     const prepare = vi.fn(async () => ({ phase: 'preparing_environment', active: true }))

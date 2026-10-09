@@ -3,6 +3,7 @@ import {
   buildAutoRetrieveMessage,
   clipAroundQuery,
   renderKnowledgeDocumentPage,
+  renderKnowledgeEvidence,
   renderKnowledgeReadResult,
   renderKnowledgeSearchResult,
 } from '../src/tool-knowledge/index.js'
@@ -10,6 +11,7 @@ import { estimateContextTokens } from '../src/knowledge/index.js'
 import type { KnowledgeService } from '../src/knowledge/index.js'
 import type { SearchResult } from '../src/knowledge/types.js'
 import { ensureWellFormed, snapSliceEnd, snapSliceStart } from '../src/knowledge/text-safety.js'
+import { sourceSpanLabel } from '../src/knowledge/source-spans.js'
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
 const isWellFormed = (value: string): boolean => !LONE_SURROGATE.test(value)
@@ -142,5 +144,40 @@ describe('UTF-16 boundary safety (issue #51)', () => {
     })
     expect(isWellFormed(read)).toBe(true)
     expect(read).toContain('\uFFFD')
+  })
+
+  it('repairs metadata on empty search and grep results', () => {
+    const poisoned = `missing\uD83D${NOTE}\uDCDD`
+    const search = renderKnowledgeSearchResult({
+      query: poisoned, mode: 'lexical', total: 0, reranked: false, elapsedMs: 0, hits: [],
+    })
+    const read = renderKnowledgeReadResult({ title: poisoned, matches: [], totalMatches: 0 })
+    for (const output of [search, read]) {
+      expect(isWellFormed(output)).toBe(true)
+      expect(output).toContain(`missing\uFFFD${NOTE}\uFFFD`)
+    }
+  })
+
+  it('repairs evidence text and metadata without changing the evidence value', () => {
+    const text = `prefix\uD83D${NOTE}\uDCDD suffix`
+    const evidence = {
+      documentId: 'd', title: text, blocks: [{
+        id: 'b', index: 0, type: 'text' as const, text, textStart: 0, textEnd: text.length,
+      }], assets: [], estimatedTokens: 20, truncated: false,
+    }
+    const output = renderKnowledgeEvidence(evidence)
+    expect(isWellFormed(output)).toBe(true)
+    expect(output).toContain(`prefix\uFFFD${NOTE}\uFFFD suffix`)
+    expect(evidence.blocks[0]?.text).toBe(text)
+  })
+
+  it('bounds source labels without splitting an astral block identifier', () => {
+    const label = sourceSpanLabel([{
+      blockId: `${'a'.repeat(39)}${NOTE}`, blockType: 'text',
+      revision: 'r1', chunkStart: 0, chunkEnd: 4, blockStart: 0, blockEnd: 4,
+    }])
+    expect(isWellFormed(label)).toBe(true)
+    expect(label).toContain('a'.repeat(39))
+    expect(label).not.toContain('\uFFFD')
   })
 })

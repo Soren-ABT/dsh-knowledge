@@ -189,7 +189,7 @@ export function renderKnowledgeReadResult(value: {
   matches?: Array<{ line: number; charStart?: number; charEnd?: number; snippet: string }>
 }): string {
   if (value.matches !== undefined) {
-    if (value.matches.length === 0) return `no matches in "${value.title}" (total ${value.totalMatches ?? 0})`
+    if (value.matches.length === 0) return ensureWellFormed(`no matches in "${value.title}" (total ${value.totalMatches ?? 0})`)
     const first = value.matches[0]
     const continuation = value.documentId !== undefined && first?.charStart !== undefined && first.charEnd !== undefined
       ? `\n\n[continue around the first match with knowledge_read_document(documentId=${JSON.stringify(value.documentId)}, charStart=${Math.max(0, first.charStart - 1000)}, charEnd=${first.charEnd + 1000})]`
@@ -223,7 +223,7 @@ export function renderKnowledgeSearchResult(
     : rerank?.status === 'skipped'
       ? `Rerank skipped (${rerank.error?.code ?? 'unknown'}): ${rerank.error?.message ?? 'ranking without a reranker'}\n`
       : ''
-  if (value.hits.length === 0) return `${warning}no matches for "${value.query}"`
+  if (value.hits.length === 0) return ensureWellFormed(`${warning}no matches for "${value.query}"`)
 
   const scoreKind = value.scoreKind === undefined ? '' : `, ${value.scoreKind}`
   const header = `${warning}${value.hits.length} result(s) for "${value.query}" (${value.mode}${scoreKind}):\n`
@@ -260,6 +260,11 @@ export function renderKnowledgeSearchResult(
 /** Services required before the tools can register. */
 export const inject = ['knowledge', 'tools', 'systemPrompt']
 
+/** Normalize only model-visible text; structured values retain their source offsets and identifiers. */
+function modelText(text: string): Array<{ type: 'text'; text: string }> {
+  return [{ type: 'text', text: ensureWellFormed(text) }]
+}
+
 /** Register the knowledge tool surface. */
 export function apply(ctx: Context): void {
   const knowledge = ctx.knowledge
@@ -286,7 +291,7 @@ export function apply(ctx: Context): void {
       const bases = scopedBases().filter(base => knowledge.getConfigFor(base.id).injectUsagePrompt !== false)
       if (bases.length === 0) return ''
       const names = bases.map(base => base.name).join(', ')
-      return 'Available knowledge bases: ' + names + '.'
+      return ensureWellFormed('Available knowledge bases: ' + names + '.')
     },
   })
 
@@ -506,16 +511,10 @@ export function apply(ctx: Context): void {
       },
       render: (_args, value) => {
         if (value.nodes !== undefined) {
-          return [{
-            type: 'text',
-            text: value.nodes.map(n => `${'  '.repeat(n.depth)}${n.type === 'directory' ? '📁' : '📄'} ${n.title} [${n.status}] (${n.docId})`).join('\n'),
-          }]
+          return modelText(value.nodes.map(n => `${'  '.repeat(n.depth)}${n.type === 'directory' ? '📁' : '📄'} ${n.title} [${n.status}] (${n.docId})`).join('\n'))
         }
         if ((value.bases ?? []).length === 0) return [{ type: 'text', text: 'no knowledge bases yet' }]
-        return [{
-          type: 'text',
-          text: (value.bases ?? []).map(b => `- ${b.name} (${b.documentCount} docs, ${b.chunkCount} chunks) [id: ${b.id}]`).join('\n'),
-        }]
+        return modelText((value.bases ?? []).map(b => `- ${b.name} (${b.documentCount} docs, ${b.chunkCount} chunks) [id: ${b.id}]`).join('\n'))
       },
     },
     async execute(args) {
@@ -552,9 +551,7 @@ export function apply(ctx: Context): void {
           name: { type: 'string', required: true },
         },
       },
-      render: (_args, value: { id: string; name: string }) => [
-        { type: 'text', text: `created knowledge base "${value.name}" (id ${value.id})` },
-      ],
+      render: (_args, value: { id: string; name: string }) => modelText(`created knowledge base "${value.name}" (id ${value.id})`),
     },
     async execute(args) {
       const base = await knowledge.createBase({ name: args.name, description: args.description })
@@ -598,9 +595,7 @@ export function apply(ctx: Context): void {
           chunkCount: { type: 'number', required: true },
         },
       },
-      render: (_args, value: { title: string; chunkCount: number }) => [
-        { type: 'text', text: `added document "${value.title}" (${value.chunkCount} chunks)` },
-      ],
+      render: (_args, value: { title: string; chunkCount: number }) => modelText(`added document "${value.title}" (${value.chunkCount} chunks)`),
     },
     async execute(args) {
       requireBaseEnabled(args.baseId)
@@ -640,10 +635,7 @@ export function apply(ctx: Context): void {
         if (value.documents.length === 0) return [{ type: 'text', text: 'no documents in this base' }]
         // Expose the docId (knowledge_read_document needs it; without it the
         // model loops between search and list trying to find an id).
-        return [{
-          type: 'text',
-          text: value.documents.map(d => `- ${d.title} (${d.chunkCount} chunks) [id=${d.id}]`).join('\n'),
-        }]
+        return modelText(value.documents.map(d => `- ${d.title} (${d.chunkCount} chunks) [id=${d.id}]`).join('\n'))
       },
     },
     async execute(args) {
@@ -700,9 +692,7 @@ export function apply(ctx: Context): void {
           chunkCount: { type: 'number', required: true },
         },
       },
-      render: (_args, value: { title: string; chunkCount: number }) => [
-        { type: 'text', text: `imported "${value.title}" (${value.chunkCount} chunks)` },
-      ],
+      render: (_args, value: { title: string; chunkCount: number }) => modelText(`imported "${value.title}" (${value.chunkCount} chunks)`),
     },
     async execute(args) {
       requireBaseEnabled(args.baseId)
@@ -729,11 +719,9 @@ export function apply(ctx: Context): void {
           chunkCount: { type: 'number', required: true },
         },
       },
-      render: (_args, value: { changed: boolean; title: string; chunkCount: number }) => [
-        { type: 'text', text: value.changed
+      render: (_args, value: { changed: boolean; title: string; chunkCount: number }) => modelText(value.changed
           ? `refreshed "${value.title}" (${value.chunkCount} chunks)`
-          : `"${value.title}" is unchanged` },
-      ],
+          : `"${value.title}" is unchanged`),
     },
     async execute(args) {
       requireDocumentEnabled(args.documentId)
@@ -982,9 +970,7 @@ export function apply(ctx: Context): void {
           chunkCount: { type: 'number', required: true },
         },
       },
-      render: (_args, value: { title: string; chunkCount: number }) => [
-        { type: 'text', text: `reindexed "${value.title}" (${value.chunkCount} chunks)` },
-      ],
+      render: (_args, value: { title: string; chunkCount: number }) => modelText(`reindexed "${value.title}" (${value.chunkCount} chunks)`),
     },
     async execute(args) {
       const doc = requireDocumentEnabled(args.documentId)

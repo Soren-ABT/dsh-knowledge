@@ -157,6 +157,8 @@ A directory rescan imports new files, rebuilds changed files, and removes files 
 
 The first-token proactive path never launches a local reranker. A remote reranker may run at most once within the shared four-second deadline. Cancellation, timeouts, and provider failures do not mutate retrieval memory or widen the search into unrelated bases.
 
+The development branch fixes #51: evidence and document-read trimming preserve UTF-16 surrogate pairs in emoji and other astral characters. Existing lone surrogates in model-facing text are replaced with `U+FFFD` to avoid upstream JSON parsing failures. Stored text and character offsets are retained; previously poisoned session history is not repaired automatically.
+
 </details>
 
 ### Chunking, parsing, and OCR

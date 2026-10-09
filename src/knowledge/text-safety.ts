@@ -1,11 +1,8 @@
 /**
- * UTF-16 boundary safety for every string this plugin hands to a model
- * request (auto-retrieve injection, tool results, rerank bodies). Trimming
- * works on code-unit offsets; a cut inside a surrogate pair emits a lone
- * surrogate, which strict JSON parsers reject (DeepSeek answers 400
- * `lone leading surrogate in hex escape`) and which then lives on in the
- * session history, killing every later request of that session.
- * One rule: nothing stateful may be added here — both host bundles import it.
+ * Surrogate-aware UTF-16 slicing and model text normalization. Code-unit
+ * cuts must preserve valid pairs; isolated surrogates can be rejected by
+ * providers and persist in session history. Keep this module pure because
+ * both host bundles import it.
  * @module dsh-knowledge/knowledge/text-safety
  */
 

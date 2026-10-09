@@ -1,4 +1,5 @@
 import type { DocumentSourceSpan } from './processing-types.js'
+import { snapSliceEnd } from './text-safety.js'
 
 /** Clip exact UTF-16 mappings to a displayed substring; never infer positions. */
 export function sliceSourceSpans(
@@ -44,7 +45,8 @@ export function sourceSpanLabel(spans: readonly DocumentSourceSpan[] | undefined
   }
   if (unique.size === 0) return ''
   const labels = [...unique.values()].slice(0, 3).map(span => {
-    const id = span.blockId.replace(/[\r\n\[\]\u0000-\u001f]/g, '_').slice(0, 40)
+    const normalizedId = span.blockId.replace(/[\r\n\[\]\u0000-\u001f]/g, '_')
+    const id = normalizedId.slice(0, snapSliceEnd(normalizedId, 40))
     return `${span.pageIndex === undefined ? '' : `p.${span.pageIndex + 1} `}${span.blockType}:${id}`
   })
   return `[source ${labels.join('; ')}${unique.size > 3 ? `; +${unique.size - 3}` : ''}] `

@@ -24,6 +24,7 @@ import {
   type LocalEmbedResponse,
 } from './embed-protocol.js'
 import { loadLocalReranker, rerankInLocalProcess } from './local-rerank.js'
+import { ensureWellFormed } from './text-safety.js'
 import type { EmbeddingProvider } from './types.js'
 
 // Route every global fetch (including transformers.js model downloads) through
@@ -91,19 +92,20 @@ export async function embedTexts(
   throwIfAborted(signal)
   if (texts.length === 0) return []
   if (provider === 'none') throw new Error('embedding provider is "none" — configure an endpoint or a local model, or keep lexical search')
+  const safeTexts = texts.map(ensureWellFormed)
   if (provider === 'local') {
     // The owning search can stop waiting immediately while the isolated child
     // finishes its current job; only a hard fault terminates that child.
-    return await withAbortSignal(embedLocal(model.trim() === '' ? DEFAULT_LOCAL_MODEL : model, texts), signal)
+    return await withAbortSignal(embedLocal(model.trim() === '' ? DEFAULT_LOCAL_MODEL : model, safeTexts), signal)
   }
   if (model.trim() === '') throw new Error('embedding model is empty')
   if (provider === 'openai') {
     if (baseUrl.trim() === '') throw new Error('embedding base URL is empty')
-    return embedOpenAI(baseUrl, model, apiKey, texts, signal)
+    return embedOpenAI(baseUrl, model, apiKey, safeTexts, signal)
   }
   // Ollama defaults an empty base URL to the well-known local endpoint, so a
   // base with an unset URL still embeds against http://127.0.0.1:11434.
-  if (provider === 'ollama') return embedOllama(baseUrl, model, apiKey, texts, signal)
+  if (provider === 'ollama') return embedOllama(baseUrl, model, apiKey, safeTexts, signal)
   throw new Error(`unknown embedding provider ${String(provider)}`)
 }
 
