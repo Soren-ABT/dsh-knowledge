@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.2 — 2026-10-10 — Unicode safety, settings recovery and dependency security
+
 - Fix #51: preserve surrogate pairs when trimming retrieval evidence, document reads, evidence continuations and source labels. Replace existing lone surrogates with U+FFFD in retrieval injection, tool renderings, the knowledge-base usage prompt, and embedding/rerank inputs; retain stored text and UTF-16 offsets. Existing poisoned session history is not rewritten automatically.
 - Fix #47: query the optional `remote.session` namespace directly so DSH's inject gate cannot crash the Local Models settings section. Retain legacy workspace and native-picker fallbacks without making the namespace a required service.
 - Resolve directory capabilities when they are used, including after the host caches the settings props, so later service registration or replacement does not leave stale picker/opener callbacks.

@@ -76,7 +76,7 @@ Lexical retrieval works without downloading a model. Scanned-document OCR, local
 
 ```bash
 # Tarball from GitHub Releases or npm pack
-dsh plugin --profile <name> add ./dsh-knowledge-0.5.1.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.2.tgz
 
 # Local source directory; build it first
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -157,7 +157,7 @@ A directory rescan imports new files, rebuilds changed files, and removes files 
 
 The first-token proactive path never launches a local reranker. A remote reranker may run at most once within the shared four-second deadline. Cancellation, timeouts, and provider failures do not mutate retrieval memory or widen the search into unrelated bases.
 
-The development branch fixes #51: evidence and document-read trimming preserve UTF-16 surrogate pairs in emoji and other astral characters. Existing lone surrogates in model-facing text are replaced with `U+FFFD` to avoid upstream JSON parsing failures. Stored text and character offsets are retained; previously poisoned session history is not repaired automatically.
+v0.5.2 fixes #51: evidence and document-read trimming preserve UTF-16 surrogate pairs in emoji and other astral characters. Existing lone surrogates in model-facing text are replaced with `U+FFFD` to avoid upstream JSON parsing failures. Stored text and character offsets are retained; previously poisoned session history is not repaired automatically.
 
 </details>
 
@@ -185,7 +185,7 @@ The development branch fixes #51: evidence and document-read trimming preserve U
 
 Open uses the effective cache directory when the input is empty. The backend expands `~` and can create a missing target directory. Opening does not save configuration, move models, or start a download.
 
-**Development-branch fixes (#47 / #49):** Directory actions query the optional `remote.session` service when needed, preventing an inject-gate crash and following later service registration or replacement. Local text models use Transformers.js 4.3.1 / ONNX Runtime 1.30.0; the lockfile resolves sharp 0.35.5, fixing three high-severity advisories. Cached weights are retained, but health records from the old runtime require revalidation in Settings. See the [security policy](SECURITY.md).
+**v0.5.2 fixes (#47 / #49):** Directory actions query the optional `remote.session` service when needed, preventing an inject-gate crash and following later service registration or replacement. Local text models use Transformers.js 4.3.1 / ONNX Runtime 1.30.0; the lockfile resolves sharp 0.35.5, fixing three high-severity advisories. Cached weights are retained, but health records from the old runtime require revalidation in Settings. See the [security policy](SECURITY.md).
 
 <details>
 <summary>How local models run</summary>
@@ -265,6 +265,17 @@ Filters apply only to the current request. No database migration, reindex, or do
 - Lexical retrieval uses a SQLite FTS5 trigram index; vectors use a resident Float32Array cache with precise invalidation.
 - Legacy JSON chunk data is migrated idempotently on first start. The service falls back to memory storage when no persistent backend is available.
 - After changing chunk or embedding settings, rebuild one document or the entire base from the panel or model tools.
+
+---
+
+## v0.5.2 highlights
+
+- **Unicode text safety (#51):** preserve UTF-16 surrogate pairs when trimming evidence, document reads and source labels. Replace lone surrogates with `U+FFFD` in retrieval injection, tool output, the usage prompt, and embedding/rerank inputs to avoid upstream JSON parsing failures.
+- **Settings recovery (#47):** access the optional `remote.session` service when needed, restoring Local Models settings and directory actions even when host services register late or are replaced.
+- **Dependency security (#49):** upgrade to Transformers.js 4.3.1, lock sharp 0.35.5, and remove all previous audit exceptions. Production auditing rejects every high/critical advisory.
+- **Upgrade:** no database migration or reindexing. Retain cached weights and revalidate health in Settings after the runtime upgrade. Previously poisoned sessions need separate repair; existing DSH profiles should also verify that every installed sharp version is at least 0.35.5.
+
+[Read the v0.5.2 release notes](./docs/releases/v0.5.2.md) · [Read the changelog](./CHANGELOG.md)
 
 ---
 

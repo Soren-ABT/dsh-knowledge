@@ -78,7 +78,7 @@ dsh plugin --profile <name> add dsh-knowledge
 
 ```bash
 # GitHub Release 或 npm pack 生成的 tarball
-dsh plugin --profile <name> add ./dsh-knowledge-0.5.1.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.2.tgz
 
 # 本地源码目录，需要先完成构建
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -159,7 +159,7 @@ allowBuilds:
 
 自动检索的首 Token 路径不会启动本地 reranker；远程 rerank 最多调用一次，并共享 4 秒总预算。取消、超时或 provider 故障不会污染注入记忆，也不会把检索范围扩大到无关知识库。
 
-开发分支已修复 #51：证据和读取片段裁剪不会拆开 emoji 等字符的 UTF-16 代理对；模型可见文本中的既有孤立代理项会替换为 `U+FFFD`，避免上游 JSON 解析失败。存储文本与字符偏移保持原样，已损坏的会话历史不会自动修复。
+v0.5.2 已修复 #51：证据和读取片段裁剪不会拆开 emoji 等字符的 UTF-16 代理对；模型可见文本中的既有孤立代理项会替换为 `U+FFFD`，避免上游 JSON 解析失败。存储文本与字符偏移保持原样，已损坏的会话历史不会自动修复。
 
 </details>
 
@@ -187,7 +187,7 @@ allowBuilds:
 
 「打开目录」在输入为空时使用实际缓存目录，由后端展开 `~`，并可创建尚不存在的目标目录。此操作不保存配置、不移动模型，也不启动下载。
 
-**开发分支修复（#47 / #49）：** 目录操作按需查询可选的 `remote.session` 服务，避免注入门禁导致设置页空白，也能跟随宿主服务的晚注册或替换。本地文本模型运行时升级为 Transformers.js 4.3.1 / ONNX Runtime 1.30.0，锁定依赖中的 sharp 0.35.5 修复了三项高危告警。旧模型权重保留，旧运行时的健康记录需在设置中重新验证；详情见 [安全策略](SECURITY.md)。
+**v0.5.2 修复（#47 / #49）：** 目录操作按需查询可选的 `remote.session` 服务，避免注入门禁导致设置页空白，也能跟随宿主服务的晚注册或替换。本地文本模型运行时升级为 Transformers.js 4.3.1 / ONNX Runtime 1.30.0，锁定依赖中的 sharp 0.35.5 修复了三项高危告警。旧模型权重保留，旧运行时的健康记录需在设置中重新验证；详情见 [安全策略](SECURITY.md)。
 
 <details>
 <summary>本地模型运行方式</summary>
@@ -267,6 +267,17 @@ HTTP `POST /knowledge/search` 在 `filter` 内接受 `excludeDocIds` 和 `titleE
 - 词法检索使用 SQLite FTS5 trigram 索引；向量使用 Float32Array 常驻缓存并精确失效。
 - 旧 JSON 分块数据在首次启动时执行幂等迁移；没有存储后端时自动退化为内存模式。
 - 修改分块或 embedding 配置后，可以重建单条资料或整个知识库的索引。
+
+---
+
+## v0.5.2 更新重点
+
+- **Unicode 文本安全（#51）**：证据、文档读取和来源标签裁剪保留 UTF-16 代理对；检索注入、工具输出、使用提示及 embedding/rerank 输入中的孤立代理项替换为 `U+FFFD`，避免上游 JSON 解析错误。
+- **设置页恢复（#47）**：按需访问可选的 `remote.session`，恢复本地模型设置与目录操作，兼容宿主服务的晚注册及替换。
+- **依赖安全（#49）**：升级 Transformers.js 4.3.1，锁定 sharp 0.35.5，移除全部旧审计豁免；生产审计拒绝任何高危／严重告警。
+- **升级方式**：无需数据库迁移或重新索引；保留模型权重，在设置中重新验证旧运行时的健康状态。已有损坏会话需单独处理，现有 DSH profile 也应确认实际安装的 sharp 至少为 0.35.5。
+
+[查看 v0.5.2 发布说明](./docs/releases/v0.5.2.md) · [查看 CHANGELOG](./CHANGELOG.md)
 
 ---
 
