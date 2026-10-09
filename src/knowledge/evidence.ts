@@ -1,6 +1,7 @@
 import { estimateContextTokens } from './context.js'
 import type { KnowledgeDocument } from './types.js'
 import type { DocumentEvidence, ParsedBlock, ParsedDocument } from './processing-types.js'
+import { snapSliceStart } from './text-safety.js'
 
 /** A caller-supplied evidence cursor must not surface as a server failure. */
 export class EvidenceRequestError extends Error {
@@ -29,7 +30,7 @@ export function composeDocumentEvidence(doc: KnowledgeDocument, parsed: ParsedDo
   let next: DocumentEvidence['next']
   for (let i = start; i < all.length; i++) {
     const block = all[i]!
-    const from = i === start ? offset : 0
+    const from = snapSliceStart(block.text, i === start ? offset : 0)
     const available = budget - used
     const crop = (length: number): ParsedBlock => ({ ...block, text: block.text.slice(from, from + length), textStart: block.textStart + from, textEnd: block.textStart + from + length })
     let low = 0, high = block.text.length - from

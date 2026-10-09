@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, onTestFinished } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import ToolRuntime, { type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 // Load the sibling workspace's real built service. Importing its TS source
@@ -151,6 +151,38 @@ describe('model-facing knowledge tool contracts', () => {
     expect(usage?.text).toBe('Available knowledge bases: primary, foreign.')
     expect(usage?.text).not.toContain('extraQueries')
     expect(usage?.text).not.toContain('proactively')
+  })
+
+  it('repairs malformed metadata in registered tool text and usage prompts (#51)', async () => {
+    const { ctx, knowledge } = await mountHarness()
+    onTestFinished(() => ctx.fiber.dispose())
+    const name = 'surrogate\uD83D\u{1F4DD}\uDCDD metadata'
+    const safeName = 'surrogate\uFFFD\u{1F4DD}\uFFFD metadata'
+    const assertSafeText = (result: ToolExecutionResult): void => {
+      valueOf(result)
+      const text = resultText(result)
+      expect(text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
+      expect(text).toContain(safeName)
+    }
+    const created = await execute(ctx, 'knowledge_create_base', { name })
+    const base = valueOf<{ id: string; name: string }>(created)
+    expect(base.name).toBe(name)
+    assertSafeText(created)
+    const added = await execute(ctx, 'knowledge_add_document', {
+      baseId: base.id, title: name, content: 'Unicode evidence for a local regression.',
+    })
+    const doc = valueOf<{ id: string; title: string }>(added)
+    expect(doc.title).toBe(name)
+    assertSafeText(added)
+    await knowledge.waitForIdle()
+    assertSafeText(await execute(ctx, 'knowledge_list_bases', {}))
+    assertSafeText(await execute(ctx, 'knowledge_list_bases', { baseId: base.id }))
+    assertSafeText(await execute(ctx, 'knowledge_list_documents', { baseId: base.id }))
+    assertSafeText(await execute(ctx, 'knowledge_reindex_document', { baseId: base.id, documentId: doc.id }))
+    const usage = (await ctx.systemPrompt.assemble()).sections.find(section => section.name === 'knowledge:usage')
+    expect(usage?.text).toContain(safeName)
+    expect(usage?.text).not.toContain(name)
+    expect(knowledge.listBases().find(item => item.id === base.id)?.name).toBe(name)
   })
 
   it('can suppress the usage section while knowledge_search remains usable (#36)', async () => {

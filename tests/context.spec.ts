@@ -9,7 +9,7 @@ import {
   estimateContextTokens as protocolEstimate,
   serializeContextWindow as protocolSerialize,
 } from '../src/knowledge/context-protocol.js'
-import type { KnowledgeChunk } from '../src/knowledge/types.js'
+import type { ContextChunkExcerpt, KnowledgeChunk } from '../src/knowledge/types.js'
 
 function chunk(index: number, text: string, heading = 'Guide', docId = 'doc-1'): KnowledgeChunk {
   return {
@@ -20,6 +20,45 @@ function chunk(index: number, text: string, heading = 'Guide', docId = 'doc-1'):
     text,
     heading,
   }
+}
+
+function sourcedChunk(index: number, text: string): KnowledgeChunk {
+  return {
+    ...chunk(index, text, ''),
+    sourceSpans: [{
+      revision: 'rev-1',
+      blockId: `block-${index}`,
+      blockType: 'text',
+      pageIndex: index,
+      chunkStart: 0,
+      chunkEnd: text.length,
+      blockStart: 37,
+      blockEnd: 37 + text.length,
+    }],
+  }
+}
+
+function expectExactUnicodeExcerpt(excerpt: ContextChunkExcerpt, original: KnowledgeChunk): void {
+  // Check the public UTF-16 offsets against the canonical text, without using
+  // the production slicing or safety helpers to compute the expected result.
+  expect(excerpt.text).toBe(original.text.slice(excerpt.textStart, excerpt.textEnd))
+  expect(excerpt.textEnd - excerpt.textStart).toBe(excerpt.text.length)
+  expect(excerpt.textStart).toBeGreaterThanOrEqual(0)
+  expect(excerpt.textEnd).toBeLessThanOrEqual(original.text.length)
+  expect(excerpt.text).not.toMatch(/[\uD800-\uDFFF]/u)
+  expect(excerpt.text).not.toContain('�')
+  expect(excerpt.truncatedStart).toBe(excerpt.textStart > 0)
+  expect(excerpt.truncatedEnd).toBe(excerpt.textEnd < original.text.length)
+  expect(excerpt.sourceSpans).toEqual(excerpt.text.length === 0 ? [] : [{
+    revision: 'rev-1',
+    blockId: `block-${original.index}`,
+    blockType: 'text',
+    pageIndex: original.index,
+    chunkStart: 0,
+    chunkEnd: excerpt.text.length,
+    blockStart: 37 + excerpt.textStart,
+    blockEnd: 37 + excerpt.textEnd,
+  }])
 }
 
 describe('composeContextWindow', () => {
@@ -152,6 +191,86 @@ describe('composeContextWindow', () => {
     expect(window.anchorIndex).toBe(1)
     expect(window.estimatedTokens).toBe(estimateContextTokens(serializeContextWindow(window)))
     expect(window.estimatedTokens).toBeLessThanOrEqual(maxTokens)
+  })
+
+  it.each([1, 2, 3, 4, 5, 8, 12, 16, 24, 40, 64])(
+    'keeps focused emoji anchor excerpts and source offsets exact under a %i-token budget', maxTokens => {
+      const anchor = sourcedChunk(0, `${'😀AB'.repeat(80)}FOCUS${'🧪CD'.repeat(80)}`)
+      const window = composeContextWindow([anchor], anchor, {
+        before: 0,
+        after: 0,
+        maxTokens,
+        focus: 'FOCUS',
+        documentChunkCount: 1,
+      })
+
+      expectExactUnicodeExcerpt(window.anchor, anchor)
+      expect(serializeContextWindow(window)).not.toMatch(/[\uD800-\uDFFF]/u)
+      expect(window.estimatedTokens).toBe(estimateContextTokens(serializeContextWindow(window)))
+      expect(window.estimatedTokens).toBeLessThanOrEqual(maxTokens)
+      if (maxTokens >= 16) expect(window.anchor.text).toContain('FOCUS')
+      if (maxTokens >= 24) expect(window.anchor.text).toMatch(/😀|🧪/u)
+    },
+  )
+
+  it.each([8, 12, 16, 24, 40, 64, 128])(
+    'keeps head and tail neighbour excerpts and source offsets exact under a %i-token budget', maxTokens => {
+      const chunks = [
+        sourcedChunk(0, '🧪AB'.repeat(80)),
+        sourcedChunk(1, '😀'),
+        sourcedChunk(2, '🚀CD'.repeat(80)),
+      ]
+      const window = composeContextWindow(chunks, chunks[1], {
+        before: 1,
+        after: 1,
+        maxTokens,
+        documentChunkCount: 3,
+      })
+
+      for (const excerpt of [...window.before, window.anchor, ...window.after]) {
+        expectExactUnicodeExcerpt(excerpt, chunks[excerpt.index])
+      }
+      expect(serializeContextWindow(window)).not.toMatch(/[\uD800-\uDFFF]/u)
+      expect(window.estimatedTokens).toBe(estimateContextTokens(serializeContextWindow(window)))
+      expect(window.estimatedTokens).toBeLessThanOrEqual(maxTokens)
+      if (maxTokens >= 40) {
+        expect(window.anchor.text).toBe('😀')
+        expect(window.before).toHaveLength(1)
+        expect(window.after).toHaveLength(1)
+        expect(window.before[0].textStart).toBeGreaterThan(0)
+        expect(window.before[0].textEnd).toBe(chunks[0].text.length)
+        expect(window.after[0].textStart).toBe(0)
+        expect(window.after[0].textEnd).toBeLessThan(chunks[2].text.length)
+      }
+    },
+  )
+
+  it('retains exact emoji and source offsets after overlap removal and budget cropping', () => {
+    const overlap = '😀'.repeat(12) // 24 UTF-16 units, the overlap threshold.
+    const chunks = [
+      sourcedChunk(0, `${'🧪AB'.repeat(80)}${overlap}`),
+      sourcedChunk(1, `${overlap}answer${overlap}`),
+      sourcedChunk(2, `${overlap}${'🚀CD'.repeat(80)}`),
+    ]
+    const window = composeContextWindow(chunks, chunks[1], {
+      before: 1,
+      after: 1,
+      maxTokens: 64,
+      documentChunkCount: 3,
+    })
+
+    expect(window.anchor.text).toBe(chunks[1].text)
+    expect(window.before).toHaveLength(1)
+    expect(window.after).toHaveLength(1)
+    for (const excerpt of [...window.before, window.anchor, ...window.after]) {
+      expectExactUnicodeExcerpt(excerpt, chunks[excerpt.index])
+    }
+    expect(window.before[0].textEnd).toBe(chunks[0].text.length - overlap.length)
+    expect(window.after[0].textStart).toBe(overlap.length)
+    expect(window.before[0].textStart).toBeGreaterThan(0)
+    expect(window.after[0].textEnd).toBeLessThan(chunks[2].text.length)
+    expect(window.estimatedTokens).toBe(estimateContextTokens(serializeContextWindow(window)))
+    expect(window.estimatedTokens).toBeLessThanOrEqual(64)
   })
 
   it('deduplicates 24+ character overlap while preserving the anchor', () => {

@@ -11,6 +11,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 // Activates the `Context.knowledge` merge declared by the knowledge service.
 import type {} from '../knowledge/index.js'
 import { estimateContextTokens, serializeContextWindow } from '../knowledge/context-protocol.js'
+import { ensureWellFormed, snapSliceEnd, snapSliceStart } from '../knowledge/text-safety.js'
 import type { KnowledgeService } from '../knowledge/index.js'
 import type { ContextWindow, SearchHit, SearchResult } from '../knowledge/types.js'
 import type { DocumentEvidence, DocumentProcessingInfo, DocumentSourceSpan } from '../knowledge/processing-types.js'
@@ -152,14 +153,14 @@ export function renderKnowledgeDocumentPage(value: {
     const more = value.contextWindow.hasMoreBefore || value.contextWindow.hasMoreAfter
       ? '\n\n[partial context; call knowledge_get_document again with a wider before/after or maxTokens when needed]'
       : '\n\n[complete context window]'
-    return `document "${value.title}" around chunk ${value.contextWindow.anchorIndex}:\n`
+    return ensureWellFormed(`document "${value.title}" around chunk ${value.contextWindow.anchorIndex}:\n`
       + serializeContextWindow(value.contextWindow)
-      + more
+      + more)
   }
-  return `document "${value.title}" (${value.chunkCount} chunks; returned ${value.chunks.length})\n`
+  return ensureWellFormed(`document "${value.title}" (${value.chunkCount} chunks; returned ${value.chunks.length})\n`
     + (value.processing ? `[processor ${value.processing.provider}; completeness=${value.processing.completeness}]\n` : '')
     + value.chunks.map(chunk => `[chunk ${chunk.index}${chunk.heading !== undefined ? `; ${chunk.heading}` : ''}]\n${sourceSpanLabel(chunk.sourceSpans)}${chunk.text}`).join('\n\n')
-    + (value.truncated ? `\n\n[truncated; continue with chunkOffset=${value.nextChunkOffset}]` : '\n\n[complete]')
+    + (value.truncated ? `\n\n[truncated; continue with chunkOffset=${value.nextChunkOffset}]` : '\n\n[complete]'))
 }
 
 export function renderKnowledgeEvidence(value: DocumentEvidence): string {
@@ -173,7 +174,7 @@ export function renderKnowledgeEvidence(value: DocumentEvidence): string {
     return `[${page}; block=${safeLabelValue(block.id)}; type=${block.type}${region}${assets}]\n${block.text}`
   }).join('\n\n')
   const continuation = value.truncated && value.next ? `[truncated; continue knowledge_read_evidence with documentId=${JSON.stringify(value.documentId)}, revision=${JSON.stringify(processing?.revision)}, blockId=${JSON.stringify(value.next.blockId)}, blockOffset=${value.next.blockOffset}]` : '[complete evidence selection]'
-  return [`document "${safeLabelValue(value.title)}"`, metadata, warnings, blocks, continuation].filter(Boolean).join('\n\n')
+  return ensureWellFormed([`document "${safeLabelValue(value.title)}"`, metadata, warnings, blocks, continuation].filter(Boolean).join('\n\n'))
 }
 
 export function renderKnowledgeReadResult(value: {
@@ -188,22 +189,22 @@ export function renderKnowledgeReadResult(value: {
   matches?: Array<{ line: number; charStart?: number; charEnd?: number; snippet: string }>
 }): string {
   if (value.matches !== undefined) {
-    if (value.matches.length === 0) return `no matches in "${value.title}" (total ${value.totalMatches ?? 0})`
+    if (value.matches.length === 0) return ensureWellFormed(`no matches in "${value.title}" (total ${value.totalMatches ?? 0})`)
     const first = value.matches[0]
     const continuation = value.documentId !== undefined && first?.charStart !== undefined && first.charEnd !== undefined
       ? `\n\n[continue around the first match with knowledge_read_document(documentId=${JSON.stringify(value.documentId)}, charStart=${Math.max(0, first.charStart - 1000)}, charEnd=${first.charEnd + 1000})]`
       : ''
-    return `${value.matches.length} returned match(es) of ${value.totalMatches ?? value.matches.length} total in "${value.title}":\n`
+    return ensureWellFormed(`${value.matches.length} returned match(es) of ${value.totalMatches ?? value.matches.length} total in "${value.title}":\n`
       + value.matches.map(match => {
         const offsets = match.charStart !== undefined && match.charEnd !== undefined
           ? ` [chars ${match.charStart}-${match.charEnd}]`
           : ''
         return `L${match.line}${offsets}: ${match.snippet}`
       }).join('\n')
-      + continuation
+      + continuation)
   }
-  return `"${value.title}" (${value.charStart}-${value.charEnd} of ${value.totalChars}):\n${value.content ?? ''}`
-    + (value.truncated ? `\n\n[truncated; continue with charStart=${value.charEnd}]` : '\n\n[complete]')
+  return ensureWellFormed(`"${value.title}" (${value.charStart}-${value.charEnd} of ${value.totalChars}):\n${value.content ?? ''}`
+    + (value.truncated ? `\n\n[truncated; continue with charStart=${value.charEnd}]` : '\n\n[complete]'))
 }
 
 /** Canonical model-visible rendering for explicit search. Keeping this as a
@@ -222,7 +223,7 @@ export function renderKnowledgeSearchResult(
     : rerank?.status === 'skipped'
       ? `Rerank skipped (${rerank.error?.code ?? 'unknown'}): ${rerank.error?.message ?? 'ranking without a reranker'}\n`
       : ''
-  if (value.hits.length === 0) return `${warning}no matches for "${value.query}"`
+  if (value.hits.length === 0) return ensureWellFormed(`${warning}no matches for "${value.query}"`)
 
   const scoreKind = value.scoreKind === undefined ? '' : `, ${value.scoreKind}`
   const header = `${warning}${value.hits.length} result(s) for "${value.query}" (${value.mode}${scoreKind}):\n`
@@ -253,11 +254,16 @@ export function renderKnowledgeSearchResult(
     usedTokens += cost
   }
 
-  return `${header}${lines.join('\n\n')}${continuation}`
+  return ensureWellFormed(`${header}${lines.join('\n\n')}${continuation}`)
 }
 
 /** Services required before the tools can register. */
 export const inject = ['knowledge', 'tools', 'systemPrompt']
+
+/** Normalize only model-visible text; structured values retain their source offsets and identifiers. */
+function modelText(text: string): Array<{ type: 'text'; text: string }> {
+  return [{ type: 'text', text: ensureWellFormed(text) }]
+}
 
 /** Register the knowledge tool surface. */
 export function apply(ctx: Context): void {
@@ -285,7 +291,7 @@ export function apply(ctx: Context): void {
       const bases = scopedBases().filter(base => knowledge.getConfigFor(base.id).injectUsagePrompt !== false)
       if (bases.length === 0) return ''
       const names = bases.map(base => base.name).join(', ')
-      return 'Available knowledge bases: ' + names + '.'
+      return ensureWellFormed('Available knowledge bases: ' + names + '.')
     },
   })
 
@@ -505,16 +511,10 @@ export function apply(ctx: Context): void {
       },
       render: (_args, value) => {
         if (value.nodes !== undefined) {
-          return [{
-            type: 'text',
-            text: value.nodes.map(n => `${'  '.repeat(n.depth)}${n.type === 'directory' ? '📁' : '📄'} ${n.title} [${n.status}] (${n.docId})`).join('\n'),
-          }]
+          return modelText(value.nodes.map(n => `${'  '.repeat(n.depth)}${n.type === 'directory' ? '📁' : '📄'} ${n.title} [${n.status}] (${n.docId})`).join('\n'))
         }
         if ((value.bases ?? []).length === 0) return [{ type: 'text', text: 'no knowledge bases yet' }]
-        return [{
-          type: 'text',
-          text: (value.bases ?? []).map(b => `- ${b.name} (${b.documentCount} docs, ${b.chunkCount} chunks) [id: ${b.id}]`).join('\n'),
-        }]
+        return modelText((value.bases ?? []).map(b => `- ${b.name} (${b.documentCount} docs, ${b.chunkCount} chunks) [id: ${b.id}]`).join('\n'))
       },
     },
     async execute(args) {
@@ -551,9 +551,7 @@ export function apply(ctx: Context): void {
           name: { type: 'string', required: true },
         },
       },
-      render: (_args, value: { id: string; name: string }) => [
-        { type: 'text', text: `created knowledge base "${value.name}" (id ${value.id})` },
-      ],
+      render: (_args, value: { id: string; name: string }) => modelText(`created knowledge base "${value.name}" (id ${value.id})`),
     },
     async execute(args) {
       const base = await knowledge.createBase({ name: args.name, description: args.description })
@@ -597,9 +595,7 @@ export function apply(ctx: Context): void {
           chunkCount: { type: 'number', required: true },
         },
       },
-      render: (_args, value: { title: string; chunkCount: number }) => [
-        { type: 'text', text: `added document "${value.title}" (${value.chunkCount} chunks)` },
-      ],
+      render: (_args, value: { title: string; chunkCount: number }) => modelText(`added document "${value.title}" (${value.chunkCount} chunks)`),
     },
     async execute(args) {
       requireBaseEnabled(args.baseId)
@@ -639,10 +635,7 @@ export function apply(ctx: Context): void {
         if (value.documents.length === 0) return [{ type: 'text', text: 'no documents in this base' }]
         // Expose the docId (knowledge_read_document needs it; without it the
         // model loops between search and list trying to find an id).
-        return [{
-          type: 'text',
-          text: value.documents.map(d => `- ${d.title} (${d.chunkCount} chunks) [id=${d.id}]`).join('\n'),
-        }]
+        return modelText(value.documents.map(d => `- ${d.title} (${d.chunkCount} chunks) [id=${d.id}]`).join('\n'))
       },
     },
     async execute(args) {
@@ -699,9 +692,7 @@ export function apply(ctx: Context): void {
           chunkCount: { type: 'number', required: true },
         },
       },
-      render: (_args, value: { title: string; chunkCount: number }) => [
-        { type: 'text', text: `imported "${value.title}" (${value.chunkCount} chunks)` },
-      ],
+      render: (_args, value: { title: string; chunkCount: number }) => modelText(`imported "${value.title}" (${value.chunkCount} chunks)`),
     },
     async execute(args) {
       requireBaseEnabled(args.baseId)
@@ -728,11 +719,9 @@ export function apply(ctx: Context): void {
           chunkCount: { type: 'number', required: true },
         },
       },
-      render: (_args, value: { changed: boolean; title: string; chunkCount: number }) => [
-        { type: 'text', text: value.changed
+      render: (_args, value: { changed: boolean; title: string; chunkCount: number }) => modelText(value.changed
           ? `refreshed "${value.title}" (${value.chunkCount} chunks)`
-          : `"${value.title}" is unchanged` },
-      ],
+          : `"${value.title}" is unchanged`),
     },
     async execute(args) {
       requireDocumentEnabled(args.documentId)
@@ -981,9 +970,7 @@ export function apply(ctx: Context): void {
           chunkCount: { type: 'number', required: true },
         },
       },
-      render: (_args, value: { title: string; chunkCount: number }) => [
-        { type: 'text', text: `reindexed "${value.title}" (${value.chunkCount} chunks)` },
-      ],
+      render: (_args, value: { title: string; chunkCount: number }) => modelText(`reindexed "${value.title}" (${value.chunkCount} chunks)`),
     },
     async execute(args) {
       const doc = requireDocumentEnabled(args.documentId)
@@ -1512,7 +1499,7 @@ export async function buildAutoRetrieveMessage(
       usedTokens += separatorTokens + estimateContextTokens(line)
     }
     if (lines.length === 0) return undefined
-    const background = `${header}${lines.join('\n\n')}`
+    const background = ensureWellFormed(`${header}${lines.join('\n\n')}`)
     if (estimateContextTokens(background) > AUTO_RETRIEVE_TOTAL_MAX_TOKENS) return undefined
     if (signal?.aborted) return undefined
 
@@ -1736,7 +1723,7 @@ function fitSourceLabel(label: string, maxTokens: number): string {
   let trimmed = prefix
   let result = `${trimmed}${suffix}`
   while (result.length > 0 && estimateContextTokens(result) > maxTokens) {
-    trimmed = trimmed.slice(0, -1)
+    trimmed = trimmed.slice(0, snapSliceEnd(trimmed, trimmed.length - 1))
     result = `${trimmed}${suffix}`
   }
   return result
@@ -1948,10 +1935,12 @@ function cleanRetrieveQuery(text: string): string {
 function boundQueryChars(text: string, maxChars: number): string {
   const normalized = text.trim()
   if (normalized.length <= maxChars) return normalized
-  if (maxChars <= 2) return normalized.slice(0, maxChars)
+  if (maxChars <= 2) return normalized.slice(0, snapSliceEnd(normalized, maxChars))
   const head = Math.min(120, Math.ceil((maxChars - 1) * 0.6))
   const tail = maxChars - head - 1
-  return `${normalized.slice(0, head)} ${normalized.slice(-tail)}`
+  const headEnd = snapSliceEnd(normalized, head)
+  const tailStart = snapSliceStart(normalized, normalized.length - tail)
+  return `${normalized.slice(0, headEnd)} ${normalized.slice(tailStart)}`
 }
 
 /** Query-centred, deterministic token clipping shared by native search and
@@ -2011,8 +2000,10 @@ function cropAroundRange(text: string, focus: { start: number; end: number } | u
       start = Math.max(0, Math.min(text.length - length, start))
     }
   }
-  const end = Math.min(text.length, start + length)
-  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`
+  const safeStart = snapSliceStart(text, start)
+  const end = Math.min(text.length, safeStart + length)
+  const safeEnd = snapSliceEnd(text, end)
+  return `${safeStart > 0 ? '…' : ''}${text.slice(safeStart, safeEnd)}${safeEnd < text.length ? '…' : ''}`
 }
 
 function fitPrefixToTokens(text: string, maxTokens: number, suffix = '…'): string {
@@ -2023,7 +2014,8 @@ function fitPrefixToTokens(text: string, maxTokens: number, suffix = '…'): str
   let best = ''
   while (low <= high) {
     const length = Math.floor((low + high) / 2)
-    const candidate = `${text.slice(0, length)}${length < text.length ? suffix : ''}`
+    const cut = snapSliceEnd(text, length)
+    const candidate = `${text.slice(0, cut)}${cut < text.length ? suffix : ''}`
     if (estimateContextTokens(candidate) <= maxTokens) {
       best = candidate
       low = length + 1
@@ -2044,7 +2036,9 @@ function fitHeadTailToTokens(text: string, maxTokens: number): string {
     const length = Math.floor((low + high) / 2)
     const head = Math.ceil(length * 0.6)
     const tail = length - head
-    const candidate = `${text.slice(0, head)}…${tail > 0 ? text.slice(-tail) : ''}`
+    const headEnd = snapSliceEnd(text, head)
+    const tailStart = tail > 0 ? snapSliceStart(text, text.length - tail) : text.length
+    const candidate = `${text.slice(0, headEnd)}…${tail > 0 ? text.slice(tailStart) : ''}`
     if (estimateContextTokens(candidate) <= maxTokens) {
       best = candidate
       low = length + 1
@@ -2081,7 +2075,7 @@ function safeLabelValue(value: string): string {
     .replace(/\]/g, ')')
     .replace(/\s{2,}/g, ' ')
     .trim()
-  return normalized.length > 200 ? `${normalized.slice(0, 197)}...` : normalized
+  return normalized.length > 200 ? `${normalized.slice(0, snapSliceEnd(normalized, 197))}...` : normalized
 }
 
 /** A Markdown citation block for one search hit: quote + source line. */
