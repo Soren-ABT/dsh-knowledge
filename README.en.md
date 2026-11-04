@@ -489,6 +489,10 @@ The primary differentiator is therefore not another vector-search implementation
 
 Deployment defaults live in the `knowledge` row of `cordis.patch.yml`. The management panel can persist runtime overrides, and most retrieval and document settings can also be overridden per base.
 
+The base settings panel switches between **This base** and **Global defaults** and exposes the search mode. Vector mode keeps the similarity threshold visible with reranking off. **Effective now** shows saved settings and updates after a successful save. Recall Test uses the selected base's effective configuration; conversation calls to `knowledge_search` without `baseId` use the global defaults.
+
+Global embedding model changes first check every base that inherits the changed settings. Populated bases with an embedding model must switch through **Rebuild Base**; lexical-only bases backfill vectors in the background after source and idle checks. If any affected base cannot switch, the entire global update is rejected and the previous configuration is preserved. Per-base model overrides keep precedence.
+
 <details>
 <summary>View every configuration field</summary>
 

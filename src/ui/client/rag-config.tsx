@@ -9,11 +9,25 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { KnowledgeApi } from './api.js'
-import type { BaseConfig, BaseSummary, EmbeddingProvider, KnowledgeConfig, LocalModelStatus, ModelSuggestions } from './api.js'
-import { C, style } from './theme.js'
+import type { BaseConfig, BaseSummary, EmbeddingProvider, KnowledgeConfig, LocalModelStatus, ModelSuggestions, SearchMode } from './api.js'
+import { accentSoft, C, style } from './theme.js'
 import { IconRefresh } from './icons.js'
 import { ModelRuntimeStatus } from './ModelRuntimeStatus.js'
-import type { Translate } from './locales.js'
+import type { KnowledgeKey, Translate } from './locales.js'
+
+const SEARCH_MODE_LABEL: Record<SearchMode, KnowledgeKey> = {
+  auto: 'modeAuto',
+  hybrid: 'modeHybrid',
+  vector: 'modeVector',
+  lexical: 'modeLexical',
+}
+
+const EMBEDDING_PROVIDER_LABEL: Record<EmbeddingProvider, KnowledgeKey> = {
+  none: 'providerNone',
+  openai: 'providerOpenAI',
+  ollama: 'providerOllama',
+  local: 'providerLocal',
+}
 
 interface PanelProps {
   base: BaseSummary
@@ -26,6 +40,10 @@ interface PanelProps {
 
 export function RagConfigPanel(props: PanelProps): JSX.Element {
   const { base, globalConfig, api, t, busy, onSaved } = props
+  // The panel edits one of two rows: this base's overrides or the global
+  // defaults. The switch lives inside the panel so an existing base stays
+  // selected while filling in defaults for base-less conversation searches.
+  const [scope, setScope] = useState<'base' | 'global'>('base')
   const [values, setValues] = useState<KnowledgeConfig>(() => ({
     ...globalConfig,
     ...(base.config ?? {}),
@@ -122,7 +140,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
     return () => { cancelled = true }
   }, [api, values.imageCaptionBaseUrl])
 
-  const listId = (kind: 'embedding' | 'local' | 'rerank'): string => `kb-${kind}-models-${base.id}`
+  const listId = (kind: 'embedding' | 'local' | 'rerank'): string => `kb-${kind}-models-${scope === 'base' ? base.id : 'global'}`
 
   useEffect(() => {
     if (values.embeddingProvider !== 'local') { setLocalStatus(null); return }
@@ -141,10 +159,25 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [api, values.embeddingProvider, values.embeddingModel])
 
-  const initial = useMemo<KnowledgeConfig>(() => ({
+  const baseInitial = useMemo<KnowledgeConfig>(() => ({
     ...globalConfig,
     ...(base.config ?? {}),
   }), [globalConfig, base.config])
+
+  const initial = useMemo<KnowledgeConfig>(
+    () => (scope === 'global' ? { ...globalConfig } : baseInitial),
+    [scope, baseInitial, globalConfig],
+  )
+
+  // Switching scopes drops unsaved edits on purpose: the two forms describe
+  // different rows (base overrides vs. global defaults), so carrying a
+  // half-edited value across could apply it to the wrong one.
+  const switchScope = (next: 'base' | 'global'): void => {
+    if (next === scope) return
+    setScope(next)
+    setValues(next === 'global' ? { ...globalConfig } : baseInitial)
+    setSaveError(null)
+  }
 
   const dirty = JSON.stringify(values) !== JSON.stringify(initial)
   const processorDirty = (['documentProcessorProvider', 'mineruLocalUrl', 'mineruLocalApiKey', 'mineruTier'] as const)
@@ -241,6 +274,22 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
       }
       setProbing(false)
     }
+    if (scope === 'global') {
+      // Global defaults are a merged override row: send only what changed, so
+      // unrelated overrides (and other settings that share the same domain
+      // slot) stay exactly as they are.
+      const patch: Record<string, unknown> = {}
+      for (const key of Object.keys(values) as Array<keyof KnowledgeConfig>) {
+        if (values[key] !== initial[key]) patch[key] = values[key]
+      }
+      try {
+        await api.setConfig(patch as Partial<KnowledgeConfig>)
+        onSaved()
+      } catch (err) {
+        setSaveError(err instanceof Error ? err.message : String(err))
+      }
+      return
+    }
     const overrides: BaseConfig = {}
     const current = (base.config ?? {}) as Record<string, unknown>
     for (const key of Object.keys(values) as Array<keyof KnowledgeConfig>) {
@@ -261,11 +310,36 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
     }
   }
 
-  const usesThreshold = values.rerankModel.trim() !== ''
+  // Vector mode filters raw cosine scores even without a reranker, so hiding
+  // the control left an active threshold the user could not see or change.
+  const usesThreshold = values.rerankModel.trim() !== '' || values.searchMode === 'vector'
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
       <div style={{ ...style.card, flex: 1, overflowY: 'auto' }} className="kb-scroll kb-rag-config">
+        <div role="group" aria-label={t('settings')} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          {(['base', 'global'] as const).map(item => (
+            <button
+              key={item}
+              type="button"
+              style={{ ...style.button, ...(scope === item ? { color: C.accent, borderColor: C.accent, background: accentSoft } : {}) }}
+              onClick={() => switchScope(item)}
+            >
+              {t(item === 'base' ? 'scopeBase' : 'scopeGlobal')}
+            </button>
+          ))}
+        </div>
+        <div style={{ ...style.hint, marginTop: 0, marginBottom: 16, lineHeight: 1.6 }}>
+          {scope === 'base' ? t('scopeBaseHint') : t('scopeGlobalHint')}
+        </div>
+        {scope === 'base' && (
+          <div style={{ ...style.hint, marginTop: 0, marginBottom: 16, lineHeight: 1.6 }}>
+            {t('effectiveConfig')}: {t(EMBEDDING_PROVIDER_LABEL[baseInitial.embeddingProvider])}
+            {baseInitial.embeddingModel.trim() !== '' ? ` · ${baseInitial.embeddingModel}` : ''}
+            {' · '}{t('searchMode')}: {t(SEARCH_MODE_LABEL[baseInitial.searchMode])}
+            {' · '}{t('threshold')}: {baseInitial.similarityThreshold.toFixed(2)}
+          </div>
+        )}
         {/* 文档处理 */}
         <Section title={t('docProcessing')} hint={t('docProcessingHint')}>
           <select
@@ -313,9 +387,13 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 </select>
               </label>
               <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>{t('mineruLocalDesc')} <a href="https://github.com/opendatalab/MinerU/blob/mineru-4.0.6-released/LICENSE.md" target="_blank" rel="noreferrer">MinerU license</a></div>
-              <button type="button" style={style.button} disabled={busy || processorChecking || processorDirty} onClick={() => void checkProcessor()}>{t(processorChecking ? 'processorChecking' : 'processorCheck')}</button>
-              <div style={{ fontSize: 13, color: C.muted }}>{t('processorCheckSaved')}</div>
-              {!processorDirty && processorCheckResult !== null && <div role="status" style={{ fontSize: 12, color: processorCheckError ? C.danger : C.success }}>{processorCheckResult}</div>}
+              {scope === 'base' && (
+                <>
+                  <button type="button" style={style.button} disabled={busy || processorChecking || processorDirty} onClick={() => void checkProcessor()}>{t(processorChecking ? 'processorChecking' : 'processorCheck')}</button>
+                  <div style={{ fontSize: 13, color: C.muted }}>{t('processorCheckSaved')}</div>
+                  {!processorDirty && processorCheckResult !== null && <div role="status" style={{ fontSize: 12, color: processorCheckError ? C.danger : C.success }}>{processorCheckResult}</div>}
+                </>
+              )}
             </div>
           )}
           <FieldRow label={t('processingTimeout')}>
@@ -566,7 +644,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
               )}
             </div>
           )}
-          {needsRebuild && (
+          {scope === 'base' && needsRebuild && (
             <div style={{ marginTop: 10 }}>
               <div style={style.warningHint}>{t('embeddingSwitchWarning')}</div>
             </div>
@@ -617,6 +695,17 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
 
         <section aria-label={t('retrievalTuning')} style={{ marginBottom: 20, padding: '18px 18px 4px', border: `1px solid ${C.border}`, borderRadius: 14, background: C.surface2 }}>
           <h3 style={{ fontSize: 15, fontWeight: 600, margin: '0 0 18px', color: C.text }}>{t('retrievalTuning')}</h3>
+          <Section title={t('searchMode')} hint={t('searchModeHint')}>
+            <select
+              style={style.input}
+              value={values.searchMode}
+              onChange={(e) => patch({ searchMode: e.target.value as SearchMode })}
+            >
+              {(['auto', 'hybrid', 'vector', 'lexical'] as const).map(mode => (
+                <option key={mode} value={mode}>{t(SEARCH_MODE_LABEL[mode])}</option>
+              ))}
+            </select>
+          </Section>
           {/* Top K + 阈值 */}
           <Section title={t('topK')} hint={t('topKHint')}>
             <Slider

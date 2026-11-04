@@ -539,7 +539,7 @@ describe('KnowledgeService', () => {
     await store.putChunkBatch(store.listChunks(base.id).map(chunk => ({
       ...chunk, embedding: catalogIds.includes(chunk.docId) ? [1, 0] : [0.9, 0.1],
     })))
-    await service.setConfig({ embeddingProvider: 'openai', embeddingBaseUrl: 'https://embed.invalid', embeddingModel: 'test', mmrDiversity: 0.5 })
+    await store.setConfigOverrides({ embeddingProvider: 'openai', embeddingBaseUrl: 'https://embed.invalid', embeddingModel: 'test', mmrDiversity: 0.5 })
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }))))
     try {
       for (const mode of ['lexical', 'vector', 'hybrid', 'auto'] as const) {

@@ -688,7 +688,7 @@ describe('DomainStore wiring', () => {
         id: `${doc.id}-chunk`, docId: doc.id, baseId: doc.baseId, index: 0,
         text: doc.text, context: doc.title, embedding: doc.vector, embeddingModel: 'openai:test',
       })))
-      await service.setConfig({ embeddingProvider: 'openai', embeddingBaseUrl: 'https://embed.invalid', embeddingModel: 'test', mmrDiversity: 0.5 })
+      await store.setConfigOverrides({ embeddingProvider: 'openai', embeddingBaseUrl: 'https://embed.invalid', embeddingModel: 'test', mmrDiversity: 0.5 })
       const httpFetch = fetch
       vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }))))
 
