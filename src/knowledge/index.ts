@@ -3617,7 +3617,11 @@ export class KnowledgeService extends Service {
     const retrieval = combineRetrievalStatus(requestedMode, results)
     const mode = retrieval.effectiveMode
     const threshold = requestedThreshold ?? config.similarityThreshold
-    if (applied.reranked || mode === 'vector') hits = hits.filter(hit => hit.score >= threshold)
+    // Each variant already threshold-filtered its own lane scores inside
+    // finishSearch (raw cosine for a vector query). After fusion the score is
+    // an RRF rank value, so the vector threshold must not be re-applied here —
+    // only rerank relevance scores share the threshold's 0–1 semantics.
+    if (applied.reranked) hits = hits.filter(hit => hit.score >= threshold)
     const finalHits = attachContextWindows(store, hits.slice(0, topK), query, config.siblingChunks, SEARCH_EVIDENCE_TOKENS)
     return {
       query,
