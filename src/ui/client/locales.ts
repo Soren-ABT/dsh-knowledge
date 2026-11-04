@@ -72,6 +72,11 @@ export type KnowledgeKey =
   | 'processorBuiltinDesc'
   | 'processorMineruDesc'
   | 'perBaseHint'
+  | 'scopeBase'
+  | 'scopeGlobal'
+  | 'scopeBaseHint'
+  | 'scopeGlobalHint'
+  | 'effectiveConfig'
   | 'uploadFile'
   | 'uploadButton'
   | 'dragHint'
@@ -102,6 +107,7 @@ export type KnowledgeKey =
   | 'modeHybrid'
   | 'modeVector'
   | 'modeLexical'
+  | 'searchModeHint'
   | 'threshold'
   | 'settings'
   | 'advancedSettings'
@@ -463,6 +469,11 @@ export const zh: Record<KnowledgeKey, string> = {
   processorBuiltinDesc: '内置处理器：本地解析全部支持格式；扫描件 PDF 在下载 OCR 模型后自动识别（设置 → 本地模型）',
   processorMineruDesc: 'PDF 会上传到配置的 MinerU 云服务，失败可回退本地解析并记录警告。在 mineru.net 获取 API Key。',
   perBaseHint: '留空则使用全局设置',
+  scopeBase: '当前知识库',
+  scopeGlobal: '全局默认',
+  scopeBaseHint: '这里保存当前知识库的覆盖项，只有与全局默认不同的字段才会写入；未覆盖的字段继续跟随全局默认。召回测试使用当前知识库的配置。',
+  scopeGlobalHint: '全局默认用于没有指定知识库的检索，例如对话里直接调用 knowledge_search 且不传 baseId 时。单个知识库的覆盖项优先于这里的值。',
+  effectiveConfig: '当前生效',
   uploadFile: '上传文件',
   uploadButton: '点击选择文件或拖拽到此处',
   dragHint: '支持 PDF, DOCX, MD, XLSX, TXT, CSV',
@@ -489,6 +500,7 @@ export const zh: Record<KnowledgeKey, string> = {
   modeHybrid: '混合（BM25 + 向量）',
   modeVector: '向量',
   modeLexical: '关键词',
+  searchModeHint: '自动会按索引和嵌入配置选择可用通道；向量需要嵌入模型和向量索引；关键词只走 BM25。',
   threshold: '相似度阈值',
   settings: '设置',
   advancedSettings: '高级设置',
@@ -625,7 +637,7 @@ export const zh: Record<KnowledgeKey, string> = {
   more: '更多',
   chunkChangeWarning: '分块设置的修改只针对新添加的内容有效',
   topKHint: '每次召回返回的最大文档片段数，越大覆盖越多但消耗更多上下文。',
-  thresholdHint: '用于过滤低相关性重排片段的相似度阈值，数值越高召回越严格。',
+  thresholdHint: '用于过滤低相关结果的相似度阈值：向量检索按余弦相似度过滤，开启重排后按重排分数过滤；数值越高越严格。',
   providerLocal: '本地模型',
   localModelHint: '隔离子进程推理（transformers.js），按需加载；首次使用需下载模型权重。模型为 Hugging Face 仓库 id，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX',
   noLocalModelsReady: '暂无已下载的本地模型，请到「设置 → 本地模型」下载',
@@ -857,6 +869,11 @@ export const en: Record<KnowledgeKey, string> = {
   processorBuiltinDesc: 'Built-in processor: parses every supported format locally; scanned PDFs are OCRed automatically once the OCR models are downloaded (Settings → Local Models)',
   processorMineruDesc: 'PDFs are uploaded to the configured MinerU cloud service. Failures may fall back to local parsing with a recorded warning. Get an API key at mineru.net.',
   perBaseHint: 'Leave empty to use global settings',
+  scopeBase: 'This base',
+  scopeGlobal: 'Global defaults',
+  scopeBaseHint: 'Only fields that differ from the global defaults are saved for this base; unset fields keep following the global defaults. The recall test always uses this base.',
+  scopeGlobalHint: 'Global defaults apply to searches without a base, such as knowledge_search without baseId. Per-base overrides take precedence over these values.',
+  effectiveConfig: 'Effective now',
   uploadFile: 'Upload file',
   uploadButton: 'Click to select files or drag them here',
   dragHint: 'Supports PDF, DOCX, MD, XLSX, TXT, CSV',
@@ -883,6 +900,7 @@ export const en: Record<KnowledgeKey, string> = {
   modeHybrid: 'Hybrid (BM25 + vector)',
   modeVector: 'Vector',
   modeLexical: 'Lexical',
+  searchModeHint: 'Auto picks the lanes available for this index; Vector needs an embedding model and a vector index; Lexical uses BM25 only.',
   threshold: 'Similarity Threshold',
   settings: 'Settings',
   advancedSettings: 'Advanced Settings',
@@ -1019,7 +1037,7 @@ export const en: Record<KnowledgeKey, string> = {
   more: 'More',
   chunkChangeWarning: 'Chunking changes only apply to newly added content',
   topKHint: 'Maximum number of document chunks returned for each retrieval. Higher values cover more content but use more context.',
-  thresholdHint: 'Similarity threshold used to filter low-relevance reranked chunks; higher is stricter.',
+  thresholdHint: 'Similarity threshold for low-relevance results: vector search filters by cosine similarity and reranked results filter by rerank score; higher is stricter.',
   providerLocal: 'Local model',
   localModelHint: 'Isolated child-process inference (transformers.js), loaded on demand; first use downloads the weights. Model = Hugging Face repo id, default onnx-community/Qwen3-Embedding-0.6B-ONNX',
   noLocalModelsReady: 'No downloaded local models — download one in Settings → Local Models',
