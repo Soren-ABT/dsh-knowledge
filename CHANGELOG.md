@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Upgrade `undici` to 7.30.1 to resolve GHSA-xjj6-f33q-929c, GHSA-4w7w-5xrc-9h26, GHSA-2m5v-pch6-74hx and GHSA-qrxm-fqhp-jwvm. Keep the strict production audit gate and skip optional CUDA downloads on CPU-only CI runners.
 - Address #57: expose per-base embedding batch sizes with CPU-friendly presets, apply the same local cap to semantic and ordinary chunking, and reduce batches on explicit allocation failures without retrying the original oversized batch.
 - Separate local embedding runtime residency and load duration from downloaded/validated files; show loading and idle release in the knowledge panel and local model settings. Dispose temporary download pipelines before loading the verified cache.
 - Add explicit directory rescan and path-binding controls. Preserve itemized directory sync results in agent tools, report new files with embedding errors as partial failures, and retry failed files even when their source bytes are unchanged.

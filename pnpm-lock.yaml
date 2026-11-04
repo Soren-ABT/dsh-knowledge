@@ -51,8 +51,8 @@ importers:
         specifier: ^7.2.4
         version: 7.2.4
       undici:
-        specifier: ^7.30.0
-        version: 7.30.0
+        specifier: ^7.30.1
+        version: 7.30.1
       word-extractor:
         specifier: ^1.0.4
         version: 1.0.4
@@ -1342,8 +1342,8 @@ packages:
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
 
-  undici@7.30.0:
-    resolution: {integrity: sha512-dkrQXeHSaoamnItlYbmzG0wFYrM0ZwDxCIg0A7aKjTyyhh9svRzCNFEzV+Vm05/yehjCzjDZ31KXfGEjYSztDQ==}
+  undici@7.30.1:
+    resolution: {integrity: sha512-03KrMbjIFDWQR5RNPrSw3bd1r12JpyFQl9/yxjUbJtqkjmllqC5lFjZh6ujeuJCKr8EOQvRW872Oy/az+nLYxg==}
     engines: {node: '>=20.18.1'}
 
   util-deprecate@1.0.2:
@@ -2456,7 +2456,7 @@ snapshots:
 
   undici-types@7.18.2: {}
 
-  undici@7.30.0: {}
+  undici@7.30.1: {}
 
   util-deprecate@1.0.2: {}
 
