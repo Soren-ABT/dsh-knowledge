@@ -135,6 +135,8 @@ async function createRunner(
   hfEndpoint: string | undefined,
   forceDownload = false,
 ): Promise<Runner> {
+  let loadStartedAt = Date.now()
+  post({ type: 'progress', modelId, status: 'idle', progress: 0, message: '', runtimeState: 'loading', loadStartedAt })
   const tf = await loadTransformers()
   applyEndpoint(tf, hfEndpoint)
   tf.env.cacheDir = cacheDir
@@ -166,13 +168,15 @@ async function createRunner(
         // "Unsupported pipeline"). Download through the primitive loaders
         // instead — AutoModel/AutoTokenizer exist in every version — then
         // run the cross-encoder manually below.
-        await tf.AutoModel.from_pretrained(modelId, { dtype: 'q8', progress_callback: progressCallback })
-        await tf.AutoTokenizer.from_pretrained(modelId, { progress_callback: progressCallback })
+        const downloadedModel = await tf.AutoModel.from_pretrained(modelId, { dtype: 'q8', progress_callback: progressCallback })
+        try { await tf.AutoTokenizer.from_pretrained(modelId, { progress_callback: progressCallback }) }
+        finally { await downloadedModel.dispose?.() }
       } else {
-        await tf.pipeline(task, modelId, {
+        const downloadedPipeline = await tf.pipeline(task, modelId, {
           dtype: 'q8',
           progress_callback: progressCallback,
         })
+        await downloadedPipeline.dispose?.()
       }
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error)
@@ -196,10 +200,12 @@ async function createRunner(
   // 2. Load from the absolute cache directory: an absolute path is not a valid
   //    HF repo id, so transformers.js treats it as a local model and never
   //    touches the network. `ready` is emitted only after this load succeeds.
+  loadStartedAt = Date.now()
+  post({ type: 'progress', modelId, status: 'idle', progress: 0, message: '', runtimeState: 'loading', loadStartedAt })
   if (task === 'reranking') {
     const model = await tf.AutoModel.from_pretrained(join(cacheDir, modelId), { dtype: 'q8' })
     const tokenizer = await tf.AutoTokenizer.from_pretrained(join(cacheDir, modelId))
-    post({ type: 'progress', modelId, status: 'ready', progress: 100, message: '' })
+    post({ type: 'progress', modelId, status: 'ready', progress: 100, message: '', runtimeState: 'loaded', loadStartedAt, loadDurationMs: Date.now() - loadStartedAt })
     return {
       // Cross-encoder relevance scoring, hand-rolled for transformers.js
       // versions without the `reranking` pipeline: tokenize [query, doc]
@@ -241,7 +247,7 @@ async function createRunner(
     | (((text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>) & { dispose?(): Promise<void> })
     | (((query: string, texts: string[], options?: Record<string, unknown>) => Promise<Array<{ score: number }>>) & { dispose?(): Promise<void> })
   const embed = pipeline as (text: string | string[], options?: Record<string, unknown>) => Promise<{ tolist(): unknown }>
-  post({ type: 'progress', modelId, status: 'ready', progress: 100, message: '' })
+  post({ type: 'progress', modelId, status: 'ready', progress: 100, message: '', runtimeState: 'loaded', loadStartedAt, loadDurationMs: Date.now() - loadStartedAt })
   return {
     embed: async (texts: string[], pooling: Pooling): Promise<number[][]> => {
       const output = await embed(texts, { pooling, normalize: true })

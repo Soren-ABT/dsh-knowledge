@@ -967,6 +967,74 @@ describe('KnowledgeService restart', () => {
   })
 })
 
+describe('directory sync lifecycle', () => {
+  it.each(['source', 'base'] as const)('persists the interval across restart and stops its timer on %s deletion', async target => {
+    const dir = await tempDir()
+    const source = join(dir, 'published')
+    await mkdir(source)
+    const domain = fakeDomain()
+    const mount = async () => {
+      const ctx = new Context()
+      ctx.provide('webServer', { register: () => () => {} })
+      ctx.provide('storageDomain', { open: async () => domain })
+      const fiber = await ctx.plugin(KnowledgeService, { ...TEST_CONFIG, chunkStorePath: join(dir, 'chunks.sqlite'), localModelCacheDir: join(dir, 'models') })
+      return { fiber, service: ctx.get('knowledge') as KnowledgeService }
+    }
+    let current = await mount()
+    try {
+      const base = await current.service.createBase({ name: 'scheduled wiki' })
+      const imported = await current.service.importDirectoryTree(base.id, source)
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      await current.service.setDirectorySyncInterval(imported.sourceId, 5)
+      const oldScan = vi.spyOn(current.service, 'reindexDocument').mockResolvedValue(current.service.getDocument(imported.sourceId) as KnowledgeDocument)
+      await current.fiber.dispose()
+      current = await mount()
+      expect(current.service.getDocument(imported.sourceId).syncIntervalMinutes).toBe(5)
+      const scan = vi.spyOn(current.service, 'reindexDocument').mockResolvedValue(current.service.getDocument(imported.sourceId) as KnowledgeDocument)
+      await vi.advanceTimersByTimeAsync(300_000)
+      expect(oldScan).not.toHaveBeenCalled()
+      expect(scan).toHaveBeenCalledExactlyOnceWith(imported.sourceId)
+      if (target === 'source') await current.service.deleteDocument(imported.sourceId)
+      else await current.service.deleteBase(base.id)
+      await vi.advanceTimersByTimeAsync(600_000)
+      expect(scan).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+      await current.fiber.dispose()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('validates sync settings through the real HTTP route', async () => {
+    const dir = await tempDir()
+    const ctx = new Context()
+    ctx.provide('webServer', { register: () => () => {} })
+    const fiber = await ctx.plugin(KnowledgeService, TEST_CONFIG)
+    const service = ctx.get('knowledge') as KnowledgeService
+    const route = knowledgeRoute(service)
+    const server = createServer((request, response) => { void route.handler(request, response) })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as { port: number }).port
+    try {
+      const base = await service.createBase({ name: 'settings' })
+      const source = await service.createDirectory(base.id, 'uploaded')
+      const url = `http://127.0.0.1:${port}/knowledge/documents/${source.id}/sync-settings`
+      const put = (intervalMinutes: unknown) => fetch(url, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ intervalMinutes }) })
+      expect((await put(1)).status).toBe(400)
+      expect((await put('5')).status).toBe(400)
+      expect((await put(5)).status).toBe(409)
+      await service.setBaseSourcePath(base.id, source.id, dir)
+      expect(await (await put(15)).json()).toEqual({ ok: true, value: { intervalMinutes: 15 } })
+      expect(service.getDocument(source.id).syncIntervalMinutes).toBe(15)
+      expect(await (await put(0)).json()).toEqual({ ok: true, value: { intervalMinutes: 0 } })
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      await fiber.dispose()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('local-path import source tracking', () => {
   const decode = (bytes: Uint8Array | null): string => bytes !== null ? new TextDecoder().decode(bytes) : ''
   const mount = async (dir: string): Promise<KnowledgeService> => {
@@ -981,6 +1049,96 @@ describe('local-path import source tracking', () => {
   }
   const storeOf = (service: KnowledgeService): Store =>
     (service as unknown as { store: Store }).store
+
+  it.each(['source', 'base', 'bulk'] as const)('serializes %s deletion with an active directory scan', async target => {
+    const dir = await tempDir()
+    const source = join(dir, 'wiki')
+    await mkdir(source)
+    const service = await mount(dir)
+    let release: () => void = () => {}
+    try {
+      const base = await service.createBase({ name: 'deleted during scan' })
+      const imported = await service.importDirectoryTree(base.id, source)
+      await writeFile(join(source, 'added.md'), 'new evidence during scan')
+      let entered: () => void = () => {}
+      const pending = new Promise<void>(resolve => { entered = resolve })
+      const gate = new Promise<void>(resolve => { release = resolve })
+      const store = storeOf(service)
+      const put = store.putDocument.bind(store)
+      vi.spyOn(store, 'putDocument').mockImplementation(async doc => {
+        if (doc.fileName === 'added.md' && doc.incomplete && doc.chunkCount === 0) { entered(); await gate }
+        return put(doc)
+      })
+      const scan = service.reindexDocument(imported.sourceId)
+      await pending
+      const deletion = target === 'base' ? service.deleteBase(base.id)
+        : target === 'bulk' ? service.deleteDocuments([imported.sourceId], { recursive: true })
+          : service.deleteDocument(imported.sourceId, { recursive: true })
+      release()
+      const [scanned] = await Promise.all([scan, deletion])
+      expect(scanned.sync).toMatchObject({ failed: 0, created: 1 })
+      if (target === 'base') expect(store.getBase(base.id)).toBeUndefined()
+      else expect(store.listDocuments(base.id)).toEqual([])
+      expect(store.listChunks(base.id)).toEqual([])
+    } finally { release(); await closeStore(service); await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('serializes initial imports and coalesces simultaneous rescans of one source', async () => {
+    const dir = await tempDir()
+    const source = join(dir, 'wiki')
+    await mkdir(source)
+    await writeFile(join(source, 'note.md'), 'original research evidence')
+    const service = await mount(dir)
+    try {
+      const base = await service.createBase({ name: 'concurrent wiki' })
+      const imported = await Promise.all([service.importDirectoryTree(base.id, source), service.importDirectoryTree(base.id, source)])
+      expect(imported[0].sourceId).toBe(imported[1].sourceId)
+      expect(service.listDocuments(base.id).filter(doc => doc.sourceType === 'directory')).toHaveLength(1)
+      await writeFile(join(source, 'note.md'), 'updated unique quasar evidence')
+      const results = await Promise.all([service.reindexDocument(imported[0].sourceId), service.reindexDocument(imported[0].sourceId)])
+      expect(results[0].sync).toBe(results[1].sync)
+      expect(results[0].sync).toMatchObject({ status: 'synced', updated: 1, failed: 0 })
+      expect((await service.search({ baseId: base.id, query: 'quasar' })).hits).toHaveLength(1)
+    } finally { await closeStore(service); await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('binds an uploaded tree to disk and updates its unique existing files in place', async () => {
+    const dir = await tempDir()
+    const source = join(dir, 'published')
+    await mkdir(source)
+    await writeFile(join(source, 'note.md'), 'new publication with $E=mc^2$')
+    await writeFile(join(source, 'added.md'), 'additional published evidence')
+    const service = await mount(dir)
+    try {
+      const base = await service.createBase({ name: 'uploaded wiki' })
+      const root = await service.createDirectory(base.id, 'published')
+      const old = await service.addFileDocument({ baseId: base.id, parentDirectoryId: root.id, fileName: 'note.md', contentBase64: Buffer.from('old uploaded snapshot').toString('base64') })
+      await service.waitForIdle()
+      await service.setBaseSourcePath(base.id, root.id, source)
+      const synced = await service.reindexDocument(root.id)
+      expect(synced.sync).toMatchObject({ updated: 1, created: 1, failed: 0 })
+      expect(service.getDocument(old.id).rawText).toContain('$E=mc^2$')
+      expect(service.listDocuments(base.id).filter(doc => doc.sourceType === 'file')).toHaveLength(2)
+      expect(service.listBases().find(item => item.id === base.id)?.sourceInfo?.[0].lastDirectorySync).toMatchObject({ status: 'synced' })
+    } finally { await closeStore(service); await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('records an unavailable root without deleting the indexed documents', async () => {
+    const dir = await tempDir()
+    const source = join(dir, 'wiki')
+    await mkdir(source)
+    await writeFile(join(source, 'note.md'), 'evidence retained while source is unavailable')
+    const service = await mount(dir)
+    try {
+      const base = await service.createBase({ name: 'unavailable wiki' })
+      const imported = await service.importDirectoryTree(base.id, source)
+      await rm(source, { recursive: true })
+      await expect(service.reindexDocument(imported.sourceId)).rejects.toThrow('path not found')
+      expect(service.listDocuments(base.id)).toHaveLength(2)
+      expect(service.getDocument(imported.sourceId).lastDirectorySync).toMatchObject({ status: 'failed', failed: 1 })
+      expect((await service.search({ baseId: base.id, query: 'retained' })).hits).toHaveLength(1)
+    } finally { await closeStore(service); await rm(dir, { recursive: true, force: true }) }
+  })
 
   it('reindexes a single-file path import from the repointed sourcePath', async () => {
     const dir = await tempDir()

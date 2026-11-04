@@ -136,6 +136,7 @@ function renderer(file: string, props: Record<string, unknown>) {
     './theme.js': { C, accentSoft, style },
     './icons.js': new Proxy({}, { get: () => () => null }),
     './MineruDeploymentSection.js': { MineruDeploymentSection: mineruPlaceholder },
+    './ModelRuntimeStatus.js': { ModelRuntimeStatus: () => null },
   }, { window, setTimeout: window.setTimeout, clearTimeout: window.clearTimeout })
   const component = exported[file.replace('.tsx', '')] as Component
   const render = (): Element => {

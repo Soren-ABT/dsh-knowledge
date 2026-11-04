@@ -25,6 +25,8 @@ import { processingBudget } from './processor-transport.js'
 import { composeContextWindow, estimateContextTokens, serializeContextWindow } from './context.js'
 import { snapSliceEnd, snapSliceStart } from './text-safety.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
+import { embeddingBatchSize, embedWithMemoryFallback, isEmbeddingOutOfMemory } from './embedding-batch.js'
+import { DirectorySyncScheduler } from './directory-sync-scheduler.js'
 import type { ConfigOverrides } from './domain.js'
 import {
   DEFAULT_LOCAL_MODEL,
@@ -84,6 +86,7 @@ import type {
   DirectoryImportResult,
   DirectorySyncItem,
   DirectorySyncResult,
+  DirectorySyncRun,
   EmbeddingProvider,
   ImportDirectoryRequest,
   ImportUrlRequest,
@@ -267,7 +270,7 @@ export class NotFoundError extends Error {
  * failure, retrying without resolving the identified tree would be unsafe. */
 export class DirectorySourceError extends Error {
   constructor(
-    readonly code: 'ambiguous_source' | 'source_path_conflict' | 'recursive_confirmation_required',
+    readonly code: 'ambiguous_source' | 'source_path_conflict' | 'recursive_confirmation_required' | 'invalid_sync_source',
     message: string,
     readonly details?: Record<string, unknown>,
   ) {
@@ -303,6 +306,14 @@ export class KnowledgeService extends Service {
   // Per-base write chain guarding dedup-check + first persist (read-then-write),
   // so two concurrent imports of identical content cannot both pass the check.
   private readonly baseWriteChains = new Map<string, Promise<unknown>>()
+  private readonly localEmbeddingBatchLimits = new Map<string, number>()
+  private readonly directorySyncChains = new Map<string, Promise<unknown>>()
+  private readonly directoryScans = new Map<string, Promise<ReindexDocumentResult>>()
+  private directorySyncDisposed = false
+  private readonly directorySyncScheduler = new DirectorySyncScheduler(
+    id => this.reindexDocument(id),
+    (id, error) => this.ctx.logger.warn(`knowledge: scheduled directory sync ${id} failed: ${error instanceof Error ? error.message : String(error)}`),
+  )
   /** Last rerank failure code per model; only state transitions are logged. */
   private readonly rerankLogState = new Map<string, string>()
   private artifacts = new ArtifactRepository()
@@ -357,6 +368,8 @@ export class KnowledgeService extends Service {
     }
     this.resolveStore()
     this.ctx.effect(() => () => {
+      this.directorySyncDisposed = true
+      this.directorySyncScheduler.dispose()
       for (const controller of this.processingControllers.values()) controller.abort()
       for (const active of this.indexing.values()) active.controller?.abort()
     }, 'knowledge: cancel document processors')
@@ -369,6 +382,13 @@ export class KnowledgeService extends Service {
     setLocalModelCacheDir(resolved.localModelCacheDir)
     setLocalWorkerIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
     setLocalRerankIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
+    for (const base of store.listBases()) {
+      for (const source of store.listDocuments(base.id)) {
+        if (source.sourceType === 'directory' && source.sourcePath !== undefined && source.parentDirectoryId === undefined) {
+          this.directorySyncScheduler.configure(source.id, source.syncIntervalMinutes ?? 0)
+        }
+      }
+    }
     // One-time compatibility path for caches created before readiness markers:
     // validate only rerankers that are actually configured, in the background.
     const configuredLocalRerankers = new Set<string>()
@@ -759,9 +779,14 @@ export class KnowledgeService extends Service {
   }
 
   async deleteBase(id: string): Promise<void> {
+    return this.withDirectorySyncLock(id, () => this.deleteBaseUnlocked(id))
+  }
+
+  private async deleteBaseUnlocked(id: string): Promise<void> {
     const store = this.requireStore()
     if (store.getBase(id) === undefined) throw new Error(`knowledge base not found: ${id}`)
     for (const doc of store.listDocuments(id)) {
+      this.directorySyncScheduler.remove(doc.id)
       this.processingControllers.get(doc.id)?.abort()
       this.processingProgress.delete(doc.id)
     }
@@ -1258,6 +1283,10 @@ export class KnowledgeService extends Service {
     path: string,
     parentDirectoryId?: string,
   ): Promise<DirectoryImportResult> {
+    return this.withDirectorySyncLock(baseId, () => this.importDirectoryTreeUnlocked(baseId, path, parentDirectoryId))
+  }
+
+  private async importDirectoryTreeUnlocked(baseId: string, path: string, parentDirectoryId?: string): Promise<DirectoryImportResult> {
     const prepared = await this.prepareDirectoryImport(baseId, path, parentDirectoryId)
     const sync = await this.syncDirectorySource(prepared.root, prepared.sourcePath, prepared.mode)
     const errors = sync.items
@@ -1434,6 +1463,10 @@ export class KnowledgeService extends Service {
    * and editing one must never redirect its siblings.
    */
   async setBaseSourcePath(baseId: string, sourceId: string, path: string): Promise<{ set: number }> {
+    return this.withDirectorySyncLock(baseId, () => this.setBaseSourcePathUnlocked(baseId, sourceId, path))
+  }
+
+  private async setBaseSourcePathUnlocked(baseId: string, sourceId: string, path: string): Promise<{ set: number }> {
     const store = this.requireStore()
     if (store.getBase(baseId) === undefined) throw new Error(`knowledge base not found: ${baseId}`)
     const source = store.getDocument(sourceId)
@@ -1609,10 +1642,13 @@ export class KnowledgeService extends Service {
     const existing = store.getDocument(id)
     if (existing === undefined) throw new Error(`document not found: ${id}`)
     this.assertDeleteImpacts([id], options?.recursive === true)
-    await this.deleteDocumentRecursive(id)
-    // One updatedAt write per delete, not per descendant.
-    await this.touchBase(existing.baseId)
-    await this.reconcileAfterDelete()
+    await this.withDirectorySyncLock(existing.baseId, async () => {
+      this.assertDeleteImpacts([id], options?.recursive === true)
+      await this.deleteDocumentRecursive(id)
+      // One updatedAt write per delete, not per descendant.
+      await this.touchBase(existing.baseId)
+      await this.reconcileAfterDelete()
+    })
   }
 
   /** Post-delete cleanup: drop chunk rows whose document is already gone (a
@@ -1644,6 +1680,7 @@ export class KnowledgeService extends Service {
     const store = this.requireStore()
     const existing = store.getDocument(id)
     if (existing === undefined) return
+    this.directorySyncScheduler.remove(id)
     // Invalidate any in-flight indexing for this document (Cherry cancels a
     // subtree's jobs before a delete): its finishing writes must not
     // resurrect the row or write chunks under the deleted item, and its
@@ -2000,9 +2037,49 @@ export class KnowledgeService extends Service {
   /** Reindexing a tracked directory is the same operation as re-importing its
    * source: one source identity, one diff engine, and one truthful result. */
   private async rescanDirectory(document: KnowledgeDocument): Promise<ReindexDocumentResult> {
-    const sync = await this.syncDirectorySource(document, document.sourcePath!, 'synced')
-    const current = this.requireStore().getDocument(document.id) ?? document
-    return { ...current, sync }
+    const pending = this.directoryScans.get(document.id)
+    if (pending !== undefined) return pending
+    const run = this.withDirectorySyncLock(document.baseId, async () => {
+      const source = this.requireStore().getDocument(document.id)
+      if (source === undefined) throw new NotFoundError('directory source no longer exists')
+      const sync = await this.syncDirectorySource(source, source.sourcePath!, 'synced')
+      const current = this.requireStore().getDocument(source.id) ?? source
+      return { ...current, sync }
+    })
+    this.directoryScans.set(document.id, run)
+    try { return await run }
+    finally { if (this.directoryScans.get(document.id) === run) this.directoryScans.delete(document.id) }
+  }
+
+  /** Separate from the short metadata write lock: a scan itself performs writes. */
+  private withDirectorySyncLock<T>(baseId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.directorySyncChains.get(baseId) ?? Promise.resolve()
+    const execute = (): Promise<T> => {
+      if (this.directorySyncDisposed) throw new Error('knowledge service is stopping')
+      return task()
+    }
+    const run = previous.then(execute, execute)
+    this.directorySyncChains.set(baseId, run)
+    const cleanup = (): void => { if (this.directorySyncChains.get(baseId) === run) this.directorySyncChains.delete(baseId) }
+    void run.then(cleanup, cleanup)
+    return run
+  }
+
+  async setDirectorySyncInterval(sourceId: string, intervalMinutes: number): Promise<{ intervalMinutes: number }> {
+    if (![0, 5, 15, 60].includes(intervalMinutes)) throw new Error('sync interval must be 0, 5, 15 or 60 minutes')
+    const store = this.requireStore()
+    const source = store.getDocument(sourceId)
+    if (source === undefined) throw new NotFoundError('directory source not found')
+    return this.withDirectorySyncLock(source.baseId, async () => {
+      const current = store.getDocument(sourceId)
+      if (current === undefined) throw new NotFoundError('directory source no longer exists')
+      if (current.sourceType !== 'directory' || current.sourcePath === undefined || current.parentDirectoryId !== undefined) {
+        throw new DirectorySourceError('invalid_sync_source', 'scheduled sync requires a top-level directory bound to a server path')
+      }
+      await store.putDocument({ ...current, syncIntervalMinutes: intervalMinutes, updatedAt: Date.now() })
+      this.directorySyncScheduler.configure(sourceId, intervalMinutes)
+      return { intervalMinutes }
+    })
   }
 
   /** Synchronize a single source-root against disk. Root validation happens
@@ -2013,6 +2090,28 @@ export class KnowledgeService extends Service {
     sourcePath: string,
     mode: 'created' | 'synced',
   ): Promise<DirectorySyncResult> {
+    const startedAt = Date.now()
+    const record = async (run: DirectorySyncRun): Promise<void> => {
+      const current = this.requireStore().getDocument(root.id)
+      if (current !== undefined) await this.requireStore().putDocument({ ...current, lastDirectorySync: run })
+    }
+    try {
+      const result = await this.performDirectorySync(root, sourcePath, mode)
+      const { items: _items, sourceId: _sourceId, ...summary } = result
+      const firstFailure = result.items.find(item => item.action === 'failed')
+      await record({ ...summary, startedAt, finishedAt: Date.now(),
+        ...(firstFailure !== undefined ? { error: safeIndexingErrorMessage(`${firstFailure.relativePath}: ${firstFailure.error?.message ?? 'sync failed'}`) } : {}) })
+      return result
+    } catch (error) {
+      await record({ startedAt, finishedAt: Date.now(), status: 'failed', created: 0, updated: 0, unchanged: 0, deleted: 0, failed: 1,
+        error: safeIndexingErrorMessage(error instanceof Error ? error.message : String(error)) }).catch(writeError => {
+        this.ctx.logger.warn(`knowledge: could not record directory sync failure: ${writeError instanceof Error ? writeError.message : String(writeError)}`)
+      })
+      throw error
+    }
+  }
+
+  private async performDirectorySync(root: KnowledgeDocument, sourcePath: string, mode: 'created' | 'synced'): Promise<DirectorySyncResult> {
     const store = this.requireStore()
     if (root.sourceType !== 'directory') throw new Error('directory sync requires a directory source')
     const canonicalSource = await this.canonicalDirectoryPath(sourcePath)
@@ -2120,6 +2219,8 @@ export class KnowledgeService extends Service {
     items: DirectorySyncItem[]
   }): Promise<void> {
     const { rootPath, diskPath, directory, depth, childrenByParent, items } = args
+    if (this.directorySyncDisposed) throw new Error('knowledge service is stopping')
+    this.assertIndexTargetAlive(directory.id, directory.baseId)
     if (depth > DIRECTORY_MAX_DEPTH) {
       items.push({
         relativePath: this.relativeSourcePath(rootPath, diskPath),
@@ -2172,6 +2273,8 @@ export class KnowledgeService extends Service {
     }
 
     for (const entry of entries) {
+      if (this.directorySyncDisposed) throw new Error('knowledge service is stopping')
+      this.assertIndexTargetAlive(directory.id, directory.baseId)
       const fullPath = join(diskPath, entry.name)
       const relativePath = this.relativeSourcePath(rootPath, fullPath)
       if (entry.isDirectory()) {
@@ -2236,7 +2339,9 @@ export class KnowledgeService extends Service {
             document = refreshed
           }
         }
-        items.push({ relativePath, kind: 'file', documentId: document.id, action })
+        items.push(document.embeddingError !== undefined
+          ? { relativePath, kind: 'file', documentId: document.id, action: 'failed', error: { code: document.errorCode ?? 'embedding_provider', message: safeIndexingErrorMessage(document.embeddingError) } }
+          : { relativePath, kind: 'file', documentId: document.id, action })
       } catch (error) {
         items.push({ relativePath, kind: 'file', documentId: resolved.document?.id, action: 'failed', error: this.directoryItemError(error) })
       }
@@ -2295,7 +2400,7 @@ export class KnowledgeService extends Service {
     const bound = await this.bindDocumentSourcePath(document, sourcePath)
     const stored = bound.rawFilePath !== undefined ? await store.raw?.read(bound.rawFilePath) : undefined
     const unchanged = stored !== undefined && stored !== null && stored.byteLength > 0 && Buffer.from(stored).equals(buffer)
-    if (unchanged) return bound === document ? 'unchanged' : 'updated'
+    if (unchanged && document.embeddingError === undefined) return bound === document ? 'unchanged' : 'updated'
     // The unified source reader validates and parses once. A changed live
     // source must not silently fall back to the previous snapshot.
     await this.reindexDocument(bound.id, { mode: 'reparse', strictSource: true })
@@ -2501,13 +2606,15 @@ export class KnowledgeService extends Service {
     for (const id of roots) {
       const document = store.getDocument(id)
       if (document === undefined) continue
-      // The preflight already walked each subtree; reuse it so the reported count
-      // matches what the confirmation showed.
-      const impact = this.getDeleteImpact(id)
-      deleted += impact.directories + impact.files
-      await this.deleteDocumentRecursive(id)
-      touched.add(document.baseId)
-      removedRoots += 1
+      await this.withDirectorySyncLock(document.baseId, async () => {
+        if (store.getDocument(id) === undefined) return
+        this.assertDeleteImpacts([id], options?.recursive === true)
+        const impact = this.getDeleteImpact(id)
+        await this.deleteDocumentRecursive(id)
+        deleted += impact.directories + impact.files
+        touched.add(document.baseId)
+        removedRoots += 1
+      })
     }
     // One updatedAt write per affected base, not per document.
     for (const baseId of touched) await this.touchBase(baseId)
@@ -2627,6 +2734,8 @@ export class KnowledgeService extends Service {
         url: doc.url,
         ...(doc.parentDirectoryId !== undefined ? { parentDirectoryId: doc.parentDirectoryId } : {}),
         ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
+        ...(doc.syncIntervalMinutes !== undefined ? { syncIntervalMinutes: doc.syncIntervalMinutes } : {}),
+        ...(doc.lastDirectorySync !== undefined ? { lastDirectorySync: doc.lastDirectorySync } : {}),
         ...(doc.processing !== undefined ? { processing: doc.processing } : {}),
         charCount: doc.charCount,
         tokenCount: doc.tokenCount,
@@ -2770,7 +2879,7 @@ export class KnowledgeService extends Service {
     // started; a model whose weights are already on disk is ready even
     // before its first lazy load (the embed worker loads it on demand).
     if (await isLocalModelDownloaded(id)) {
-      return { model: id, status: 'ready', progress: 100, message: '' }
+      return { ...live, model: id, status: 'ready', progress: 100 }
     }
     return live
   }
@@ -3060,6 +3169,8 @@ export class KnowledgeService extends Service {
       ...(doc.url !== undefined ? { url: doc.url } : {}),
       ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
       ...(doc.rawFilePath !== undefined ? { rawFilePath: doc.rawFilePath } : {}),
+      ...(doc.syncIntervalMinutes !== undefined ? { syncIntervalMinutes: doc.syncIntervalMinutes } : {}),
+      ...(doc.lastDirectorySync !== undefined ? { lastDirectorySync: doc.lastDirectorySync } : {}),
       ...(doc.processing !== undefined ? { processing: doc.processing } : {}),
       rawText: truncated ? rawText.slice(0, snapSliceEnd(rawText, rawTextLimit)) : rawText,
       ...(truncated ? { rawTextTruncated: true } : {}),
@@ -3944,10 +4055,10 @@ export class KnowledgeService extends Service {
       if (segments.length > 0 && config.embeddingProvider !== 'none') {
         try {
           const vectors: Array<number[] | undefined> = []
-          const batchSize = Math.max(1, config.embeddingBatchSize)
+          const batchSize = embeddingBatchSize(config.embeddingProvider, config.embeddingBatchSize)
           for (let i = 0; i < segments.length; i += batchSize) {
             const batch = segments.slice(i, i + batchSize)
-            const embedded = await this.embedTextsOnce(config, batch.map(segment => segment.text))
+            const embedded = await this.embedWithRetry(config, batch.map(segment => segment.text), signal)
             for (const vector of embedded) vectors.push(vector)
           }
           merged = mergeSemanticSegments(segments, vectors, config.chunkSize, config.semanticChunkThreshold)
@@ -4036,12 +4147,9 @@ export class KnowledgeService extends Service {
         // crash mid-embedding then leaves each completed batch in the store
         // (onBatch → putChunkBatch), so startup recovery resumes from the
         // persisted state — hash reuse re-embeds only the missing batches.
-        // The local in-process model is capped at 8 chunks per call (Cherry
-        // uses 10) so one forward pass never allocates a huge intermediate
-        // tensor in the shared main-process WASM heap.
-        const batchSize = config.embeddingProvider === 'local'
-          ? Math.min(config.embeddingBatchSize, 8)
-          : config.embeddingBatchSize
+        // Bound the isolated local process's forward-pass memory as well as
+        // honoring smaller user-configured batches.
+        const batchSize = embeddingBatchSize(config.embeddingProvider, config.embeddingBatchSize)
         for (let i = 0; i < need.length; i += batchSize) {
           const batch = need.slice(i, i + batchSize)
           const batchTexts = needTexts.slice(i, i + batchSize)
@@ -4114,14 +4222,22 @@ export class KnowledgeService extends Service {
   /** Embed one batch through the configured provider (empty input → empty output). */
   private async embedTextsOnce(config: KnowledgeConfig, texts: readonly string[], signal?: AbortSignal): Promise<number[][]> {
     if (texts.length === 0) return []
-    return embedTexts(
+    const embed = (batch: readonly string[]): Promise<number[][]> => embedTexts(
       config.embeddingProvider,
       config.embeddingBaseUrl,
       config.embeddingModel,
       config.embeddingApiKey,
-      texts,
+      batch,
       signal,
     )
+    if (config.embeddingProvider !== 'local') return embed(texts)
+    const model = config.embeddingModel.trim() || DEFAULT_LOCAL_MODEL
+    const size = Math.min(embeddingBatchSize('local', config.embeddingBatchSize), this.localEmbeddingBatchLimits.get(model) ?? 8)
+    return embedWithMemoryFallback(texts, size, embed, reduced => {
+      const previous = this.localEmbeddingBatchLimits.get(model) ?? 8
+      this.localEmbeddingBatchLimits.set(model, Math.min(previous, reduced))
+      if (reduced < previous) this.ctx.logger.warn(`knowledge: local embedding memory pressure; reduced batch size to ${reduced}`)
+    }, signal)
   }
 
   /**
@@ -4137,6 +4253,7 @@ export class KnowledgeService extends Service {
       try {
         return await this.embedTextsOnce(config, texts, signal)
       } catch (error) {
+        if (isEmbeddingOutOfMemory(error)) throw error
         if (attempt >= EMBED_MAX_ATTEMPTS) throw error
         const delay = Math.min(EMBED_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), EMBED_RETRY_MAX_DELAY_MS)
         attempt += 1
@@ -4296,6 +4413,8 @@ function baseSourceLines(documents: KnowledgeDocument[]): BaseSourceInfo[] {
       kind,
       text,
       ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
+      ...(doc.syncIntervalMinutes !== undefined ? { syncIntervalMinutes: doc.syncIntervalMinutes } : {}),
+      ...(doc.lastDirectorySync !== undefined ? { lastDirectorySync: doc.lastDirectorySync } : {}),
     })
     if (lines.length >= MAX) break
   }

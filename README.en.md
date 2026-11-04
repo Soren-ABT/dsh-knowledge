@@ -135,6 +135,10 @@ Directory imports recursively scan `txt`, `md`, `csv`, `html`, `json`, `pdf`, `d
 
 A directory rescan imports new files, rebuilds changed files, and removes files that disappeared from disk. One failed item does not obscure successful imports; the service and UI retain per-file errors.
 
+Browser directory uploads are file copies. Use **Bind disk directory** to attach an absolute path visible to the DSH server, then **Rescan directory**. The original directory ID is retained and uniquely matching uploaded files are adopted in place. WSL deployments must use paths visible inside WSL.
+
+Bound top-level directories support manual sync (the default) or 5, 15, and 60 minute intervals. Settings and the latest result summary persist; the panel reports created, updated, deleted, unchanged, and failed items. Each interval starts after the previous run completes, and a restart waits a full interval. Deleting the source or base stops its timer. Manual, scheduled, and agent operations share the same sync queue. After publishing a Wiki, an agent can call `knowledge_reindex_document` with the directory ID and omit `mode`; inspect `sync.status`, `sync.failed`, and `sync.items` for partial failures. The management API is `PUT /knowledge/documents/<sourceId>/sync-settings`, for example `{"intervalMinutes": 5}`; supported values are 5, 15, 60, and 0 to disable scheduled sync.
+
 **How to update an already-imported directory**: import the same path again, or rescan the directory container in the panel. Both now take the same synchronization path and update the original tree in place. A directory source is identified by its knowledge base plus its resolved real path, so a repeat import never builds a second tree. Files inside it are identified by that source plus their relative path; a legacy file is adopted only when its name and kind are unique, and two candidates are reported as `ambiguous_source` rather than guessed, merged, or deleted. Administrative document details return the container's `sourcePath`, so a client can tell which container to rescan.
 
 </details>
@@ -505,7 +509,7 @@ Deployment defaults live in the `knowledge` row of `cordis.patch.yml`. The manag
 | `similarityThreshold` | `0` | Minimum result score, from 0 to 1 |
 | `mmrDiversity` | `0` | MMR diversity; `0` disables it |
 | `rrfVectorWeight` | `1` | Vector-lane weight in hybrid RRF fusion |
-| `embeddingBatchSize` | `32` | Texts sent in each embedding batch |
+| `embeddingBatchSize` | `32` | Texts per batch, editable in base settings; use 1 for CPU/limited memory. Both ordinary and semantic local calls cap batches at 8 and reduce them down to 1 on explicit allocation failures |
 | `siblingChunks` | `1` | Adjacent chunks per side, range 0–3; `0` still produces an anchor-only window |
 | `semanticChunk` | `false` | Merge semantically similar adjacent paragraphs |
 | `semanticChunkThreshold` | `0.75` | Cosine threshold for semantic chunking |
@@ -526,7 +530,7 @@ Deployment defaults live in the `knowledge` row of `cordis.patch.yml`. The manag
 | `injectUsagePrompt` | `true` | List available base names per request; can be disabled in per-base advanced settings without disabling tools or auto-retrieval |
 | `autoRetrieveWeight` | `3` | Per-base proactive seat cap, range 0–5; `0` excludes the base |
 | `localModelCacheDir` | `''` | Empty uses `<DSH_HOME>/cache/dsh-knowledge/local-models` |
-| `localWorkerIdleTimeoutMs` | `60000` | Idle time before releasing local embedding-process sessions; `0` keeps them hot |
+| `localWorkerIdleTimeoutMs` | `60000` | Idle time before releasing local embedding sessions; `0` keeps them hot. Settings offer 1 minute, 15 minutes, and resident presets. Runtime status independently shows unloaded/loading/loaded/error and load duration |
 | `chunkStorePath` | `''` | Empty uses `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
 
 `knowledge:usage` now supplies only base names; behavioral guidance stays in `knowledge_search`. Set `injectUsagePrompt: false` in deployment/global configuration or override it per base. Auto-retrieval messages use the producer-owned `dsh-knowledge` source accepted by DSH v4. Desktop panels dynamically avoid native window controls using Window Controls Overlay geometry and CSS titlebar environment variables, moving the close button, knowledge toggle, and toasts into the safe area together.

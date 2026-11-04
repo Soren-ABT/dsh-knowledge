@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Address #57: expose per-base embedding batch sizes with CPU-friendly presets, apply the same local cap to semantic and ordinary chunking, and reduce batches on explicit allocation failures without retrying the original oversized batch.
+- Separate local embedding runtime residency and load duration from downloaded/validated files; show loading and idle release in the knowledge panel and local model settings. Dispose temporary download pipelines before loading the verified cache.
+- Add explicit directory rescan and path-binding controls. Preserve itemized directory sync results in agent tools, report new files with embedding errors as partial failures, and retry failed files even when their source bytes are unchanged.
+- Add opt-in per-source 5/15/60 minute sync with persisted settings and last-run summaries. Serialize scans and deletions, coalesce concurrent rescans, and stop timers on source/base deletion or plugin teardown. Existing sources remain manual by default; no database migration is required.
+
 - Fix #55: serialize all DomainStore metadata writes for bases, documents, and global configuration. Retry `EPERM`, `EBUSY`, and `EACCES` after 20/50/100/200/400 ms (at most six write attempts); report persistent I/O failures and retain the previous metadata instead of claiming success.
 - Keep a successfully loaded durable library readable when a startup self-healing write fails: warn and skip remaining cleanup. Isolate background recovery failures per document and handle failed recovery-state writes without unhandled rejections or host termination.
 - No storage-format migration or disabling `resumeInterruptedOnStartup` is required. This mitigates knowledge metadata failures; the host's general `rename` issue remains upstream.

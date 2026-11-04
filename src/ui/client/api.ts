@@ -60,6 +60,8 @@ export interface BaseConfig {
  *  base name in the detail header — path for directories/files, link for URLs,
  *  "node" for manually added text). */
 export interface BaseSourceInfo {
+  syncIntervalMinutes?: number
+  lastDirectorySync?: DirectorySyncRun
   /** Top-level document/container that owns this source. */
   sourceId: string
   kind: 'text' | 'file' | 'url' | 'directory'
@@ -108,6 +110,18 @@ export interface DirectorySyncResult {
   items: DirectorySyncItem[]
 }
 
+export interface DirectorySyncRun {
+  startedAt: number
+  finishedAt: number
+  status: DirectorySyncResult['status'] | 'failed'
+  created: number
+  updated: number
+  unchanged: number
+  deleted: number
+  failed: number
+  error?: string
+}
+
 /** Read-only preview of what one delete would remove. The panel fetches this
  *  before a destructive call so a cascading directory delete is never silent. */
 export interface DeleteImpact {
@@ -123,6 +137,8 @@ export interface DeleteImpact {
 }
 
 export interface DocumentSummary {
+  syncIntervalMinutes?: number
+  lastDirectorySync?: DirectorySyncRun
   id: string
   baseId: string
   title: string
@@ -153,6 +169,9 @@ export interface LocalModelStatus {
   status: 'idle' | 'downloading' | 'ready' | 'error'
   progress: number
   message: string
+  runtimeState?: 'unloaded' | 'loading' | 'loaded' | 'error'
+  loadStartedAt?: number
+  loadDurationMs?: number
 }
 
 export interface ModelSuggestions {
@@ -173,6 +192,9 @@ export interface LocalModelSummary {
   subtitle: string
   status: 'ready' | 'not_downloaded' | 'downloading' | 'validating' | 'unhealthy' | 'error'
   health: 'unchecked' | 'checking' | 'healthy' | 'unhealthy'
+  runtimeState?: LocalModelStatus['runtimeState']
+  loadStartedAt?: number
+  loadDurationMs?: number
   progress: number
   message: string
   lastCheckedAt?: number
@@ -698,6 +720,10 @@ export class KnowledgeApi {
 
   reindexDocument(documentId: string, mode?: 'reparse' | 'rechunk'): Promise<{ id: string; chunkCount: number; sync?: DirectorySyncResult }> {
     return this.call('POST', `/documents/${encodeURIComponent(documentId)}/reindex`, mode === undefined ? undefined : { mode }, 2 * 60 * 60_000 + 30_000)
+  }
+
+  setDirectorySyncInterval(sourceId: string, intervalMinutes: number): Promise<{ intervalMinutes: number }> {
+    return this.call('PUT', `/documents/${encodeURIComponent(sourceId)}/sync-settings`, { intervalMinutes })
   }
 
   cancelProcessing(documentId: string): Promise<{ cancelled: boolean }> {

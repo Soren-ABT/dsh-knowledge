@@ -9,7 +9,7 @@ interface ProcessDouble {
   killed: boolean
 }
 
-type ProcessMode = 'success' | 'crash_once' | 'mismatch' | 'invalid_vectors' | 'hang_download' | 'runtime_error_once'
+type ProcessMode = 'success' | 'crash_once' | 'mismatch' | 'invalid_vectors' | 'hang_download' | 'runtime_error_once' | 'oom_once'
 const processState = vi.hoisted(() => ({ instances: [] as ProcessDouble[], mode: 'success' as ProcessMode }))
 
 vi.mock('node:child_process', async () => {
@@ -31,17 +31,18 @@ vi.mock('node:child_process', async () => {
           queueMicrotask(() => this.emit('exit', 1, 'SIGKILL'))
           return true
         }
-        if (request.operation === 'embed' && processState.mode === 'runtime_error_once') {
+        if (request.operation === 'embed' && (processState.mode === 'runtime_error_once' || processState.mode === 'oom_once')) {
           // A failure the child reports about itself (ONNX session, invalid
           // response) is process-local: the runtime must replace the child
           // rather than retry inside the same one.
+          const detail = processState.mode === 'oom_once' ? 'failed to allocate memory' : 'onnx failed'
           processState.mode = 'success'
           queueMicrotask(() => this.emit('message', {
             protocolVersion: request.protocolVersion,
             id: request.id,
             operation: request.operation,
             ok: false,
-            error: { code: 'runtime_error', message: 'onnx failed', retryable: true },
+            error: { code: 'runtime_error', message: detail, retryable: true },
           }))
           return true
         }
@@ -128,17 +129,30 @@ describe('local embedding process lifecycle', () => {
 
   it('releases an idle model without restarting the embedding process', async () => {
     setLocalWorkerIdleTimeoutMs(100)
+    expect(processState.instances).toHaveLength(0)
+    expect(getLocalModelStatus('test/model').runtimeState).toBe('unloaded')
     await loadLocalModel('test/model')
+    expect(getLocalModelStatus('test/model').runtimeState).toBe('loaded')
 
     const child = processState.instances[0]
     expect(child).toBeDefined()
     await vi.advanceTimersByTimeAsync(100)
     expect(child.messages).toContainEqual(expect.objectContaining({ operation: 'release', modelId: 'test/model' }))
     expect(child.killed).toBe(false)
+    expect(getLocalModelStatus('test/model').runtimeState).toBe('unloaded')
 
     await loadLocalModel('test/model')
     expect(processState.instances).toHaveLength(1)
     expect(child.killed).toBe(false)
+    expect(getLocalModelStatus('test/model').runtimeState).toBe('loaded')
+  })
+
+  it('returns memory errors to the batch policy without retrying the same oversized request', async () => {
+    processState.mode = 'oom_once'
+    await expect(embedTexts('local', '', 'test/model', '', ['a', 'b'])).rejects.toThrow('failed to allocate')
+    expect(processState.instances).toHaveLength(1)
+    expect(processState.instances[0].killed).toBe(true)
+    expect(getLocalModelStatus('test/model').runtimeState).toBe('error')
   })
 
   it('repairs malformed text before passing it to the local embedding process', async () => {
