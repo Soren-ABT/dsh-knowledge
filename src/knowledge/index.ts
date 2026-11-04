@@ -658,7 +658,16 @@ export class KnowledgeService extends Service {
   }
 
   async setConfig(overrides: ConfigOverrides): Promise<KnowledgeConfig> {
-    await this.requireStore().setConfigOverrides(overrides)
+    const store = this.requireStore()
+    const current = store.getConfigOverrides()
+    const next = { ...current, ...overrides }
+    const backfill: string[] = []
+    for (const base of store.listBases()) {
+      const before = resolveConfigFor(this.baseConfig, current, base.config)
+      const after = resolveConfigFor(this.baseConfig, next, base.config)
+      if (this.checkEmbeddingModelChange(base, before, after)) backfill.push(base.id)
+    }
+    await store.setConfigOverrides(overrides)
     const resolved = this.getConfig()
     // Reapply the mirror switch, model cache dir, and worker idle timeout
     // live, so the panel can change them without a restart.
@@ -666,7 +675,26 @@ export class KnowledgeService extends Service {
     setLocalModelCacheDir(resolved.localModelCacheDir)
     setLocalWorkerIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
     setLocalRerankIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
+    for (const baseId of backfill) this.runBackground('in-place embedding backfill', this.reindexBase(baseId))
     return resolved
+  }
+
+  /** Validate a model change before saving; return whether existing sources need vector backfill. */
+  private checkEmbeddingModelChange(base: KnowledgeBase, before: KnowledgeConfig, after: KnowledgeConfig): boolean {
+    if (before.embeddingProvider === 'none' && after.embeddingProvider === 'none') return false
+    if (before.embeddingProvider === after.embeddingProvider && before.embeddingModel === after.embeddingModel) return false
+    const documents = this.requireStore().listDocuments(base.id)
+    if (documents.length === 0) return false
+    if (before.embeddingProvider !== 'none' && before.embeddingModel.trim() !== '') {
+      throw new Error(`知识库「${base.name}」切换嵌入模型会使已有向量全部失效——请使用「重建知识库」以新模型重建（Cherry Studio 语义）`)
+    }
+    if (this.indexing.size > 0) {
+      throw new Error('有文档正在处理中——请等待导入/重建完成后再启用嵌入模型（Cherry Studio 语义）')
+    }
+    if (documents.some(doc => doc.sourceType !== 'directory' && doc.rawText === undefined && doc.rawFilePath === undefined)) {
+      throw new Error(`知识库「${base.name}」存在无源文本的文档，无法回填向量——请删除后重新添加（Cherry Studio 语义）`)
+    }
+    return true
   }
 
   // ── invocation toggle ─────────────────────────────────────────────────────
@@ -843,32 +871,9 @@ export class KnowledgeService extends Service {
     if (patch !== undefined) {
       const oldConfig = this.getConfigFor(id)
       const newConfig = resolveConfigFor(this.baseConfig, store.getConfigOverrides(), next.config)
-      const modelChanged = newConfig.embeddingProvider !== oldConfig.embeddingProvider
-        || newConfig.embeddingModel !== oldConfig.embeddingModel
-      if (modelChanged && store.listDocuments(id).length > 0) {
-        const hadModel = oldConfig.embeddingProvider !== 'none' && oldConfig.embeddingModel.trim() !== ''
-        if (hadModel) {
-          throw new Error('切换嵌入模型会使已有向量全部失效——请使用「重建知识库」以新模型重建（Cherry Studio 语义）')
-        }
-        // BM25-only → enable-in-place: commit the model, then backfill vectors
-        // in the background (Cherry's enableEmbeddingModel). Cherry gates the
-        // commit on the base being backfill-able: an in-flight import/reindex
-        // would race the backfill, and a source-less document would leave a
-        // model committed with nothing to back it — refuse both up front.
-        if (this.indexing.size > 0) {
-          throw new Error('有文档正在处理中——请等待导入/重建完成后再启用嵌入模型（Cherry Studio 语义）')
-        }
-        const documents = store.listDocuments(id)
-        const sourceLess = documents.some(doc => doc.sourceType !== 'directory'
-          && doc.rawText === undefined && doc.rawFilePath === undefined)
-        if (sourceLess) {
-          throw new Error('存在无源文本的文档，无法回填向量——请删除后重新添加（Cherry Studio 语义）')
-        }
+      if (this.checkEmbeddingModelChange(existing, oldConfig, newConfig)) {
         await store.putBase(next)
-        const baseId = id
-        void this.reindexBase(baseId).catch((error: unknown) => {
-          this.ctx.logger.warn(`knowledge: in-place embedding backfill failed: ${error instanceof Error ? error.message : String(error)}`)
-        })
+        this.runBackground('in-place embedding backfill', this.reindexBase(id))
         return next
       }
     }

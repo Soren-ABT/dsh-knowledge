@@ -166,4 +166,41 @@ describe('issue #59 config scope UI', () => {
     expect(api.updateBase).toHaveBeenCalledExactlyOnceWith('wiki', { config: { embeddingBatchSize: 4 } })
     expect(api.setConfig).not.toHaveBeenCalled()
   })
+
+  it('keeps the effective summary on saved values until the parent refreshes', async () => {
+    const api = makeApi()
+    const props = baseProps({ searchMode: 'vector', similarityThreshold: 0.5 }, api)
+    const ui = renderer('RagConfigPanel', props)
+    const tree = ui.render()
+    const modeSelect = elements(tree).find(element => element.type === 'select'
+      && elements(element).some(child => child.type === 'option' && child.props.value === 'vector'))!
+    ;(modeSelect.props.onChange as (event: unknown) => void)({ target: { value: 'lexical' } })
+
+    const effectiveText = () => text(elements(ui.render()).find(element => element.type === 'div'
+      && text(element).startsWith('effectiveConfig:')))
+    expect(effectiveText()).toContain('modeVector')
+    expect(api.updateBase).not.toHaveBeenCalled()
+    const save = elements(ui.render()).find(element => element.type === 'button' && text(element) === 'save')!
+    await (save.props.onClick as () => Promise<void>)()
+    expect(effectiveText()).toContain('modeVector')
+    props.base.config = { searchMode: 'lexical', similarityThreshold: 0.5 }
+    expect(effectiveText()).toContain('modeLexical')
+  })
+
+  it('shows a rejected global model save without reporting success', async () => {
+    const api = makeApi()
+    api.setConfig.mockRejectedValueOnce(new Error('已有知识库需要重建'))
+    const props = baseProps({}, api, { embeddingProvider: 'openai', embeddingModel: 'old-model' })
+    const ui = renderer('RagConfigPanel', props)
+    const globalTab = elements(ui.render()).find(element => element.type === 'button' && text(element) === 'scopeGlobal')!
+    ;(globalTab.props.onClick as () => void)()
+    const modelInput = elements(ui.render()).find(element => element.type === 'input' && element.props.value === 'old-model')!
+    ;(modelInput.props.onChange as (event: unknown) => void)({ target: { value: 'new-model' } })
+    const save = elements(ui.render()).find(element => element.type === 'button' && text(element) === 'save')!
+    await (save.props.onClick as () => Promise<void>)()
+    expect(api.probeEmbeddingDimensions).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(text(ui.render())).toContain('已有知识库需要重建'))
+    expect(api.setConfig).toHaveBeenCalledExactlyOnceWith({ embeddingModel: 'new-model' })
+    expect(props.onSaved).not.toHaveBeenCalled()
+  })
 })

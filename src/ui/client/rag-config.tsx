@@ -334,10 +334,10 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
         </div>
         {scope === 'base' && (
           <div style={{ ...style.hint, marginTop: 0, marginBottom: 16, lineHeight: 1.6 }}>
-            {t('effectiveConfig')}: {t(EMBEDDING_PROVIDER_LABEL[values.embeddingProvider])}
-            {values.embeddingModel.trim() !== '' ? ` · ${values.embeddingModel}` : ''}
-            {' · '}{t('searchMode')}: {t(SEARCH_MODE_LABEL[values.searchMode])}
-            {' · '}{t('threshold')}: {values.similarityThreshold.toFixed(2)}
+            {t('effectiveConfig')}: {t(EMBEDDING_PROVIDER_LABEL[baseInitial.embeddingProvider])}
+            {baseInitial.embeddingModel.trim() !== '' ? ` · ${baseInitial.embeddingModel}` : ''}
+            {' · '}{t('searchMode')}: {t(SEARCH_MODE_LABEL[baseInitial.searchMode])}
+            {' · '}{t('threshold')}: {baseInitial.similarityThreshold.toFixed(2)}
           </div>
         )}
         {/* 文档处理 */}
