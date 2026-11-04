@@ -102,6 +102,14 @@ const documentSchema = z.object({
    *  (Cherry's pathStorage): reindexing the container rescans the path and
    *  picks up new/removed files. Absent on legacy/created containers. */
   sourcePath: z.string().optional(),
+  syncIntervalMinutes: z.union([z.literal(0), z.literal(5), z.literal(15), z.literal(60)]).optional(),
+  lastDirectorySync: z.object({
+    startedAt: z.number(), finishedAt: z.number(),
+    status: z.enum(['synced', 'unchanged', 'partial', 'failed']),
+    created: z.number().int().gte(0), updated: z.number().int().gte(0),
+    unchanged: z.number().int().gte(0), deleted: z.number().int().gte(0), failed: z.number().int().gte(0),
+    error: z.string().optional(),
+  }).optional(),
   contentHash: z.string().optional(),
   rawFilePath: z.string().optional(),
   rawText: z.string().optional(),

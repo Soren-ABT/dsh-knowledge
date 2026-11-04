@@ -133,6 +133,19 @@ export interface DirectorySyncResult {
   readonly items: readonly DirectorySyncItem[]
 }
 
+/** Persist only the last run's summary; itemized outcomes remain in the response. */
+export interface DirectorySyncRun {
+  readonly startedAt: number
+  readonly finishedAt: number
+  readonly status: DirectorySyncResult['status'] | 'failed'
+  readonly created: number
+  readonly updated: number
+  readonly unchanged: number
+  readonly deleted: number
+  readonly failed: number
+  readonly error?: string
+}
+
 /** Additive result returned by the explicit directory-tree import endpoint. */
 export interface DirectoryImportResult {
   /** Legacy file count retained for 0.3.x callers. */
@@ -200,6 +213,8 @@ export interface KnowledgeDocument {
    *  (Cherry's pathStorage): reindexing the container rescans the path and
    *  picks up new/removed files. Absent on legacy/created containers. */
   readonly sourcePath?: string
+  readonly syncIntervalMinutes?: number
+  readonly lastDirectorySync?: DirectorySyncRun
   /** SHA-256 of the source text, for duplicate detection. */
   readonly contentHash?: string
   /**
@@ -409,6 +424,8 @@ export interface SearchHit {
 
 /** Summary of one document, for listing UIs. */
 export interface DocumentSummary {
+  readonly syncIntervalMinutes?: number
+  readonly lastDirectorySync?: DirectorySyncRun
   readonly processing?: DocumentProcessingInfo
   readonly id: string
   readonly baseId: string
@@ -446,6 +463,8 @@ export interface DocumentSummary {
  *  base name in the detail header — path for directories/files, link for URLs,
  *  "node" for manually added text). */
 export interface BaseSourceInfo {
+  readonly syncIntervalMinutes?: number
+  readonly lastDirectorySync?: DirectorySyncRun
   /** Top-level document/container that owns this source. */
   readonly sourceId: string
   readonly kind: DocumentSourceType
@@ -494,6 +513,8 @@ export interface BaseStats {
 
 /** Full document view: metadata, raw text, and every chunk. */
 export interface DocumentDetail {
+  readonly syncIntervalMinutes?: number
+  readonly lastDirectorySync?: DirectorySyncRun
   readonly processing?: DocumentProcessingInfo
   readonly id: string
   readonly baseId: string

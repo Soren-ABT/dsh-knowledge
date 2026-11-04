@@ -73,6 +73,8 @@ import type { RestoreEmbeddingConfig, Toast } from './dialogs.js'
 import { ContextMenu, PopoverMenu } from './popover.js'
 import type { MenuEntry } from './popover.js'
 import { RagConfigPanel } from './rag-config.js'
+import { DirectorySyncControls } from './DirectorySyncControls.js'
+import { ModelRuntimeStatus } from './ModelRuntimeStatus.js'
 import type { Translate } from './locales.js'
 import type { KnowledgePanelStore } from './panel-store.js'
 
@@ -616,8 +618,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
   const promptForSourcePath = useCallback((source: BaseSourceInfo): void => {
     if (selectedBaseId === null) return
-    if (source.sourcePath === undefined) return
-    setDialog({ kind: 'editSourcePath', sourceId: source.sourceId, initial: source.sourcePath })
+    setDialog({ kind: 'editSourcePath', sourceId: source.sourceId, initial: source.sourcePath ?? '' })
   }, [selectedBaseId])
 
   const editSourcePath = useCallback((sourceId: string, path: string): void => {
@@ -1162,6 +1163,38 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   }, [])
 
   const selectedBase = bases.find(b => b.id === selectedBaseId) ?? null
+  const hasScheduledSources = documents.some(doc => (doc.syncIntervalMinutes ?? 0) > 0)
+  useEffect(() => {
+    if (!hasScheduledSources || selectedBaseId === null) return
+    let inFlight = false
+    let disposed = false
+    const timer = window.setInterval(() => {
+      if (inFlight) return
+      inFlight = true
+      void Promise.all([api.listDocuments(selectedBaseId), api.stats(selectedBaseId), api.listBases()])
+        .then(([nextDocuments, nextStats, nextBases]) => {
+          if (disposed) return
+          setDocuments(nextDocuments)
+          setStats(nextStats)
+          setBases(nextBases)
+          if (nextDocuments.some(doc => doc.indexingPhase !== undefined || doc.status === 'processing')) setPollKick(kick => kick + 1)
+        }).catch(() => {}).finally(() => { inFlight = false })
+    }, 15_000)
+    return () => { disposed = true; window.clearInterval(timer) }
+  }, [api, hasScheduledSources, selectedBaseId])
+
+  const setSyncInterval = (sourceId: string, minutes: number): void => {
+    void run(async () => {
+      await api.setDirectorySyncInterval(sourceId, minutes)
+      await reloadDocuments()
+      notify('success', t('save'))
+    })
+  }
+
+  const scanSource = (sourceId: string): void => {
+    const doc = documents.find(item => item.id === sourceId)
+    if (doc !== undefined) void reindexDoc(doc)
+  }
 
   // The selected base's effective local embedding model (per-base config wins).
   const selectedBaseLocalModel = useMemo<string | null>(() => {
@@ -1306,7 +1339,13 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       // dsh directories carry no chunks of their own, so that entry is N/A).
       return [
         { key: 'open', label: t('openFolder'), icon: <IconFolderOpen size={14} />, onSelect: () => drillIntoDirectory(doc.id) },
-        { key: 'reindex', label: t('reindexButton'), icon: <IconRefresh size={14} />, onSelect: () => void reindexDoc(doc) },
+        { key: 'reindex', label: t(doc.sourcePath === undefined ? 'reindexButton' : 'directoryRescan'), icon: <IconRefresh size={14} />, onSelect: () => void reindexDoc(doc) },
+        ...(doc.parentDirectoryId === undefined ? [{ key: 'bind-source', label: t(doc.sourcePath === undefined ? 'directoryBind' : 'sourcePathEdit'),
+          onSelect: () => promptForSourcePath({ sourceId: doc.id, kind: 'directory', text: doc.title, sourcePath: doc.sourcePath }) }] : []),
+        ...(doc.parentDirectoryId === undefined && doc.sourcePath !== undefined ? [{ key: 'sync-interval', label: t('directorySyncInterval'), children: [0, 5, 15, 60].map(minutes => ({
+          key: `sync-${minutes}`, label: `${minutes === 0 ? t('directorySyncManual') : `${minutes} ${t('directorySyncMinutes')}`}${(doc.syncIntervalMinutes ?? 0) === minutes ? ' ✓' : ''}`,
+          onSelect: () => setSyncInterval(doc.id, minutes),
+        })) }] : []),
         { key: 'sep' },
         { key: 'delete', label: t('delete'), danger: true, onSelect: () => setDialog({ kind: 'confirmDeleteDoc', doc }) },
       ]
@@ -1480,10 +1519,14 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
               {(selectedBase.sourceInfo ?? []).length > 0 && (
                 <div style={style.baseSourceRow}>
                   {selectedBase.sourceInfo!.map(source => (
-                    <span key={source.sourceId} style={style.baseSourceItem}>
+                    <span key={source.sourceId} style={{ ...style.baseSourceItem, ...(source.kind === 'directory' ? { flexBasis: '100%', flexWrap: 'wrap' } : {}) }}>
                       <span style={style.baseSourceGlyph}>{baseSourceGlyph(source.kind)}</span>
                       <span style={style.baseSourceText} title={source.text}>{source.text}</span>
-                      {source.sourcePath !== undefined && (
+                      {source.kind === 'directory' && (
+                        <DirectorySyncControls source={source} busy={busy} t={t} onScan={() => scanSource(source.sourceId)}
+                          onBind={() => promptForSourcePath(source)} onInterval={minutes => setSyncInterval(source.sourceId, minutes)} />
+                      )}
+                      {source.kind !== 'directory' && source.sourcePath !== undefined && (
                         <button
                           className="kb-iconbtn"
                           style={{ ...style.baseSourceEdit, ...style.iconOnlyButton }}
@@ -1497,6 +1540,10 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                     </span>
                   ))}
                 </div>
+              )}
+
+              {selectedBaseLocalModel !== null && localModelStatus !== null && (localModelStatus.status === 'ready' || localModelStatus.runtimeState === 'loading' || localModelStatus.runtimeState === 'error') && (
+                <ModelRuntimeStatus model={localModelStatus} t={t} />
               )}
 
               {selectedDocId !== null && selectedDoc !== null ? (

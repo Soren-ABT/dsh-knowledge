@@ -44,6 +44,9 @@ export interface LocalModelSummary extends LocalModelDescriptor {
   readonly message: string
   readonly lastCheckedAt?: number
   readonly latencyMs?: number
+  readonly runtimeState?: 'unloaded' | 'loading' | 'loaded' | 'error'
+  readonly loadStartedAt?: number
+  readonly loadDurationMs?: number
 }
 
 interface ReadinessRecord {
@@ -236,22 +239,25 @@ async function writeReadiness(descriptor: LocalModelDescriptor, latencyMs: numbe
 async function summarize(descriptor: LocalModelDescriptor): Promise<LocalModelSummary> {
   if (descriptor.kind === 'embedding') {
     const live = getLocalModelStatus(descriptor.id)
+    const runtimeDescriptor = { ...descriptor, runtimeState: live.runtimeState ?? 'unloaded', loadStartedAt: live.loadStartedAt,
+      loadDurationMs: live.loadDurationMs }
     if (live.status === 'downloading' || live.status === 'error') {
-      return { ...descriptor, status: live.status, health: live.status === 'error' ? 'unhealthy' : 'unchecked', progress: live.progress, message: live.message }
+      return { ...runtimeDescriptor, status: live.status, health: live.status === 'error' ? 'unhealthy' : 'unchecked', progress: live.progress, message: live.message }
     }
     const downloaded = live.status === 'ready' || await isLocalModelDownloaded(descriptor.id)
-    if (!downloaded) return { ...descriptor, status: 'not_downloaded', health: 'unchecked', progress: 0, message: '' }
+    if (!downloaded) return { ...runtimeDescriptor, status: live.runtimeState === 'loading' ? 'validating' : 'not_downloaded',
+      health: live.runtimeState === 'loading' ? 'checking' : 'unchecked', progress: 0, message: '' }
     const ready = await getLocalEmbeddingReadiness(descriptor.id)
     if (ready === undefined) {
       return {
-        ...descriptor,
-        status: live.status === 'ready' ? 'validating' : 'unhealthy',
-        health: live.status === 'ready' ? 'checking' : 'unchecked',
+        ...runtimeDescriptor,
+        status: live.status === 'ready' || live.runtimeState === 'loading' ? 'validating' : 'unhealthy',
+        health: live.status === 'ready' || live.runtimeState === 'loading' ? 'checking' : 'unchecked',
         progress: 100,
         message: '模型已下载，正在或等待隔离运行时兼容性验证',
       }
     }
-    return { ...descriptor, status: 'ready', health: 'healthy', progress: 100, message: '', lastCheckedAt: ready.validatedAt }
+    return { ...runtimeDescriptor, status: 'ready', health: 'healthy', progress: 100, message: live.message, lastCheckedAt: ready.validatedAt }
   }
   const live = liveRerankStatus.get(descriptor.id)
   if (live !== undefined && live.status !== 'ready') return { ...descriptor, ...live }

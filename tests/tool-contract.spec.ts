@@ -1,5 +1,8 @@
 import { beforeAll, beforeEach, describe, expect, it, onTestFinished } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import ToolRuntime, { type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 // Load the sibling workspace's real built service. Importing its TS source
 // beside ToolRuntime's package declaration creates two nominal SystemPrompt
@@ -8,7 +11,7 @@ import ToolRuntime, { type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '../../dsh/packages/core/system-prompt/lib/index.js'
 import { estimateContextTokens, KnowledgeService } from '../src/knowledge/index.js'
 import type { Config } from '../src/knowledge/config.js'
-import type { KnowledgeBase, KnowledgeDocument } from '../src/knowledge/types.js'
+import type { DirectorySyncResult, KnowledgeBase, KnowledgeDocument } from '../src/knowledge/types.js'
 import * as ToolKnowledge from '../src/tool-knowledge/index.js'
 
 const DEFAULT_CONFIG: Config = {
@@ -143,6 +146,26 @@ describe('model-facing knowledge tool contracts', () => {
     await harness.knowledge.setEnabled(true)
     await harness.knowledge.setEnabledBaseIds([])
     await harness.knowledge.setConfig({ injectUsagePrompt: true })
+  })
+
+  it('lets an agent discover a bound directory and observes partial sync failures', async () => {
+    const path = await mkdtemp(join(tmpdir(), 'kb-tool-sync-'))
+    const base = await harness.knowledge.createBase({ name: 'agent wiki' })
+    onTestFinished(async () => { await harness.knowledge.deleteBase(base.id); await rm(path, { recursive: true, force: true }) })
+    const source = await harness.knowledge.importDirectoryTree(base.id, path)
+    const listed = valueOf<{ documents: Array<{ id: string; sourceType: string; sourcePath?: string }> }>(await execute(harness.ctx, 'knowledge_list_documents', { baseId: base.id }))
+    expect(listed.documents).toContainEqual(expect.objectContaining({ id: source.sourceId, sourceType: 'directory', sourcePath: expect.any(String) }))
+    await writeFile(join(path, 'paper.md'), 'New research evidence with $E=mc^2$.')
+    await writeFile(join(path, 'broken.pptx'), Buffer.from('invalid presentation'))
+    const result = await execute(harness.ctx, 'knowledge_reindex_document', { baseId: base.id, documentId: source.sourceId })
+    const value = valueOf<{ sync: DirectorySyncResult }>(result)
+    expect(value.sync).toMatchObject({ status: 'partial', created: 1, failed: 1 })
+    expect(value.sync.items).toContainEqual(expect.objectContaining({ relativePath: 'broken.pptx', action: 'failed', error: expect.objectContaining({ message: expect.any(String) }) }))
+    expect(resultText(result)).toContain('failed=1')
+    expect(resultText(result)).toContain('broken.pptx')
+    const baseResult = valueOf<{ failed: number; items: unknown[] }>(await execute(harness.ctx, 'knowledge_reindex_base', { baseId: base.id }))
+    expect(baseResult.failed).toBeGreaterThan(0)
+    expect(baseResult.items.length).toBeGreaterThan(0)
   })
 
   it('lists base names once and leaves behavioral guidance in the search tool (#36)', async () => {

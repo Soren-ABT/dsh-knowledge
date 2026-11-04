@@ -121,6 +121,24 @@ export type KnowledgeKey =
   | 'siblingChunks'
   | 'siblingChunksHint'
   | 'batchSize'
+  | 'embeddingBatchHint'
+  | 'embeddingEffectiveBatch'
+  | 'modelRuntimeUnloaded'
+  | 'modelRuntimeLoading'
+  | 'modelRuntimeLoaded'
+  | 'modelRuntimeError'
+  | 'modelFilesReady'
+  | 'modelFilesValidating'
+  | 'modelIdleEconomy'
+  | 'modelIdleWarm'
+  | 'modelIdleResident'
+  | 'directoryRescan'
+  | 'directoryBind'
+  | 'directoryUnboundHint'
+  | 'directorySyncInterval'
+  | 'directorySyncManual'
+  | 'directorySyncMinutes'
+  | 'directoryLastSync'
   | 'stats'
   | 'statsDocs'
   | 'statsSourceDocs'
@@ -491,6 +509,24 @@ export const zh: Record<KnowledgeKey, string> = {
   siblingChunks: '上下文拼接',
   siblingChunksHint: '每个命中结果附带相邻分块的数量（0–3，0=关；让回答获得完整段落上下文）',
   batchSize: 'embedding 批大小',
+  embeddingBatchHint: 'CPU 或内存受限时建议设为 1。本地推理每批最多 8 段，遇到内存分配错误会自动降批；修改批量无需重建知识库。',
+  embeddingEffectiveBatch: '本地每批上限',
+  modelRuntimeUnloaded: '模型未驻留内存，首次使用时加载',
+  modelRuntimeLoading: '正在加载模型',
+  modelRuntimeLoaded: '模型已加载',
+  modelRuntimeError: '模型运行失败',
+  modelFilesReady: '已下载并验证',
+  modelFilesValidating: '正在验证模型',
+  modelIdleEconomy: '节省内存（1 分钟）',
+  modelIdleWarm: '保温（15 分钟）',
+  modelIdleResident: '常驻（持续占用内存）',
+  directoryRescan: '重新扫描目录',
+  directoryBind: '绑定磁盘目录',
+  directoryUnboundHint: '上传的是文件副本；绑定服务端绝对路径后可同步新增、修改和删除。',
+  directorySyncInterval: '自动同步',
+  directorySyncManual: '手动',
+  directorySyncMinutes: '分钟',
+  directoryLastSync: '上次同步',
   stats: '统计',
   statsDocs: '文档',
   statsSourceDocs: '来源项',
@@ -591,7 +627,7 @@ export const zh: Record<KnowledgeKey, string> = {
   topKHint: '每次召回返回的最大文档片段数，越大覆盖越多但消耗更多上下文。',
   thresholdHint: '用于过滤低相关性重排片段的相似度阈值，数值越高召回越严格。',
   providerLocal: '本地模型',
-  localModelHint: '进程内推理（transformers.js），无需联网服务；首次使用需下载模型权重。模型为 Hugging Face 仓库 id，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX',
+  localModelHint: '隔离子进程推理（transformers.js），按需加载；首次使用需下载模型权重。模型为 Hugging Face 仓库 id，默认 onnx-community/Qwen3-Embedding-0.6B-ONNX',
   noLocalModelsReady: '暂无已下载的本地模型，请到「设置 → 本地模型」下载',
   noOllamaModels: '暂无已安装的 Ollama 模型，请在「设置 → 本地模型」拉取',
   selectModelPlaceholder: '请选择模型',
@@ -867,6 +903,24 @@ export const en: Record<KnowledgeKey, string> = {
   siblingChunks: 'Context stitching',
   siblingChunksHint: 'Neighbouring chunks (±) attached to each hit (0–3, 0=off; gives answers the full paragraph)',
   batchSize: 'Embedding batch size',
+  embeddingBatchHint: 'Use 1 for CPU or limited memory. Local inference caps batches at 8 and reduces them on allocation errors. Changing this does not require rebuilding the base.',
+  embeddingEffectiveBatch: 'Local batch limit',
+  modelRuntimeUnloaded: 'Not resident in memory; loads on demand',
+  modelRuntimeLoading: 'Loading model',
+  modelRuntimeLoaded: 'Model loaded',
+  modelRuntimeError: 'Model runtime failed',
+  modelFilesReady: 'Downloaded and validated',
+  modelFilesValidating: 'Validating model',
+  modelIdleEconomy: 'Save memory (1 minute)',
+  modelIdleWarm: 'Keep warm (15 minutes)',
+  modelIdleResident: 'Resident (keeps memory allocated)',
+  directoryRescan: 'Rescan directory',
+  directoryBind: 'Bind disk directory',
+  directoryUnboundHint: 'Uploads are file copies. Bind an absolute server path to sync additions, edits and deletions.',
+  directorySyncInterval: 'Auto sync',
+  directorySyncManual: 'Manual',
+  directorySyncMinutes: 'minutes',
+  directoryLastSync: 'Last sync',
   stats: 'Stats',
   statsDocs: 'docs',
   statsSourceDocs: 'source items',
@@ -967,7 +1021,7 @@ export const en: Record<KnowledgeKey, string> = {
   topKHint: 'Maximum number of document chunks returned for each retrieval. Higher values cover more content but use more context.',
   thresholdHint: 'Similarity threshold used to filter low-relevance reranked chunks; higher is stricter.',
   providerLocal: 'Local model',
-  localModelHint: 'In-process inference (transformers.js), no server needed; first use downloads the weights. Model = Hugging Face repo id, default onnx-community/Qwen3-Embedding-0.6B-ONNX',
+  localModelHint: 'Isolated child-process inference (transformers.js), loaded on demand; first use downloads the weights. Model = Hugging Face repo id, default onnx-community/Qwen3-Embedding-0.6B-ONNX',
   noLocalModelsReady: 'No downloaded local models — download one in Settings → Local Models',
   noOllamaModels: 'No installed Ollama models — pull one in Settings → Local Models',
   selectModelPlaceholder: 'Select a model',

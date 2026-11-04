@@ -509,6 +509,12 @@ async function route(
         if (body.mode !== undefined && body.mode !== 'reparse' && body.mode !== 'rechunk') throw new InvalidRequestError('mode must be reparse or rechunk')
         return service.reindexDocument(documentId, { mode: body.mode as 'reparse' | 'rechunk' | undefined })
       }
+      if (segments[2] === 'sync-settings' && method === 'PUT') {
+        if (typeof body.intervalMinutes !== 'number' || ![0, 5, 15, 60].includes(body.intervalMinutes)) {
+          throw new InvalidRequestError('intervalMinutes must be 0, 5, 15 or 60')
+        }
+        return service.setDirectorySyncInterval(documentId, body.intervalMinutes)
+      }
       if (segments[2] === 'delete-impact' && method === 'GET') return service.getDeleteImpact(documentId)
       if (segments[2] === 'refresh' && method === 'POST') return service.refreshUrlDocument(documentId)
       if (segments[2] === 'raw' && method === 'GET') {

@@ -137,6 +137,10 @@ allowBuilds:
 
 重新扫描目录时会导入新增文件、重建已修改文件并移除已不存在的文件。单个文件失败不会隐藏其他成功结果，服务端和界面都会保留逐文件错误信息。
 
+浏览器“目录上传”保存的是文件副本。对这类目录使用“绑定磁盘目录”，填入 DSH 服务可访问的绝对路径，再执行“重新扫描目录”，即可保留原目录 ID 并认领唯一匹配的旧文件。WSL 部署应填写 WSL 内的路径。
+
+已绑定的顶层目录可选择手动同步，或每 5、15、60 分钟同步；默认手动。规则和最近一次结果摘要持久化，界面显示新增、更新、删除、未变化与失败数。任务完成后才开始下一轮计时，重启后等待完整间隔；删除来源或知识库会停止定时任务。手动、定时和 Agent 调用共用同步队列。Agent 写完 Wiki 后可调用 `knowledge_reindex_document`，传入目录 ID 并省略 `mode`；检查返回的 `sync.status`、`sync.failed` 和 `sync.items`，部分失败不会伪装为全部成功。管理 API 使用 `PUT /knowledge/documents/<sourceId>/sync-settings`，例如 `{"intervalMinutes": 5}`；支持 5、15、60，设为 0 关闭定时同步。
+
 **更新已导入目录的正确方式**：重新导入同一路径，或在界面中对目录容器执行重扫——两者现在走同一条同步路径，都只会原地更新原来那棵树。目录来源以“知识库 + 规范化真实路径”确定身份，所以重复导入不会再新建第二棵树。目录中的文件以“目录来源 + 相对路径”确定身份；只有名称和类型都唯一的旧文件才会被认领，出现两个候选时报告 `ambiguous_source`，不会猜测、合并或自动删除。管理 API 的文档详情会返回目录容器的 `sourcePath`，客户端可据此找到该重扫哪一个容器。
 
 </details>
@@ -507,7 +511,7 @@ dsh-knowledge 的定位是“一体化文档知识库”。下面的对照用于
 | `similarityThreshold` | `0` | 结果最低相似度，范围 0–1 |
 | `mmrDiversity` | `0` | MMR 多样性，`0` 表示关闭 |
 | `rrfVectorWeight` | `1` | hybrid 模式中向量召回的 RRF 权重 |
-| `embeddingBatchSize` | `32` | 每批 embedding 文本数 |
+| `embeddingBatchSize` | `32` | 每批 embedding 文本数；可在知识库设置中调整，CPU/低内存建议 1。本地普通和语义分块均最多 8；明确的内存分配错误会逐级降批到 1 |
 | `siblingChunks` | `1` | 每侧相邻 chunk 数，范围 0–3；`0` 仍生成 anchor-only 窗口 |
 | `semanticChunk` | `false` | 合并相邻相似语义段落 |
 | `semanticChunkThreshold` | `0.75` | 语义分块余弦阈值 |
@@ -528,7 +532,7 @@ dsh-knowledge 的定位是“一体化文档知识库”。下面的对照用于
 | `injectUsagePrompt` | `true` | 每次请求仅列出可用库名；可在每库高级设置中关闭，不影响工具和自动检索 |
 | `autoRetrieveWeight` | `3` | 每库自动注入席位上限，范围 0–5；`0` 表示排除 |
 | `localModelCacheDir` | `''` | 空值使用 `<DSH_HOME>/cache/dsh-knowledge/local-models` |
-| `localWorkerIdleTimeoutMs` | `60000` | 本地 embedding process 空闲释放模型 session 的时间；`0` 表示常驻 |
+| `localWorkerIdleTimeoutMs` | `60000` | 本地 embedding process 空闲释放模型 session 的时间；`0` 表示常驻。设置页提供 1 分钟、15 分钟和常驻预设；模型运行状态独立显示未驻留、加载中、已加载或错误，并显示加载耗时 |
 | `chunkStorePath` | `''` | 空值使用 `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
 
 `knowledge:usage` 不再重复 `knowledge_search` 的行为指令，只提供库名；部署配置或全局覆盖可设置 `injectUsagePrompt: false`，每库配置可以单独覆盖。自动检索消息使用插件自己的 `dsh-knowledge` 来源名称，符合 DSH v4 的来源准入要求。桌面面板通过 Window Controls Overlay 几何和 CSS 标题栏环境变量动态避让窗口按钮，关闭按钮、知识库开关和通知随面板一起进入安全区。

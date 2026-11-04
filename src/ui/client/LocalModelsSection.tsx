@@ -14,6 +14,7 @@ import { C, style } from './theme.js'
 import { IconBot, IconBox, IconDownload, IconFolderInput, IconFolderOpen, IconFolderSearch, IconRefresh, IconScanText, IconTrash, IconX } from './icons.js'
 import type { Translate } from './locales.js'
 import { MineruDeploymentSection } from './MineruDeploymentSection.js'
+import { ModelRuntimeStatus } from './ModelRuntimeStatus.js'
 import type { DirectoryActions } from './directory-actions.js'
 
 export interface LocalModelsSectionProps {
@@ -456,6 +457,13 @@ export function LocalModelsSection(props: LocalModelsSectionProps): JSX.Element 
             />
             <button className="kb-btn" style={style.button} onClick={() => void saveWorkerIdleTimeout()}>{t('hfMirrorSave')}</button>
           </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+            {([{ value: 60_000, label: 'modelIdleEconomy' }, { value: 900_000, label: 'modelIdleWarm' }, { value: 0, label: 'modelIdleResident' }] as const).map(preset => (
+              <button key={preset.value} type="button" style={style.button} onClick={() => setWorkerIdleTimeoutMs(preset.value)}>
+                {t(preset.label)}
+              </button>
+            ))}
+          </div>
           <p style={{ marginTop: 8, fontSize: 12, color: C.muted, lineHeight: 1.55 }}>{t('localWorkerIdleTimeoutMsHint')}</p>
         </div>
       )}
@@ -741,13 +749,16 @@ function ModelCard(props: {
               {model.name}
             </span>
             {ready && (
-              <span style={readyBadge}>{t('ready')}</span>
+              <span style={readyBadge}>{t(model.kind === 'embedding' ? 'modelFilesReady' : 'ready')}</span>
             )}
             {model.support !== undefined && <span style={readyBadge}>{t(model.support === 'official' ? 'officialSupport' : 'experimentalSupport')}</span>}
           </div>
           <p style={{ marginTop: 2, fontSize: 12, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {model.subtitle}
           </p>
+          {model.kind === 'embedding' && model.status !== 'not_downloaded' && !downloading && (
+            <ModelRuntimeStatus model={model} t={t} />
+          )}
           {model.kind === 'reranking' && model.lastCheckedAt !== undefined && (
             <p style={{ marginTop: 4, fontSize: 12, color: C.muted, lineHeight: 1.5 }}>{t('rerankLastValidated')}{new Date(model.lastCheckedAt).toLocaleString()} · {model.latencyMs ?? 0}ms</p>
           )}
@@ -766,12 +777,12 @@ function ModelCard(props: {
 
       {inProgress && (
         <div style={{ marginTop: 12 }}>
-          <div style={{ height: 6, width: '100%', borderRadius: 999, background: C.surface2, overflow: 'hidden' }}>
+          {downloading && <div style={{ height: 6, width: '100%', borderRadius: 999, background: C.surface2, overflow: 'hidden' }}>
             <div style={{ height: '100%', width: `${model.progress}%`, borderRadius: 999, background: C.accent, transition: 'width 0.2s' }} />
-          </div>
+          </div>}
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12, color: C.muted }}>
-            <span>{model.status === 'validating' ? t('rerankValidating') : t('localModelDownloading')}</span>
-            <span>{Math.floor(model.progress)}%</span>
+            <span>{model.status === 'validating' ? t(model.kind === 'embedding' ? 'modelFilesValidating' : 'rerankValidating') : t('localModelDownloading')}</span>
+            {downloading && <span>{Math.floor(model.progress)}%</span>}
           </div>
           {downloading && <div style={{ marginTop: 10, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
             <button

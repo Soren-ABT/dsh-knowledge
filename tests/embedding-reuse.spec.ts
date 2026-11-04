@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { hashEmbeddingText } from '../src/knowledge/chunkdb.js'
 import type { Config } from '../src/knowledge/config.js'
@@ -34,6 +37,7 @@ vi.mock('../src/knowledge/embed.js', () => ({
 import { embedTexts } from '../src/knowledge/embed.js'
 
 const embedTextsMock = vi.mocked(embedTexts)
+const normalEmbedding = embedTextsMock.getMockImplementation()!
 
 const DEFAULT_CONFIG: Config = {
   embeddingProvider: 'none',
@@ -95,6 +99,61 @@ async function mountService(): Promise<KnowledgeServiceType> {
 }
 
 describe('embedding hash reuse (Cherry decision A4)', () => {
+  it.each([[false, 1], [true, 1], [false, 32], [true, 32]] as const)('applies the local batch policy to semanticChunk=%s, size=%s', async (semanticChunk, batchSize) => {
+    embedTextsMock.mockClear()
+    const service = await mountService()
+    const base = await service.createBase({ name: 'batch limit', config: {
+      embeddingProvider: 'local', embeddingModel: 'test/embedding', embeddingBatchSize: batchSize,
+      semanticChunk, chunkSize: 64, smartChunk: false,
+    } })
+    const content = Array.from({ length: 24 }, (_, index) => `Paragraph ${index}: ${'research evidence '.repeat(15)}`).join('\n\n')
+    const doc = await service.addTextDocument({ baseId: base.id, title: 'batch note', content })
+    expect(doc.embeddingError).toBeUndefined()
+    expect(embedTextsMock.mock.calls.length).toBeGreaterThan(1)
+    expect(embedTextsMock.mock.calls.every(call => call[4].length <= Math.min(batchSize, 8))).toBe(true)
+  })
+
+  it('learns a smaller local batch after OOM and does not repeat oversized batches on the next document', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'memory limit', config: {
+      embeddingProvider: 'local', embeddingModel: 'test/limited', embeddingBatchSize: 32,
+      chunkSize: 64, smartChunk: false,
+    } })
+    embedTextsMock.mockClear()
+    embedTextsMock.mockImplementation(async (...args) => {
+      if (args[4].length > 2) throw new Error('runtime_error: failed to allocate memory')
+      return normalEmbedding(...args)
+    })
+    onTestFinished(() => { embedTextsMock.mockImplementation(normalEmbedding) })
+    const first = await service.addTextDocument({ baseId: base.id, title: 'first', content: 'first research sample '.repeat(150) })
+    expect(first.embeddingError).toBeUndefined()
+    expect(embedTextsMock.mock.calls.slice(0, 3).map(call => call[4].length)).toEqual([8, 4, 2])
+    embedTextsMock.mockClear()
+    const second = await service.addTextDocument({ baseId: base.id, title: 'second', content: 'second unrelated sample '.repeat(150) })
+    expect(second.embeddingError).toBeUndefined()
+    expect(embedTextsMock.mock.calls.every(call => call[4].length <= 2)).toBe(true)
+  })
+
+  it('reports newly imported files with failed embeddings as partial sync and retries unchanged bytes', async () => {
+    const path = await mkdtemp(join(tmpdir(), 'kb-embedding-sync-'))
+    onTestFinished(() => rm(path, { recursive: true, force: true }))
+    const service = await mountService()
+    const base = await service.createBase({ name: 'published wiki', config: {
+      embeddingProvider: 'local', embeddingModel: 'test/oom', embeddingBatchSize: 1,
+    } })
+    await writeFile(join(path, 'note.md'), 'Research evidence with $E=mc^2$.')
+    embedTextsMock.mockImplementation(async () => { throw new Error('out of memory') })
+    onTestFinished(() => { embedTextsMock.mockImplementation(normalEmbedding) })
+    const first = await service.importDirectoryTree(base.id, path)
+    expect(first.sync).toMatchObject({ status: 'partial', failed: 1 })
+    expect(first.sync.items.find(item => item.kind === 'file')).toMatchObject({ action: 'failed', error: { code: 'embedding_provider' } })
+    expect(service.getDocument(first.sourceId).lastDirectorySync).toMatchObject({ status: 'partial', failed: 1 })
+    embedTextsMock.mockImplementation(normalEmbedding)
+    const retried = await service.reindexDocument(first.sourceId)
+    expect(retried.sync).toMatchObject({ status: 'synced', updated: 1, failed: 0 })
+    expect(service.listDocuments(base.id).find(doc => doc.fileName === 'note.md')).toMatchObject({ embedded: true })
+  })
+
   it('reindexes without re-embedding unchanged chunk text', async () => {
     embedTextsMock.mockClear()
     const service = await mountService()

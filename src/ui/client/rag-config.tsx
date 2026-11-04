@@ -12,6 +12,7 @@ import { KnowledgeApi } from './api.js'
 import type { BaseConfig, BaseSummary, EmbeddingProvider, KnowledgeConfig, LocalModelStatus, ModelSuggestions } from './api.js'
 import { C, style } from './theme.js'
 import { IconRefresh } from './icons.js'
+import { ModelRuntimeStatus } from './ModelRuntimeStatus.js'
 import type { Translate } from './locales.js'
 
 interface PanelProps {
@@ -186,7 +187,7 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
     chunkSize: { min: 1, int: true },
     chunkOverlap: { min: 0, int: true },
     topK: { min: 1, int: true },
-    embeddingBatchSize: { min: 1, int: true },
+    embeddingBatchSize: { min: 1, max: 512, int: true },
     siblingChunks: { min: 0, max: 3, int: true },
     chunkTokenLimit: { min: 0, int: true },
     urlRefreshHours: { min: 0, int: true },
@@ -476,13 +477,13 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                       </div>
                     </>
                   )}
-                  {localStatus.status === 'ready' && (
-                    <span style={{ color: C.success }}>✓ {t('localModelReady')}</span>
+                  {(localStatus.status === 'ready' || localStatus.runtimeState === 'loading' || localStatus.runtimeState === 'error') && (
+                    <ModelRuntimeStatus model={localStatus} t={t} />
                   )}
                   {localStatus.status === 'error' && (
                     <span style={{ color: C.danger }} title={localStatus.message}>✕ {t('localModelError')}</span>
                   )}
-                  {localStatus.status === 'idle' && (
+                  {localStatus.status === 'idle' && localStatus.runtimeState !== 'loading' && localStatus.runtimeState !== 'error' && (
                     <span style={{ color: C.muted }}>{t('localModelHint')}</span>
                   )}
                 </div>
@@ -543,6 +544,27 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                 />
               </div>
             </>
+          )}
+          {values.embeddingProvider !== 'none' && (
+            <div style={{ marginTop: 10 }}>
+              <label style={style.label} htmlFor={`embedding-batch-${base.id}`}>{t('batchSize')}</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  id={`embedding-batch-${base.id}`}
+                  style={{ ...style.input, width: 100 }}
+                  type="number" min={1} max={512} step={1}
+                  value={values.embeddingBatchSize}
+                  onChange={e => patchNumber('embeddingBatchSize', e.target.value)}
+                />
+                {[1, 4, 8].map(size => (
+                  <button key={size} type="button" style={style.button} onClick={() => patch({ embeddingBatchSize: size })}>{size}</button>
+                ))}
+              </div>
+              <div style={style.hint}>{t('embeddingBatchHint')}</div>
+              {values.embeddingProvider === 'local' && (
+                <div style={style.hint}>{t('embeddingEffectiveBatch')}: {Math.min(values.embeddingBatchSize, 8)}</div>
+              )}
+            </div>
           )}
           {needsRebuild && (
             <div style={{ marginTop: 10 }}>

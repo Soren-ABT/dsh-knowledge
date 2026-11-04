@@ -35,6 +35,9 @@ export interface LocalEmbedProgress {
   readonly status: 'idle' | 'downloading' | 'ready' | 'error'
   readonly progress: number
   readonly message: string
+  readonly runtimeState?: 'unloaded' | 'loading' | 'loaded' | 'error'
+  readonly loadStartedAt?: number
+  readonly loadDurationMs?: number
 }
 
 export type LocalEmbedResponse = LocalEmbedSuccess | LocalEmbedFailure
@@ -68,4 +71,7 @@ export function isLocalEmbedProgress(value: unknown): value is LocalEmbedProgres
     && ['idle', 'downloading', 'ready', 'error'].includes(String(event.status))
     && typeof event.progress === 'number'
     && typeof event.message === 'string'
+    && (event.runtimeState === undefined || ['unloaded', 'loading', 'loaded', 'error'].includes(event.runtimeState))
+    && (event.loadStartedAt === undefined || Number.isFinite(event.loadStartedAt))
+    && (event.loadDurationMs === undefined || Number.isFinite(event.loadDurationMs) && event.loadDurationMs >= 0)
 }

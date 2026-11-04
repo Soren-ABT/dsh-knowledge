@@ -33,6 +33,9 @@ concurrency:
 env:
   DSH_COMMIT: b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
   DSH_TELEMETRY_DISABLED: '1'
+  # These runners use CPU inference; CPU binaries are already bundled. This
+  # flag is supported by both the OCR (1.21) and embedding (1.30) runtimes.
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
 
 jobs:
   quality:

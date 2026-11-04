@@ -25,6 +25,7 @@ import {
 } from './embed-protocol.js'
 import { loadLocalReranker, rerankInLocalProcess } from './local-rerank.js'
 import { ensureWellFormed } from './text-safety.js'
+import { isEmbeddingOutOfMemory } from './embedding-batch.js'
 import type { EmbeddingProvider } from './types.js'
 
 // Route every global fetch (including transformers.js model downloads) through
@@ -145,6 +146,10 @@ export interface LocalModelStatus {
   /** 0–100 download progress while `downloading`. */
   progress: number
   message: string
+  /** Runtime residency, independent of downloaded/validated model files. */
+  runtimeState?: 'unloaded' | 'loading' | 'loaded' | 'error'
+  loadStartedAt?: number
+  loadDurationMs?: number
 }
 
 /** Persistent evidence that a local embedding model was opened in the
@@ -182,12 +187,12 @@ const localModelStatus = new Map<string, LocalModelStatus>()
 const EMBEDDING_READY_FILE = '.dsh-embedding-ready.json'
 
 export function getLocalModelStatus(modelId: string): LocalModelStatus {
-  return localModelStatus.get(modelId) ?? { model: modelId, status: 'idle', progress: 0, message: '' }
+  return localModelStatus.get(modelId) ?? { model: modelId, status: 'idle', progress: 0, message: '', runtimeState: 'unloaded' }
 }
 
 /** Surface a background download/load failure so the settings poller can show it (never swallow). */
 export function markLocalModelError(modelId: string, message: string): void {
-  localModelStatus.set(modelId, { model: modelId, status: 'error', progress: 0, message })
+  localModelStatus.set(modelId, { ...getLocalModelStatus(modelId), status: 'error', progress: 0, message, runtimeState: 'error' })
 }
 
 /** Whether a model's cached weights are already on disk (a real `.onnx` weight file). */
@@ -301,6 +306,7 @@ let reArmActiveRequest: (() => void) | undefined
 let localActiveModelId: string | null = null
 const localPending = new Map<number, {
   operation: LocalEmbedOperation
+  modelId: string
   expectedCount?: number
   resolve: (value: unknown) => void
   reject: (error: Error) => void
@@ -340,12 +346,17 @@ function ensureLocalWorker(): ChildProcess {
   })
   worker.unref()
   worker.on('message', (message: unknown): void => {
+    if (localWorker !== worker) return
     if (isLocalEmbedProgress(message)) {
       localModelStatus.set(message.modelId, {
+        ...getLocalModelStatus(message.modelId),
         model: message.modelId,
         status: message.status,
         progress: message.progress,
         message: message.message,
+        ...(message.runtimeState !== undefined ? { runtimeState: message.runtimeState } : {}),
+        ...(message.loadStartedAt !== undefined ? { loadStartedAt: message.loadStartedAt } : {}),
+        ...(message.loadDurationMs !== undefined ? { loadDurationMs: message.loadDurationMs } : {}),
       })
       // A download/load can run for minutes (585MB model); each progress
       // report is proof the worker is alive, so keep the idle-release timer
@@ -392,8 +403,14 @@ function ensureLocalWorker(): ChildProcess {
     }
     try {
       if (pending.operation === 'embed') {
-        pending.resolve(validateEmbeddingResponse(message, pending.expectedCount ?? 0))
+        const vectors = validateEmbeddingResponse(message, pending.expectedCount ?? 0)
+        markRuntimeLoaded(pending.modelId)
+        pending.resolve(vectors)
       } else {
+        if (pending.operation === 'load') markRuntimeLoaded(pending.modelId)
+        if (pending.operation === 'release') {
+          localModelStatus.set(pending.modelId, { ...getLocalModelStatus(pending.modelId), runtimeState: 'unloaded' })
+        }
         pending.resolve(undefined)
       }
     } catch (error) {
@@ -405,6 +422,7 @@ function ensureLocalWorker(): ChildProcess {
   const onWorkerFailure = (error: Error): void => {
     // Ignore a superseded worker's late error/exit — a newer worker may be live.
     if (localWorker !== worker) return
+    resetRuntimeStates(error)
     failAllPending(error)
     localWorker = null
     clearIdleTimer()
@@ -429,6 +447,24 @@ function validateEmbeddingResponse(response: LocalEmbedResponse, expectedCount: 
     else if (vector.length !== dimension) throw new Error('local embedding process returned inconsistent vector dimensions')
   }
   return vectors
+}
+
+function markRuntimeLoaded(modelId: string): void {
+  const current = getLocalModelStatus(modelId)
+  localModelStatus.set(modelId, {
+    ...current, status: 'ready', progress: 100, message: '', runtimeState: 'loaded',
+    loadDurationMs: current.runtimeState === 'loading' && current.loadStartedAt !== undefined
+      ? Date.now() - current.loadStartedAt : current.loadDurationMs,
+  })
+}
+
+function resetRuntimeStates(error?: Error): void {
+  for (const [id, state] of localModelStatus) {
+    if (state.runtimeState !== undefined && state.runtimeState !== 'unloaded') {
+      localModelStatus.set(id, { ...state, runtimeState: error === undefined ? 'unloaded' : 'error',
+        ...(error !== undefined ? { message: error.message } : {}) })
+    }
+  }
 }
 
 function armIdleTimer(): void {
@@ -495,10 +531,15 @@ function callWorker(
     armRequestTimer()
     localPending.set(id, {
       operation,
+      modelId: payload.modelId,
       expectedCount: payload.texts?.length,
       resolve: (value) => { clearRequestTimer(); resolve(value) },
       reject: (error) => { clearRequestTimer(); reject(error) },
     })
+    const current = getLocalModelStatus(payload.modelId)
+    if ((operation === 'embed' || operation === 'load') && current.runtimeState !== 'loaded' && current.runtimeState !== 'loading') {
+      localModelStatus.set(payload.modelId, { ...current, runtimeState: 'loading', loadStartedAt: Date.now(), message: '' })
+    }
     localActiveModelId = payload.modelId
     try {
       postToWorker({
@@ -627,6 +668,7 @@ export async function removeLocalModel(modelId: string): Promise<void> {
 
 async function terminateLocalWorker(error: Error): Promise<void> {
   const worker = localWorker
+  resetRuntimeStates(error)
   localWorker = null
   localActiveModelId = null
   clearIdleTimer()
@@ -647,6 +689,7 @@ async function terminateLocalWorker(error: Error): Promise<void> {
 }
 
 function isRecoverableLocalProcessError(error: unknown): boolean {
+  if (isEmbeddingOutOfMemory(error)) return false
   const message = error instanceof Error ? error.message : String(error)
   return /process (?:exited|timed out|is not available)|process_crash|runtime_error/i.test(message)
 }
@@ -663,9 +706,10 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 export async function disposeLocalModelWorker(): Promise<void> {
   clearIdleTimer()
   const worker = localWorker
-  if (worker === null) return
+  if (worker === null) { resetRuntimeStates(); return }
   await withTimeout(callWorker('shutdown', { modelId: localActiveModelId ?? '' }), LOCAL_RELEASE_ACK_TIMEOUT_MS).catch(() => {})
   if (localWorker === worker) await terminateLocalWorker(new Error('local embedding process disposed'))
+  resetRuntimeStates()
 }
 
 /** Whether any local model download is currently in flight (migration guard). */

@@ -13,7 +13,7 @@ import type {} from '../knowledge/index.js'
 import { estimateContextTokens, serializeContextWindow } from '../knowledge/context-protocol.js'
 import { ensureWellFormed, snapSliceEnd, snapSliceStart } from '../knowledge/text-safety.js'
 import type { KnowledgeService } from '../knowledge/index.js'
-import type { ContextWindow, SearchHit, SearchResult } from '../knowledge/types.js'
+import type { ContextWindow, DirectorySyncItem, DirectorySyncResult, SearchHit, SearchResult } from '../knowledge/types.js'
 import type { DocumentEvidence, DocumentProcessingInfo, DocumentSourceSpan } from '../knowledge/processing-types.js'
 import { sourceSpanLabel } from '../knowledge/source-spans.js'
 
@@ -22,12 +22,45 @@ export const SEARCH_RENDER_MAX_TOKENS = 8192
 
 const blockTypes = ['text', 'heading', 'table', 'equation', 'image', 'caption', 'code', 'list', 'unknown'] as const
 
+const directorySyncItemSchema = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    relativePath: { type: 'string', required: true },
+    kind: { type: 'string', enum: ['file', 'directory'], required: true },
+    documentId: { type: 'string' },
+    action: { type: 'string', enum: ['created', 'updated', 'unchanged', 'deleted', 'failed'], required: true },
+    error: { type: 'object', additionalProperties: false, properties: {
+      code: { type: 'string', required: true }, message: { type: 'string', required: true },
+    } },
+  },
+} as const
+
+const directorySyncSchema = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    sourceId: { type: 'string', required: true },
+    status: { type: 'string', enum: ['synced', 'unchanged', 'partial'], required: true },
+    created: { type: 'number', required: true }, updated: { type: 'number', required: true },
+    unchanged: { type: 'number', required: true }, deleted: { type: 'number', required: true }, failed: { type: 'number', required: true },
+    items: { type: 'array', items: directorySyncItemSchema, required: true },
+  },
+} as const
+
 type MutableOutput<T> = T extends readonly (infer U)[] ? MutableOutput<U>[]
   : T extends object ? { -readonly [K in keyof T]: MutableOutput<T[K]> } : T
 
 /** Tool schemas use mutable JSON arrays; keep immutable service snapshots isolated. */
 function toolOutput<T>(value: T): MutableOutput<T> {
   return structuredClone(value) as MutableOutput<T>
+}
+
+/** Failed new files have no document id; omit absent fields for strict JSON tools. */
+function directoryItemsOutput(items: readonly DirectorySyncItem[]): MutableOutput<DirectorySyncItem>[] {
+  return items.map(({ documentId, error, ...item }) => ({
+    ...item,
+    ...(documentId !== undefined ? { documentId } : {}),
+    ...(error !== undefined ? { error: { ...error } } : {}),
+  }))
 }
 
 const sourceBoxSchema = {
@@ -626,16 +659,18 @@ export function apply(ctx: Context): void {
                 title: { type: 'string', required: true },
                 chunkCount: { type: 'number', required: true },
                 charCount: { type: 'number', required: true },
+                sourceType: { type: 'string', enum: ['text', 'file', 'url', 'directory'], required: true },
+                sourcePath: { type: 'string' },
               },
             },
           },
         },
       },
-      render: (_args, value: { documents: Array<{ id: string; title: string; chunkCount: number }> }) => {
+      render: (_args, value: { documents: Array<{ id: string; title: string; chunkCount: number; sourceType: string; sourcePath?: string }> }) => {
         if (value.documents.length === 0) return [{ type: 'text', text: 'no documents in this base' }]
         // Expose the docId (knowledge_read_document needs it; without it the
         // model loops between search and list trying to find an id).
-        return modelText(value.documents.map(d => `- ${d.title} (${d.chunkCount} chunks) [id=${d.id}]`).join('\n'))
+        return modelText(value.documents.map(d => `- ${d.title} (${d.sourceType}, ${d.chunkCount} chunks) [id=${d.id}]${d.sourceType === 'directory' && d.sourcePath !== undefined ? ` [source=${d.sourcePath}]` : ''}`).join('\n'))
       },
     },
     async execute(args) {
@@ -646,6 +681,8 @@ export function apply(ctx: Context): void {
           title: doc.title,
           chunkCount: doc.chunkCount,
           charCount: doc.charCount,
+          sourceType: doc.sourceType,
+          ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
         })),
       }
     },
@@ -954,6 +991,9 @@ export function apply(ctx: Context): void {
     name: 'knowledge_reindex_document',
     description: 'Re-index one document (or a whole directory subtree): re-read its source '
       + '(raw file when present), re-chunk, and re-embed only what changed. '
+      + 'After publishing or editing a local Wiki, call this on its directory id with mode omitted: '
+      + 'a path-bound directory scans disk for added, changed and deleted files. Check sync.failed and sync.items. '
+      + 'Uploaded folders without sourcePath only rebuild their stored files; bind a server path in the management panel first. '
       + 'Use after a parser upgrade, a chunk-size change, or to repair a failed embedding.',
     parameters: {
       baseId: { type: 'string', required: true, description: 'Knowledge base id (used for validation).' },
@@ -968,9 +1008,13 @@ export function apply(ctx: Context): void {
           id: { type: 'string', required: true },
           title: { type: 'string', required: true },
           chunkCount: { type: 'number', required: true },
+          sync: directorySyncSchema,
         },
       },
-      render: (_args, value: { title: string; chunkCount: number }) => modelText(`reindexed "${value.title}" (${value.chunkCount} chunks)`),
+      render: (_args, value: { title: string; chunkCount: number; sync?: DirectorySyncResult }) => modelText(value.sync === undefined
+        ? `reindexed "${value.title}" (${value.chunkCount} chunks)`
+        : `directory "${value.title}": ${value.sync.status}; created=${value.sync.created}, updated=${value.sync.updated}, deleted=${value.sync.deleted}, unchanged=${value.sync.unchanged}, failed=${value.sync.failed}`
+          + value.sync.items.filter(item => item.action === 'failed').map(item => `\n${item.relativePath}: ${item.error?.message ?? 'sync failed'}`).join('')),
     },
     async execute(args) {
       const doc = requireDocumentEnabled(args.documentId)
@@ -978,7 +1022,8 @@ export function apply(ctx: Context): void {
         throw new Error(`document "${doc.title}" does not belong to knowledge base ${args.baseId}`)
       }
       const reindexed = await knowledge.reindexDocument(args.documentId, { mode: args.mode })
-      return { id: reindexed.id, title: reindexed.title, chunkCount: reindexed.chunkCount }
+      return { id: reindexed.id, title: reindexed.title, chunkCount: reindexed.chunkCount,
+        ...(reindexed.sync !== undefined ? { sync: { ...reindexed.sync, items: directoryItemsOutput(reindexed.sync.items) } } : {}) }
     },
   }))
 
@@ -990,15 +1035,17 @@ export function apply(ctx: Context): void {
       baseId: { type: 'string', required: true, description: 'Knowledge base id to reindex.' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: { reindexed: { type: 'number', required: true } } },
-      render: (_args, value: { reindexed: number }) => [
-        { type: 'text', text: `reindexed ${value.reindexed} document(s)` },
-      ],
+      schema: { type: 'object', additionalProperties: false, properties: {
+        reindexed: { type: 'number', required: true }, skipped: { type: 'number', required: true }, failed: { type: 'number', required: true },
+        items: { type: 'array', items: directorySyncItemSchema, required: true },
+      } },
+      render: (_args, value: { reindexed: number; skipped: number; failed: number }) => modelText(
+        `reindexed ${value.reindexed} document(s); skipped=${value.skipped}, failed=${value.failed}`),
     },
     async execute(args) {
       requireBaseEnabled(args.baseId)
       const result = await knowledge.reindexBase(args.baseId)
-      return { reindexed: result.reindexed }
+      return { ...result, items: directoryItemsOutput(result.items) }
     },
   }))
 
