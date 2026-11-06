@@ -513,7 +513,7 @@ Global embedding model changes first check every base that inherits the changed 
 | `similarityThreshold` | `0` | Minimum result score, from 0 to 1 |
 | `mmrDiversity` | `0` | MMR diversity; `0` disables it |
 | `rrfVectorWeight` | `1` | Vector-lane weight in hybrid RRF fusion |
-| `embeddingBatchSize` | `32` | Texts per batch, editable in base settings; use 1 for CPU/limited memory. Both ordinary and semantic local calls cap batches at 8 and reduce them down to 1 on explicit allocation failures |
+| `embeddingBatchSize` | `32` | Texts per batch, editable in base settings; use 1 for CPU/limited memory. Both ordinary and semantic local calls cap batches at 8 and reduce them down to 1 on explicit allocation failures. When a remote provider rejects the input count, both chunking modes halve the actual batch and reuse the smaller size for subsequent batches |
 | `siblingChunks` | `1` | Adjacent chunks per side, range 0–3; `0` still produces an anchor-only window |
 | `semanticChunk` | `false` | Merge semantically similar adjacent paragraphs |
 | `semanticChunkThreshold` | `0.75` | Cosine threshold for semantic chunking |

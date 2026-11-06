@@ -11,6 +11,15 @@ export function isEmbeddingOutOfMemory(error: unknown): boolean {
   return /out[ -]?of[ -]?memory|allocation failed|failed to allocate|bad_alloc/i.test(message)
 }
 
+/** A provider-side cap on the number of inputs per request (not memory
+ *  pressure). DashScope/Bailian-compatible endpoints reject batches above
+ *  20–25 with "batch size is invalid … input.contents"; the caller retries the
+ *  same slice with a smaller batch. */
+export function isEmbeddingBatchLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /batch[ _-]?size|too many (?:inputs|texts)/i.test(message)
+}
+
 /** Retry only the failed slice at a smaller size; preserve order and completed work. */
 export async function embedWithMemoryFallback(
   texts: readonly string[],

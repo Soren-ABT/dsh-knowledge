@@ -515,7 +515,7 @@ dsh-knowledge 的定位是“一体化文档知识库”。下面的对照用于
 | `similarityThreshold` | `0` | 结果最低相似度，范围 0–1 |
 | `mmrDiversity` | `0` | MMR 多样性，`0` 表示关闭 |
 | `rrfVectorWeight` | `1` | hybrid 模式中向量召回的 RRF 权重 |
-| `embeddingBatchSize` | `32` | 每批 embedding 文本数；可在知识库设置中调整，CPU/低内存建议 1。本地普通和语义分块均最多 8；明确的内存分配错误会逐级降批到 1 |
+| `embeddingBatchSize` | `32` | 每批 embedding 文本数；可在知识库设置中调整，CPU/低内存建议 1。本地普通和语义分块均最多 8；明确的内存分配错误会逐级降批到 1。远程服务返回输入条数超限时，普通和语义分块都会按实际批次减半重试；后续批次沿用较小值 |
 | `siblingChunks` | `1` | 每侧相邻 chunk 数，范围 0–3；`0` 仍生成 anchor-only 窗口 |
 | `semanticChunk` | `false` | 合并相邻相似语义段落 |
 | `semanticChunkThreshold` | `0.75` | 语义分块余弦阈值 |
