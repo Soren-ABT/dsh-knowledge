@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix #62: halve remote embedding batches when a provider rejects the input count, including ordinary and semantic chunking. Retain completed batches and input order, reuse the reduced size for the rest of the document, and stop if a single input is rejected. Third-party OpenAI-compatible endpoints may accept fewer than the default 32 inputs (DashScope/Bailian commonly accept 20–25); review their limits and optionally lower `embeddingBatchSize` in base settings. After upgrading, rebuild documents whose embeddings previously failed; no storage migration is required.
 - Address the settings half of #59: expose global retrieval defaults, search mode, and the vector threshold with reranking off. Keep the effective-settings summary on saved values. Global embedding changes validate every affected base before saving: populated bases with a model require rebuild, while eligible lexical-only bases backfill vectors in the background. Preserve per-base overrides and reject the entire update when a base cannot switch; no storage migration is required.
 - Upgrade `undici` to 7.30.1 to resolve GHSA-xjj6-f33q-929c, GHSA-4w7w-5xrc-9h26, GHSA-2m5v-pch6-74hx and GHSA-qrxm-fqhp-jwvm. Keep the strict production audit gate and skip optional CUDA downloads on CPU-only CI runners.
 - Address #57: expose per-base embedding batch sizes with CPU-friendly presets, apply the same local cap to semantic and ordinary chunking, and reduce batches on explicit allocation failures without retrying the original oversized batch.

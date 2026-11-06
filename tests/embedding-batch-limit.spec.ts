@@ -68,13 +68,13 @@ afterEach(async () => {
   }
 })
 
-async function mount(): Promise<KnowledgeService> {
+async function mount(overrides: Partial<Config> = {}): Promise<KnowledgeService> {
   const dir = await mkdtemp(join(tmpdir(), 'kb-i62-'))
   vi.stubEnv('DSH_HOME', dir)
   const ctx = new Context()
   ctx.provide('webServer', { routes: [], register: () => () => {} })
   ctx.provide('storageDomain', { open: async () => fakeDomain() })
-  const fiber = await ctx.plugin(KnowledgeService, { ...TEST_CONFIG, chunkStorePath: join(dir, 'chunks.sqlite') })
+  const fiber = await ctx.plugin(KnowledgeService, { ...TEST_CONFIG, ...overrides, chunkStorePath: join(dir, 'chunks.sqlite') })
   homes.push({ dispose: () => fiber.dispose(), dir })
   return ctx.get('knowledge') as KnowledgeService
 }
@@ -83,6 +83,22 @@ const paragraphs = (count: number): string => Array.from({ length: count }, (_, 
   `第 ${index + 1} 段：这是用于测试嵌入批次的段落内容，长度足够形成独立分块。`).join('\n\n')
 
 const storeOf = (service: KnowledgeService): Store => (service as unknown as { store: Store }).store
+
+function stubCappedEndpoint(limit: number | ((request: number) => number)) {
+  const calls: Array<{ inputs: string[]; ok: boolean }> = []
+  vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit | undefined) => {
+    const { input } = JSON.parse(String(init?.body)) as { input: string[] }
+    const cap = typeof limit === 'number' ? limit : limit(calls.length)
+    const ok = input.length <= cap
+    calls.push({ inputs: input, ok })
+    return new Response(JSON.stringify(ok
+      ? { data: input.map(text => ({ embedding: [Number(/第 (\d+) 段/.exec(text)?.[1] ?? 1), 1, 0] })) }
+      : { error: { message: `batch size is invalid, it should not be larger than ${cap}: input.contents` } }), {
+      status: ok ? 200 : 400, headers: { 'content-type': 'application/json' },
+    })
+  }))
+  return calls
+}
 
 describe('remote embedding batch caps (issue #62)', () => {
   it('halves the slice and completes the document when the endpoint caps inputs at 20', async () => {
@@ -121,8 +137,67 @@ describe('remote embedding batch caps (issue #62)', () => {
 
     // One over-cap request, then the retried halves — no 3× retry storm of the
     // same oversized batch (the old behavior), and no repeated failures.
-    // 32 halves to 16, so the 30-chunk document lands as 16 + 14.
+    // The actual 30-input request halves to 15, then stays at 15.
     expect(calls.filter(call => !call.ok)).toEqual([{ size: 30, ok: false }])
-    expect(calls.filter(call => call.ok).map(call => call.size)).toEqual([16, 14, 10])
+    expect(calls.filter(call => call.ok).map(call => call.size)).toEqual([15, 15, 10])
   }, 120_000)
+
+  it('keeps semantic chunking active when segment requests exceed the endpoint cap', async () => {
+    const calls = stubCappedEndpoint(20)
+    const service = await mount({ semanticChunk: true })
+    const base = await service.createBase({ name: 'semantic-cap' })
+    const doc = await service.addTextDocument({ baseId: base.id, title: 'semantic', content: paragraphs(30) })
+    await service.waitForIdle()
+
+    expect(calls.map(call => call.inputs.length)).toEqual([30, 15, 15])
+    expect(calls.filter(call => call.ok).flatMap(call => call.inputs)).toEqual(paragraphs(30).split('\n\n'))
+    expect(storeOf(service).getDocument(doc.id)?.embeddingError).toBeUndefined()
+    expect(storeOf(service).listChunksByDoc(doc.id).every(chunk => chunk.embedding !== undefined)).toBe(true)
+  })
+
+  it('reduces the actual tail batch without resending the same oversized slice', async () => {
+    const calls = stubCappedEndpoint(1)
+    const service = await mount({ embeddingBatchSize: 128 })
+    const base = await service.createBase({ name: 'short-tail' })
+    const doc = await service.addTextDocument({ baseId: base.id, title: 'tail', content: paragraphs(3) })
+    await service.waitForIdle()
+
+    expect(calls.map(call => call.inputs.length)).toEqual([3, 1, 1, 1])
+    expect(storeOf(service).getDocument(doc.id)?.embeddingError).toBeUndefined()
+    expect(storeOf(service).listChunksByDoc(doc.id).filter(chunk => chunk.embedding !== undefined)).toHaveLength(3)
+  })
+
+  it('stops immediately if the provider rejects even one input', async () => {
+    const calls = stubCappedEndpoint(0)
+    const service = await mount()
+    const base = await service.createBase({ name: 'single-failure' })
+    const doc = await service.addTextDocument({ baseId: base.id, title: 'single', content: paragraphs(1) })
+    await service.waitForIdle()
+
+    expect(calls.map(call => call.inputs.length)).toEqual([1])
+    expect(storeOf(service).getDocument(doc.id)?.embeddingError).toContain('batch size is invalid')
+    expect(storeOf(service).listChunksByDoc(doc.id)).toHaveLength(1)
+    expect(storeOf(service).listChunksByDoc(doc.id)[0].embedding).toBeUndefined()
+  })
+
+  it('preserves completed batches and vector order when the endpoint lowers its cap mid-import', async () => {
+    const calls = stubCappedEndpoint(request => request === 0 ? 32 : 5)
+    const service = await mount()
+    const base = await service.createBase({ name: 'dynamic-cap' })
+    const doc = await service.addTextDocument({ baseId: base.id, title: 'dynamic', content: paragraphs(70) })
+    await service.waitForIdle()
+
+    expect(calls.filter(call => !call.ok).map(call => call.inputs.length)).toEqual([32, 16, 8])
+    const successfulInputs = calls.filter(call => call.ok).flatMap(call => call.inputs)
+    const chunks = storeOf(service).listChunksByDoc(doc.id)
+    expect(chunks).toHaveLength(70)
+    expect(successfulInputs).toHaveLength(70)
+    expect(storeOf(service).getDocument(doc.id)?.embeddingError).toBeUndefined()
+    for (const [index, chunk] of chunks.entries()) {
+      expect(successfulInputs[index]).toContain(chunk.text)
+      const value = index + 1
+      expect(chunk.embedding?.[0]).toBeCloseTo(value / Math.hypot(value, 1))
+      expect(chunk.embedding?.[1]).toBeCloseTo(1 / Math.hypot(value, 1))
+    }
+  })
 })

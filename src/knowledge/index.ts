@@ -4064,11 +4064,18 @@ export class KnowledgeService extends Service {
       if (segments.length > 0 && config.embeddingProvider !== 'none') {
         try {
           const vectors: Array<number[] | undefined> = []
-          const batchSize = embeddingBatchSize(config.embeddingProvider, config.embeddingBatchSize)
-          for (let i = 0; i < segments.length; i += batchSize) {
+          let batchSize = embeddingBatchSize(config.embeddingProvider, config.embeddingBatchSize)
+          for (let i = 0; i < segments.length;) {
             const batch = segments.slice(i, i + batchSize)
-            const embedded = await this.embedWithRetry(config, batch.map(segment => segment.text), signal)
+            let embedded: number[][]
+            try {
+              embedded = await this.embedWithRetry(config, batch.map(segment => segment.text), signal)
+            } catch (error) {
+              batchSize = this.reduceEmbeddingBatchSize(error, batch.length, signal)
+              continue
+            }
             for (const vector of embedded) vectors.push(vector)
+            i += batch.length
           }
           merged = mergeSemanticSegments(segments, vectors, config.chunkSize, config.semanticChunkThreshold)
         } catch (error) {
@@ -4169,18 +4176,8 @@ export class KnowledgeService extends Service {
           try {
             vectors = await this.embedWithRetry(config, batchTexts, signal)
           } catch (error) {
-            // Some OpenAI-compatible providers cap the number of inputs per
-            // request below the configured batch size (DashScope/Bailian
-            // commonly cap at 20–25). Halve this slice and retry it instead of
-            // failing the whole document; the smaller size then serves the
-            // remaining batches too.
-            if (batchSize > 1 && isEmbeddingBatchLimitError(error)) {
-              const reduced = Math.max(1, Math.floor(batchSize / 2))
-              this.ctx.logger.warn(`knowledge: embedding provider rejected batch size ${batchSize}, retrying with ${reduced}: ${safeErrorMessage(error)}`)
-              batchSize = reduced
-              continue
-            }
-            throw error
+            batchSize = this.reduceEmbeddingBatchSize(error, batch.length, signal)
+            continue
           }
           // Same-width guarantee across the whole batch (a provider mixing
           // widths would poison every vector comparison in the store).
@@ -4244,6 +4241,15 @@ export class KnowledgeService extends Service {
       }
     }
     return { chunks, embeddingError, embeddingErrorCode }
+  }
+
+  /** Halve a rejected input-count batch; propagate cancellation and unsplittable errors. */
+  private reduceEmbeddingBatchSize(error: unknown, failedSize: number, signal?: AbortSignal): number {
+    signal?.throwIfAborted()
+    if (failedSize <= 1 || !isEmbeddingBatchLimitError(error)) throw error
+    const reduced = Math.max(1, Math.floor(failedSize / 2))
+    this.ctx.logger.warn(`knowledge: embedding provider rejected batch size ${failedSize}, retrying with ${reduced}: ${safeErrorMessage(error)}`)
+    return reduced
   }
 
   /** Embed one batch through the configured provider (empty input → empty output). */
