@@ -1,11 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
-import { embeddingBatchSize, embedWithMemoryFallback, isEmbeddingOutOfMemory } from '../src/knowledge/embedding-batch.js'
+import { embeddingBatchSize, embedWithMemoryFallback, isEmbeddingBatchLimitError, isEmbeddingOutOfMemory } from '../src/knowledge/embedding-batch.js'
 
 describe('local embedding memory policy', () => {
   it('caps local calls without reducing remote provider batches', () => {
     expect(embeddingBatchSize('local', 32)).toBe(8)
     expect(embeddingBatchSize('local', 1)).toBe(1)
     expect(embeddingBatchSize('openai', 32)).toBe(32)
+  })
+
+  it('recognizes provider input-count caps but not unrelated 400s', () => {
+    expect(isEmbeddingBatchLimitError(new Error(
+      '<400> InternalError.Algo.InvalidParameter: Value error, batch size is invalid, it should not be larger than 25.: input.contents',
+    ))).toBe(true)
+    expect(isEmbeddingBatchLimitError(new Error('too many inputs'))).toBe(true)
+    expect(isEmbeddingBatchLimitError(new Error('embedding request failed: HTTP 401 invalid api key'))).toBe(false)
+    expect(isEmbeddingBatchLimitError(new Error('invalid model configuration'))).toBe(false)
   })
 
   it('reduces only failed slices and preserves every vector in input order', async () => {

@@ -25,7 +25,7 @@ import { processingBudget } from './processor-transport.js'
 import { composeContextWindow, estimateContextTokens, serializeContextWindow } from './context.js'
 import { snapSliceEnd, snapSliceStart } from './text-safety.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
-import { embeddingBatchSize, embedWithMemoryFallback, isEmbeddingOutOfMemory } from './embedding-batch.js'
+import { embeddingBatchSize, embedWithMemoryFallback, isEmbeddingBatchLimitError, isEmbeddingOutOfMemory } from './embedding-batch.js'
 import { DirectorySyncScheduler } from './directory-sync-scheduler.js'
 import type { ConfigOverrides } from './domain.js'
 import {
@@ -4158,14 +4158,30 @@ export class KnowledgeService extends Service {
         // persisted state — hash reuse re-embeds only the missing batches.
         // Bound the isolated local process's forward-pass memory as well as
         // honoring smaller user-configured batches.
-        const batchSize = embeddingBatchSize(config.embeddingProvider, config.embeddingBatchSize)
-        for (let i = 0; i < need.length; i += batchSize) {
+        let batchSize = embeddingBatchSize(config.embeddingProvider, config.embeddingBatchSize)
+        for (let i = 0; i < need.length;) {
           const batch = need.slice(i, i + batchSize)
           const batchTexts = needTexts.slice(i, i + batchSize)
           // Cherry's job retry policy (3 attempts, exponential backoff): a
           // transient provider/network failure retries the batch before the
           // import degrades to lexical-only.
-          const vectors = await this.embedWithRetry(config, batchTexts, signal)
+          let vectors: number[][]
+          try {
+            vectors = await this.embedWithRetry(config, batchTexts, signal)
+          } catch (error) {
+            // Some OpenAI-compatible providers cap the number of inputs per
+            // request below the configured batch size (DashScope/Bailian
+            // commonly cap at 20–25). Halve this slice and retry it instead of
+            // failing the whole document; the smaller size then serves the
+            // remaining batches too.
+            if (batchSize > 1 && isEmbeddingBatchLimitError(error)) {
+              const reduced = Math.max(1, Math.floor(batchSize / 2))
+              this.ctx.logger.warn(`knowledge: embedding provider rejected batch size ${batchSize}, retrying with ${reduced}: ${safeErrorMessage(error)}`)
+              batchSize = reduced
+              continue
+            }
+            throw error
+          }
           // Same-width guarantee across the whole batch (a provider mixing
           // widths would poison every vector comparison in the store).
           const widths = new Set(vectors.map(vector => vector.length))
@@ -4185,7 +4201,9 @@ export class KnowledgeService extends Service {
             done.push(chunks[index])
           }
           if (guardedOnBatch !== undefined) await guardedOnBatch(done)
-          this.indexing.set(docId, { baseId, title, phase: 'embedding', total: need.length, progress: Math.round((Math.min(i + batch.length, need.length) / need.length) * 100), controller: taskController })        }
+          this.indexing.set(docId, { baseId, title, phase: 'embedding', total: need.length, progress: Math.round((Math.min(i + batch.length, need.length) / need.length) * 100), controller: taskController })
+          i += batch.length
+        }
       } catch (error) {
         if (isMetadataWriteFailure(error)) throw error
         embeddingError = error instanceof Error ? error.message : String(error)
@@ -4262,7 +4280,10 @@ export class KnowledgeService extends Service {
       try {
         return await this.embedTextsOnce(config, texts, signal)
       } catch (error) {
-        if (isEmbeddingOutOfMemory(error)) throw error
+        // A provider input-count cap is handled by the caller, which retries
+        // the same slice with a smaller batch; OOM is handled inside the local
+        // batch fallback. Retrying either unchanged would only repeat it.
+        if (isEmbeddingOutOfMemory(error) || isEmbeddingBatchLimitError(error)) throw error
         if (attempt >= EMBED_MAX_ATTEMPTS) throw error
         const delay = Math.min(EMBED_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), EMBED_RETRY_MAX_DELAY_MS)
         attempt += 1
