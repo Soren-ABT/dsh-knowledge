@@ -76,7 +76,7 @@ Lexical retrieval works without downloading a model. Scanned-document OCR, local
 
 ```bash
 # Tarball from GitHub Releases or npm pack
-dsh plugin --profile <name> add ./dsh-knowledge-0.5.2.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.3.tgz
 
 # Local source directory; build it first
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -272,6 +272,18 @@ Filters apply only to the current request. No database migration, reindex, or do
 - Metadata writes for bases, documents, and global configuration share one queue. `EPERM`, `EBUSY`, and `EACCES` receive bounded retries after 20/50/100/200/400 ms, for at most six write attempts. Persistent I/O errors are reported and retain the previous metadata.
 - After a successful startup load, a failed self-healing write warns and skips remaining cleanup, keeping the durable library readable. Background recovery handles each document independently; failure to persist recovery state does not cause an unhandled rejection or terminate the host (#55). No format migration or disabling `resumeInterruptedOnStartup` is required; the host's general `rename` issue still needs an upstream fix.
 - `knowledge.json` contains base names, document records, and configuration; do not delete it as disposable cache. A SQLite-only backup is incomplete: retain storage-domain metadata, SQLite, and `knowledge-raw` together.
+
+---
+
+## v0.5.3 highlights
+
+- **Adaptive embedding batches (#62 / #57):** ordinary and semantic chunking halve the actual rejected batch when a remote endpoint caps input count. Local inference retains its eight-input cap and allocation-error fallback. Settings expose batch sizes and CPU presets; runtime status distinguishes downloaded readiness from memory residency.
+- **Directory sync (#57):** explicitly rescan or rebind a source path, or opt into per-source 5/15/60-minute automatic sync. Existing sources remain manual, and failed files can be retried even when their contents are unchanged.
+- **Global settings and retrieval (#59):** edit global defaults or per-base settings, inspect saved effective configuration, and validate affected bases before global embedding-model changes. Multi-query retrieval applies vector similarity thresholds before RRF fusion to avoid discarding valid results.
+- **Write recovery and dependency security (#55):** serialize metadata writes, retry Windows file-lock errors within a fixed budget, and isolate background recovery failures. Upgrade undici to 7.30.1 while retaining strict production auditing.
+- **Upgrade:** no database migration or library-wide rebuild is required from 0.5.2. After upgrading, rebuild documents whose embeddings previously failed. Back up storage-domain metadata, SQLite and `knowledge-raw` together.
+
+[Read the v0.5.3 release notes](./docs/releases/v0.5.3.md) · [Read the changelog](./CHANGELOG.md)
 
 ---
 

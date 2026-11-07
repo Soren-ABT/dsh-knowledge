@@ -78,7 +78,7 @@ dsh plugin --profile <name> add dsh-knowledge
 
 ```bash
 # GitHub Release 或 npm pack 生成的 tarball
-dsh plugin --profile <name> add ./dsh-knowledge-0.5.2.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.3.tgz
 
 # 本地源码目录，需要先完成构建
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -274,6 +274,18 @@ HTTP `POST /knowledge/search` 在 `filter` 内接受 `excludeDocIds` 和 `titleE
 - 元数据写入（知识库、文档和全局配置）共用一条写入链；`EPERM`、`EBUSY`、`EACCES` 按 20/50/100/200/400 ms 有界重试，最多写入 6 次。持续 I/O 错误会明确报错并保留之前的元数据。
 - 启动成功加载后，自愈写入失败会警告并跳过其余清理，保留可读取的持久库；后台恢复逐条处理失败，恢复状态写入失败也不会产生未处理的拒绝或中止宿主（#55）。无需格式迁移或禁用 `resumeInterruptedOnStartup`；宿主通用 `rename` 问题仍需上游修复。
 - `knowledge.json` 包含库名、文档记录和配置，不是可随意删除的缓存；仅备份 SQLite 并不完整，备份应同时保留 storage domain 元数据、SQLite 和 `knowledge-raw`。
+
+---
+
+## v0.5.3 更新重点
+
+- **嵌入批次自适应（#62 / #57）**：远程接口返回输入条数超限时，普通和语义分块按实际失败批次减半重试；本地推理保留每批最多 8 段及内存不足降批策略。设置页提供批大小与 CPU 预设，运行状态区分下载就绪和内存驻留。
+- **目录同步（#57）**：支持显式重新扫描、路径重新绑定，以及按来源选择 5／15／60 分钟自动同步；既有来源默认保持手动同步，失败文件可在内容未变化时重试。
+- **全局设置与召回（#59）**：提供全局默认值和单库设置入口，显示已保存的生效配置；全局嵌入模型变更先检查受影响的知识库。多查询检索在 RRF 融合前应用向量相似度阈值，避免误删结果。
+- **写入恢复与依赖安全（#55）**：串行化元数据写入，对 Windows 文件占用错误进行有界重试；隔离后台恢复失败。升级 undici 至 7.30.1，保留严格生产依赖审计。
+- **升级方式**：从 0.5.2 升级无需数据库迁移或全库重建；升级后重建此前嵌入失败的文档即可。备份时同时保留 storage domain 元数据、SQLite 和 `knowledge-raw`。
+
+[查看 v0.5.3 发布说明](./docs/releases/v0.5.3.md) · [查看 CHANGELOG](./CHANGELOG.md)
 
 ---
 
