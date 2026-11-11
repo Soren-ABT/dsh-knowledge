@@ -224,14 +224,16 @@ describe('embedding hash reuse (Cherry decision A4)', () => {
     })
     // The shared paragraph is its own block, so it slices into identical
     // chunks in both documents (same title → same context → same search text).
+    // The prefixes stay above the short-block merge threshold so they do not
+    // get folded into the shared paragraph.
     const shared = 'shared paragraph text '.repeat(60)
-    const docA = await service.addTextDocument({ baseId: base.id, title: 'A', content: `AAA\n\n${shared}` })
+    const docA = await service.addTextDocument({ baseId: base.id, title: 'A', content: `AAA ${'a'.repeat(60)}\n\n${shared}` })
     expect(embedTextsMock).toHaveBeenCalled()
 
     // Doc B reuses A's vectors for the shared paragraph; only the 'BBB' block
     // is embedded.
     embedTextsMock.mockClear()
-    const docB = await service.addTextDocument({ baseId: base.id, title: 'A', content: `BBB\n\n${shared}` })
+    const docB = await service.addTextDocument({ baseId: base.id, title: 'A', content: `BBB ${'b'.repeat(60)}\n\n${shared}` })
     expect(embedTextsMock).toHaveBeenCalled()
     const bTexts = embedTextsMock.mock.calls.flatMap(call => call[4])
     expect(bTexts.some(text => text.includes('shared paragraph'))).toBe(false)
@@ -268,7 +270,10 @@ describe('embedding hash reuse (Cherry decision A4)', () => {
       config: { embeddingProvider: 'openai', embeddingBaseUrl: 'http://x', embeddingModel: 'm1', embeddingApiKey: 'k', embeddingBatchSize: 1 },
     })
     // Enough text for several chunks (batchSize 1 → one API call per chunk).
-    const content = 'alpha paragraph\n\nbeta paragraph\n\ngamma paragraph\n\ndelta paragraph'
+    // Each paragraph stays above the short-block merge threshold.
+    const content = ['alpha paragraph', 'beta paragraph', 'gamma paragraph', 'delta paragraph']
+      .map(paragraph => `${paragraph} ${'x'.repeat(60)}`)
+      .join('\n\n')
     await service.addTextDocument({ baseId: base.id, title: 'doc', content })
     const firstEmbeddings = embedTextsMock.mock.calls.flatMap(call => call[4])
     expect(firstEmbeddings.length).toBeGreaterThan(2)

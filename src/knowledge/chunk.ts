@@ -28,6 +28,9 @@ export function normalizeText(text: string): string {
  * characters shared between consecutive chunks. With `smartChunk` (default)
  * blocks are paragraphs and markdown headings; otherwise the text splits on
  * `separator` only. Long blocks are windowed at sentence boundaries.
+ * Markup-only blocks (thematic breaks, environment delimiters, HTML rules) are
+ * dropped, and blocks shorter than MIN_BLOCK_CHARS join a neighbour from the
+ * same heading path so a lone `---` or a two-word line cannot become a chunk.
  * @returns non-empty array of chunks (guaranteed one chunk for non-empty input).
  */
 export function chunkText(
@@ -49,14 +52,15 @@ export function chunkText(
   const safeOverlap = Math.min(Math.round(tokenOverlap * charsPerToken), safeSize - 1)
   const smartChunk = options?.smartChunk ?? true
   const blocks = smartChunk
-    ? splitBlocks(normalized)
+    ? mergeShortBlocks(splitBlocks(normalized), safeSize)
     : [{ text: normalized, heading: undefined }]
   const chunks: ChunkPiece[] = []
   for (const block of blocks) {
     // In delimiter-only mode, split the text on the configured separator first.
     if (!smartChunk) {
       const separator = normalizeSeparator(options?.separator ?? '\n\n')
-      const pieces = block.text.split(separator).map(piece => piece.trim()).filter(piece => piece.length > 0)
+      const pieces = block.text.split(separator).map(piece => piece.trim())
+        .filter(piece => piece.length > 0 && !isSyntaxOnlyBlock(piece))
       for (const piece of pieces) {
         chunks.push(...windowOrKeep(piece, safeSize, safeOverlap, block.heading))
       }
@@ -101,7 +105,8 @@ export function splitSemanticSegments(text: string, options?: { separator?: stri
   const separator = normalizeSeparator(options.separator)
   const out: ChunkPiece[] = []
   for (const block of blocks) {
-    for (const piece of block.text.split(separator).map(piece => piece.trim()).filter(piece => piece.length > 0)) {
+    for (const piece of block.text.split(separator).map(piece => piece.trim())
+      .filter(piece => piece.length > 0 && !isSyntaxOnlyBlock(piece))) {
       out.push({ text: piece, ...(block.heading !== undefined ? { heading: block.heading } : {}) })
     }
   }
@@ -259,7 +264,65 @@ interface Block {
   readonly heading?: string
 }
 
-/** Split into paragraph-level blocks, tracking the active markdown heading path. */
+/** Blocks shorter than this are fragments: they carry too little text to
+ *  retrieve on their own, so they join an adjacent block from the same heading
+ *  path. Separator-only blocks are removed before this step. */
+const MIN_BLOCK_CHARS = 40
+
+/** Lines that consist purely of markup syntax. Deliberately narrow: every
+ *  pattern matches punctuation/control sequences only, never prose, so a
+ *  normal short paragraph is never mistaken for a separator. */
+const SYNTAX_ONLY_LINE: readonly RegExp[] = [
+  /^(?:-[ \t]*){3,}$/,                  // Markdown/AsciiDoc thematic break: ---, - - -
+  /^(?:\*[ \t]*){3,}$/,                 // ***
+  /^(?:_[ \t]*){3,}$/,                  // ___
+  /^<hr\b[^>]*\/?>$/i,                  // HTML <hr>
+  /^[=\-~^"'`#*+_]{4,}$/,               // RST transitions, Org rules, longer rules
+  /^'{3,}$/,                            // AsciiDoc page break
+  /^\|={3,}$/,                          // AsciiDoc table delimiter
+  /^\${2,}$/,                           // LaTeX display-math delimiter
+  /^\\\[$/, /^\\\]$/,                   // LaTeX display-math brackets
+  /^\\(?:begin|end)\{[^{}]*\}(?:\[[^\]]*\])?(?:\{[^{}]*\})*$/, // LaTeX environments
+  /^\\(?:hline|toprule|midrule|bottomrule)$/, // LaTeX rules
+  /^\\cline\{[^{}]*\}$/,
+  /^\.\.\s+[A-Za-z0-9_-]+::$/,          // RST directive marker
+]
+
+/** A block whose every line is markup-only (and which is not indented code). */
+function isSyntaxOnlyBlock(text: string): boolean {
+  // 4+ leading spaces or a tab make this an indented code block in Markdown;
+  // never drop code, even when a line happens to look like a separator.
+  if (text.split('\n').some(line => /^(?: {4,}|\t)/.test(line))) return false
+  const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0)
+  return lines.length > 0 && lines.every(line => SYNTAX_ONLY_LINE.some(pattern => pattern.test(line)))
+}
+
+/** Join short blocks to a neighbour with the same heading path, staying inside
+ *  the chunk budget. This removes the "three-character paragraph" class of
+ *  fragments without touching normal paragraph splitting or crossing a heading
+ *  boundary. */
+function mergeShortBlocks(blocks: readonly Block[], size: number): Block[] {
+  const merged: Block[] = []
+  for (const block of blocks) {
+    const previous = merged[merged.length - 1]
+    if (previous !== undefined
+      && previous.heading === block.heading
+      && (previous.text.length < MIN_BLOCK_CHARS || block.text.length < MIN_BLOCK_CHARS)
+      && previous.text.length + 2 + block.text.length <= size) {
+      merged[merged.length - 1] = {
+        text: `${previous.text}\n\n${block.text}`,
+        ...(previous.heading !== undefined ? { heading: previous.heading } : {}),
+      }
+    } else {
+      merged.push(block)
+    }
+  }
+  return merged
+}
+
+/** Split into paragraph-level blocks, tracking the active markdown heading path.
+ *  Pure markup blocks are dropped here, so both the regular and semantic
+ *  chunking paths share the same separator filter. */
 function splitBlocks(text: string): Block[] {
   const blocks: Block[] = []
   let current = ''
@@ -275,7 +338,7 @@ function splitBlocks(text: string): Block[] {
   }
 
   const flush = (): void => {
-    if (current.trim().length > 0) {
+    if (current.trim().length > 0 && !isSyntaxOnlyBlock(current)) {
       const path = headingPath()
       blocks.push({ text: current.trim(), ...(path !== undefined ? { heading: path } : {}) })
     }

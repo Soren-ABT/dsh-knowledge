@@ -35,8 +35,11 @@ describe('chunkText', () => {
   })
 
   it('splits on paragraph boundaries', () => {
-    const text = 'first paragraph\n\nsecond paragraph\n\nthird paragraph'
-    expect(chunkText(text, 800, 100).map(c => c.text)).toEqual(['first paragraph', 'second paragraph', 'third paragraph'])
+    const first = `first paragraph ${'a'.repeat(60)}`
+    const second = `second paragraph ${'b'.repeat(60)}`
+    const third = `third paragraph ${'c'.repeat(60)}`
+    const text = [first, second, third].join('\n\n')
+    expect(chunkText(text, 800, 100).map(c => c.text)).toEqual([first, second, third])
   })
 
   it('tracks markdown heading paths', () => {

@@ -80,7 +80,9 @@ async function mount(overrides: Partial<Config> = {}): Promise<KnowledgeService>
 }
 
 const paragraphs = (count: number): string => Array.from({ length: count }, (_, index) =>
-  `第 ${index + 1} 段：这是用于测试嵌入批次的段落内容，长度足够形成独立分块。`).join('\n\n')
+  // Keep each paragraph above the short-block merge threshold so these tests
+  // still exercise one chunk per paragraph.
+  `第 ${index + 1} 段：这是用于测试嵌入批次的段落内容，长度足够形成独立分块（补充说明，避免被短块合并）。`).join('\n\n')
 
 const storeOf = (service: KnowledgeService): Store => (service as unknown as { store: Store }).store
 

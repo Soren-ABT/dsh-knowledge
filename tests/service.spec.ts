@@ -144,11 +144,16 @@ describe('KnowledgeService', () => {
   it('attaches sibling chunks as context around a search hit', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'siblings' })
-    // Three paragraph blocks → three chunks (smart chunking splits on blanks).
+    // Three paragraph blocks → three chunks (smart chunking splits on blanks;
+    // each paragraph stays above the short-block merge threshold).
     await service.addTextDocument({
       baseId: base.id,
       title: 'report',
-      content: 'first paragraph about costs\n\nsecond paragraph about revenue targets\n\nthird paragraph about profits',
+      content: [
+        `first paragraph about costs ${'a'.repeat(40)}`,
+        `second paragraph about revenue targets ${'b'.repeat(40)}`,
+        `third paragraph about profits ${'c'.repeat(40)}`,
+      ].join('\n\n'),
     })
     const result = await service.search({ query: 'revenue', baseId: base.id })
     expect(result.hits.length).toBeGreaterThan(0)
