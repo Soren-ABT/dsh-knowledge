@@ -56,7 +56,7 @@ import type { RankedHit } from './retrieval.js'
 import { rerankCandidates, rerankErrorDetail, rerankTechnicalMessage } from './rerank.js'
 import { hashEmbeddingText, resolveChunkStorePath } from './chunkdb.js'
 import type { RetrievalDocumentFilter } from './chunkdb.js'
-import { openStore, StorageUnavailableError } from './store.js'
+import { completedChunkState, hasCompletedEmptyIndex, openStore, StorageUnavailableError } from './store.js'
 import type { StorageDomainFacility, Store } from './store.js'
 import { isMetadataWriteFailure } from './metadata-write.js'
 import {
@@ -585,7 +585,7 @@ export class KnowledgeService extends Service {
       const { incomplete: _incomplete, embeddingError: _error, errorCode: _code, ...rest } = candidate
       await store.commitDocumentGeneration({ ...rest, processing: processed.processing, rawText: processed.text,
         contentHash: sha256(processed.text), charCount: processed.text.length, tokenCount: estimateTokens(processed.text),
-        chunkCount: result.chunks.length, updatedAt: Date.now(),
+        ...completedChunkState(result.chunks.length), updatedAt: Date.now(),
         ...(result.embeddingError !== undefined ? { embeddingError: result.embeddingError, errorCode: result.embeddingErrorCode } : {}),
       }, result.chunks)
     } finally { this.indexing.delete(previous.id); this.processingProgress.delete(previous.id) }
@@ -1831,7 +1831,7 @@ export class KnowledgeService extends Service {
         contentHash: sha256(rebuilt.text),
         charCount: rebuilt.text.length,
         tokenCount: estimateTokens(rebuilt.text),
-        chunkCount: chunks.length,
+        ...completedChunkState(chunks.length),
         ...(embeddingError !== undefined
           ? { embeddingError, ...(embeddingErrorCode !== undefined ? { errorCode: embeddingErrorCode } : {}) }
           : {}),
@@ -2728,7 +2728,7 @@ export class KnowledgeService extends Service {
       if (doc.sourceType !== 'directory') {
         if (doc.embeddingError !== undefined) status = 'failed'
         else if (active !== undefined) status = 'processing'
-        else if (embedded) status = 'completed'
+        else if (embedded || hasCompletedEmptyIndex(doc)) status = 'completed'
       }
       return {
         id: doc.id,
@@ -4018,7 +4018,7 @@ export class KnowledgeService extends Service {
     const { incomplete: _resumableMarker, ...completed } = half
     const document: KnowledgeDocument = {
       ...completed,
-      chunkCount: chunks.length,
+      ...completedChunkState(chunks.length),
       ...(embeddingError !== undefined
         ? { embeddingError, ...(embeddingErrorCode !== undefined ? { errorCode: embeddingErrorCode } : {}) }
         : {}),
@@ -4060,8 +4060,11 @@ export class KnowledgeService extends Service {
       // Segment embedding is best-effort: any failure falls back to the
       // regular chunker and the normal embedding flow below still runs.
       const segments = splitSemanticSegments(text, { separator: config.chunkSeparator })
+      // A regular fallback may ignore the semantic separator and resurrect
+      // candidates that were deliberately filtered before embedding.
+      if (segments.length === 0) return { chunks: [] }
       let merged: Array<ChunkPiece & { embedding?: number[] }> | null = null
-      if (segments.length > 0 && config.embeddingProvider !== 'none') {
+      if (config.embeddingProvider !== 'none') {
         try {
           const vectors: Array<number[] | undefined> = []
           let batchSize = embeddingBatchSize(config.embeddingProvider, config.embeddingBatchSize)

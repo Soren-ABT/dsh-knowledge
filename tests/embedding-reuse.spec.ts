@@ -7,6 +7,7 @@ import { hashEmbeddingText } from '../src/knowledge/chunkdb.js'
 import type { Config } from '../src/knowledge/config.js'
 import type { KnowledgeService as KnowledgeServiceType } from '../src/knowledge/index.js'
 import { KnowledgeService } from '../src/knowledge/index.js'
+import type { Store } from '../src/knowledge/store.js'
 import type { EmbeddingProvider } from '../src/knowledge/types.js'
 
 // Replace the embedding module with a deterministic stub so we can count how
@@ -99,6 +100,31 @@ async function mountService(): Promise<KnowledgeServiceType> {
 }
 
 describe('embedding hash reuse (Cherry decision A4)', () => {
+  it.each([false, true])('rebuilds markup-only documents without embedding discarded text (semantic=%s)', async semanticChunk => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'markup', config: {
+      embeddingProvider: 'openai', embeddingModel: 'test', embeddingBaseUrl: 'http://x', semanticChunk,
+      chunkSeparator: semanticChunk ? '||' : '\n\n',
+    } })
+    embedTextsMock.mockClear()
+    const content = semanticChunk ? '---||***' : '---\n\n***'
+    const doc = await service.addTextDocument({ baseId: base.id, title: 'rules', content })
+    expect(doc).toMatchObject({ rawText: content, chunkCount: 0 })
+
+    // Reproduce a generation stored by 0.5.3, including its obsolete vector.
+    const store = (service as unknown as { store: Store }).store
+    expect(await store.recoverInterruptedImports(Date.now() + 1)).toEqual({ removed: 0, resume: [] })
+    await store.commitDocumentGeneration({ ...doc, chunkCount: 1 }, [
+      { id: 'old-rule', docId: doc.id, baseId: base.id, index: 0, text: '---', embedding: [1, 0] },
+    ])
+    const rebuilt = await service.reindexDocument(doc.id)
+    expect(rebuilt).toMatchObject({ rawText: content, chunkCount: 0 })
+    expect(service.listChunks(doc.id)).toEqual([])
+    expect(service.listDocuments(base.id)[0]).toMatchObject({ status: 'completed', embedded: false })
+    expect(await store.recoverInterruptedImports(Date.now() + 1)).toEqual({ removed: 0, resume: [] })
+    expect(embedTextsMock).not.toHaveBeenCalled()
+  })
+
   it.each([[false, 1], [true, 1], [false, 32], [true, 32]] as const)('applies the local batch policy to semanticChunk=%s, size=%s', async (semanticChunk, batchSize) => {
     embedTextsMock.mockClear()
     const service = await mountService()
@@ -224,14 +250,16 @@ describe('embedding hash reuse (Cherry decision A4)', () => {
     })
     // The shared paragraph is its own block, so it slices into identical
     // chunks in both documents (same title → same context → same search text).
+    // The prefixes stay above the short-block merge threshold so they do not
+    // get folded into the shared paragraph.
     const shared = 'shared paragraph text '.repeat(60)
-    const docA = await service.addTextDocument({ baseId: base.id, title: 'A', content: `AAA\n\n${shared}` })
+    const docA = await service.addTextDocument({ baseId: base.id, title: 'A', content: `AAA ${'a'.repeat(60)}\n\n${shared}` })
     expect(embedTextsMock).toHaveBeenCalled()
 
     // Doc B reuses A's vectors for the shared paragraph; only the 'BBB' block
     // is embedded.
     embedTextsMock.mockClear()
-    const docB = await service.addTextDocument({ baseId: base.id, title: 'A', content: `BBB\n\n${shared}` })
+    const docB = await service.addTextDocument({ baseId: base.id, title: 'A', content: `BBB ${'b'.repeat(60)}\n\n${shared}` })
     expect(embedTextsMock).toHaveBeenCalled()
     const bTexts = embedTextsMock.mock.calls.flatMap(call => call[4])
     expect(bTexts.some(text => text.includes('shared paragraph'))).toBe(false)
@@ -268,7 +296,10 @@ describe('embedding hash reuse (Cherry decision A4)', () => {
       config: { embeddingProvider: 'openai', embeddingBaseUrl: 'http://x', embeddingModel: 'm1', embeddingApiKey: 'k', embeddingBatchSize: 1 },
     })
     // Enough text for several chunks (batchSize 1 → one API call per chunk).
-    const content = 'alpha paragraph\n\nbeta paragraph\n\ngamma paragraph\n\ndelta paragraph'
+    // Each paragraph stays above the short-block merge threshold.
+    const content = ['alpha paragraph', 'beta paragraph', 'gamma paragraph', 'delta paragraph']
+      .map(paragraph => `${paragraph} ${'x'.repeat(60)}`)
+      .join('\n\n')
     await service.addTextDocument({ baseId: base.id, title: 'doc', content })
     const firstEmbeddings = embedTextsMock.mock.calls.flatMap(call => call[4])
     expect(firstEmbeddings.length).toBeGreaterThan(2)

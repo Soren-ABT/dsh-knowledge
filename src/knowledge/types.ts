@@ -235,7 +235,8 @@ export interface KnowledgeDocument {
   /**
    * True while the document is being indexed (placeholder → mid-embedding).
    * A crash leaves `incomplete: true` + rawText, so startup recovery can
-   * resume the interrupted embed instead of dropping the document.
+   * resume the interrupted embed instead of dropping the document. A finished
+   * zero-chunk document sets this to false so recovery can recognize it.
    */
   readonly incomplete?: boolean
   /** Reason embedding failed at import/reindex time, when it degraded to lexical-only. */

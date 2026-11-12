@@ -1037,10 +1037,10 @@ describe('directory sync lifecycle', () => {
 
 describe('local-path import source tracking', () => {
   const decode = (bytes: Uint8Array | null): string => bytes !== null ? new TextDecoder().decode(bytes) : ''
-  const mount = async (dir: string): Promise<KnowledgeService> => {
+  const mount = async (dir: string, domain = fakeDomain()): Promise<KnowledgeService> => {
     const ctx = new Context()
     ctx.provide('webServer', { routes: [], register: () => () => {} })
-    ctx.provide('storageDomain', { open: async () => fakeDomain() })
+    ctx.provide('storageDomain', { open: async () => domain })
     await ctx.plugin(KnowledgeService, { ...TEST_CONFIG, chunkStorePath: join(dir, 'chunks.sqlite') })
     return ctx.get('knowledge') as KnowledgeService
   }
@@ -1565,6 +1565,36 @@ describe('local-path import source tracking', () => {
         await closeStore(service)
       }
     } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps an uploaded Markdown file containing only rules completed across a restart', async () => {
+    const dir = await tempDir()
+    vi.stubEnv('DSH_HOME', dir)
+    const domain = fakeDomain()
+    const content = Array(5).fill('---').join('\r\n')
+    let service = await mount(dir, domain)
+    try {
+      await service.setConfig({ resumeInterruptedOnStartup: false })
+      const base = await service.createBase({ name: 'rules' })
+      const doc = await service.addFileDocument({
+        baseId: base.id, fileName: 'rules.md', contentBase64: Buffer.from(content).toString('base64'),
+      })
+      await service.waitForIdle()
+      const stored = storeOf(service).getDocument(doc.id)!
+      expect(stored.rawText).toBe(content)
+      expect(decode(await storeOf(service).raw!.read(stored.rawFilePath!))).toBe(content)
+      expect(service.listDocuments(base.id)[0]).toMatchObject({ status: 'completed', chunkCount: 0, embedded: false })
+
+      await closeStore(service)
+      service = await mount(dir, domain)
+      await service.waitForIdle()
+      expect(storeOf(service).getDocument(doc.id)).toEqual(stored)
+      expect(await storeOf(service).recoverInterruptedImports(Date.now() + 1)).toEqual({ removed: 0, resume: [] })
+      expect((await service.search({ baseId: base.id, query: 'rules', mode: 'lexical' })).hits).toEqual([])
+    } finally {
+      await closeStore(service)
       await rm(dir, { recursive: true, force: true })
     }
   })

@@ -552,6 +552,8 @@ dsh-knowledge 的定位是“一体化文档知识库”。下面的对照用于
 | `localWorkerIdleTimeoutMs` | `60000` | 本地 embedding process 空闲释放模型 session 的时间；`0` 表示常驻。设置页提供 1 分钟、15 分钟和常驻预设；模型运行状态独立显示未驻留、加载中、已加载或错误，并显示加载耗时 |
 | `chunkStorePath` | `''` | 空值使用 `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
 
+普通文本入库时会跳过独立的 `---`、`***`、`___` 等分隔标记，保留代码示例里的字面内容。智能分块会在预算允许时，将少于 40 个 UTF-16 代码单元的段落并入同一小节的相邻段落。语义分块按相似度合并。只含分隔标记的文档保留原文，索引块数为 0。要清除已有文档里的旧碎片，可在文档上执行「重建索引」。边界发生变化的块可能需要重新计算向量。
+
 `knowledge:usage` 不再重复 `knowledge_search` 的行为指令，只提供库名；部署配置或全局覆盖可设置 `injectUsagePrompt: false`，每库配置可以单独覆盖。自动检索消息使用插件自己的 `dsh-knowledge` 来源名称，符合 DSH v4 的来源准入要求。桌面面板通过 Window Controls Overlay 几何和 CSS 标题栏环境变量动态避让窗口按钮，关闭按钮、知识库开关和通知随面板一起进入安全区。
 
 按库设置中的空字段继承全局配置。`localModelCacheDir`、`localWorkerIdleTimeoutMs` 和 `chunkStorePath` 是进程级设置。API Key 以明文保存在本地机器，请保护 profile 数据目录。

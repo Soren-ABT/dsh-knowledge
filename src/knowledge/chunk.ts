@@ -7,6 +7,7 @@
  */
 import type { DocumentSourceSpan } from './processing-types.js'
 import { sliceSourceSpans } from './source-spans.js'
+import { snapSliceEnd } from './text-safety.js'
 
 /** One chunk: its text plus the markdown heading path introducing it. */
 export interface ChunkPiece {
@@ -17,18 +18,19 @@ export interface ChunkPiece {
 
 /** Normalize line endings and collapse excessive blank lines. */
 export function normalizeText(text: string): string {
-  return text
-    .replace(/\r\n?/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  return normalizeLineBreaks(text).trim()
+}
+
+function normalizeLineBreaks(text: string): string {
+  // First-line indentation distinguishes literal code from a thematic break.
+  return text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n')
 }
 
 /**
- * Split `text` into chunks of at most `size` characters with `overlap`
- * characters shared between consecutive chunks. With `smartChunk` (default)
- * blocks are paragraphs and markdown headings; otherwise the text splits on
- * `separator` only. Long blocks are windowed at sentence boundaries.
- * @returns non-empty array of chunks (guaranteed one chunk for non-empty input).
+ * Split text using the document's estimated characters per token for the size
+ * and overlap budgets. Smart mode joins short paragraphs within a section.
+ * Delimiter-only mode keeps the configured boundaries. Empty inputs and
+ * inputs consisting entirely of recognized markup produce no index entries.
  */
 export function chunkText(
   text: string,
@@ -36,7 +38,8 @@ export function chunkText(
   overlap: number,
   options?: { smartChunk?: boolean; separator?: string },
 ): ChunkPiece[] {
-  const normalized = normalizeText(text)
+  const source = normalizeLineBreaks(text)
+  const normalized = source.trim()
   if (normalized.length === 0) return []
   // Cherry's chunkSize/chunkOverlap are TOKEN budgets: convert to characters
   // with the document's measured chars-per-token ratio so CJK and Latin
@@ -47,25 +50,18 @@ export function chunkText(
   const charsPerToken = normalized.length / Math.max(1, estimateTokens(normalized))
   const safeSize = Math.max(64, Math.round(tokenBudget * charsPerToken))
   const safeOverlap = Math.min(Math.round(tokenOverlap * charsPerToken), safeSize - 1)
-  const smartChunk = options?.smartChunk ?? true
-  const blocks = smartChunk
-    ? splitBlocks(normalized)
-    : [{ text: normalized, heading: undefined }]
-  const chunks: ChunkPiece[] = []
-  for (const block of blocks) {
-    // In delimiter-only mode, split the text on the configured separator first.
-    if (!smartChunk) {
-      const separator = normalizeSeparator(options?.separator ?? '\n\n')
-      const pieces = block.text.split(separator).map(piece => piece.trim()).filter(piece => piece.length > 0)
-      for (const piece of pieces) {
-        chunks.push(...windowOrKeep(piece, safeSize, safeOverlap, block.heading))
-      }
-      continue
+  if (options?.smartChunk === false) {
+    const separator = normalizeSeparator(options.separator ?? '\n\n')
+    const pieces = splitDelimited(source, separator)
+    // A user-defined delimiter can consume the entire source (e.g. "END").
+    // Keep the legacy fallback only when no nonblank piece was filtered out.
+    if (pieces.length === 0 && delimiterConsumedText(source, separator)) {
+      return [{ text: normalized.slice(0, safeSize) }]
     }
-    chunks.push(...windowOrKeep(block.text, safeSize, safeOverlap, block.heading))
+    return pieces.flatMap(piece => windowOrKeep(piece, safeSize, safeOverlap, undefined))
   }
-  // A degenerate guard: always yield at least one chunk for non-empty input.
-  return chunks.length > 0 ? chunks : [{ text: normalized.slice(0, safeSize) }]
+  return splitBlocks(source, { mergeSize: safeSize })
+    .flatMap(block => windowOrKeep(block.text, safeSize, safeOverlap, block.heading))
 }
 
 function windowOrKeep(blockText: string, size: number, overlap: number, heading: string | undefined): ChunkPiece[] {
@@ -87,6 +83,10 @@ function normalizeSeparator(separator: string): string {
   return decoded.length > 0 ? decoded : '\n\n'
 }
 
+function delimiterConsumedText(text: string, separator: string): boolean {
+  return !isSyntaxOnlyBlock(text) && text.split(separator).every(piece => !piece.trim())
+}
+
 /**
  * Semantic-chunking mode: split into paragraph-level candidate segments
  * (heading-aware, never windowed) so the caller can embed each segment and
@@ -94,18 +94,9 @@ function normalizeSeparator(separator: string): string {
  * the service layer.
  */
 export function splitSemanticSegments(text: string, options?: { separator?: string }): ChunkPiece[] {
-  const normalized = normalizeText(text)
-  if (normalized.length === 0) return []
-  const blocks = splitBlocks(normalized)
-  if (options?.separator === undefined || options.separator === '') return blocks
-  const separator = normalizeSeparator(options.separator)
-  const out: ChunkPiece[] = []
-  for (const block of blocks) {
-    for (const piece of block.text.split(separator).map(piece => piece.trim()).filter(piece => piece.length > 0)) {
-      out.push({ text: piece, ...(block.heading !== undefined ? { heading: block.heading } : {}) })
-    }
-  }
-  return out
+  return splitBlocks(normalizeLineBreaks(text), {
+    separator: options?.separator ? normalizeSeparator(options.separator) : undefined,
+  })
 }
 
 /**
@@ -254,74 +245,141 @@ function splitAtPreferredBoundary(text: string): [string, string, number, number
   return null
 }
 
-interface Block {
-  readonly text: string
-  readonly heading?: string
+/** Merge threshold in UTF-16 code units, matching the splitter's offsets. */
+const MIN_BLOCK_CHARS = 40
+const CODE_INDENT = /^(?: {4}| {0,3}\t)/
+
+/** Standalone markup. Leave arguments that could contain authored text intact. */
+const SYNTAX_ONLY_LINE: readonly RegExp[] = [
+  /^(?:-[ \t]*){3,}$/, /^(?:\*[ \t]*){3,}$/, /^(?:_[ \t]*){3,}$/, // Markdown thematic breaks
+  /^<hr(?:[ \t][^<>]*)?\/?>$/i,
+  /^([=\-~^"'`#*+_])\1{3,}$/,           // RST transitions / Org rules repeat one character
+  /^'{3,}$/, /^\|={3,}$/,                // AsciiDoc horizontal rule / table delimiter
+  /^\$\$$/, /^\\\[$/, /^\\\]$/,          // LaTeX display math
+  /^\\(?:begin|end)\{[a-zA-Z][a-zA-Z0-9@*-]*\}$/,
+  /^\\begin\{(?:tabular|array)\}(?:\[[tbc]\])?\{[lcr| \t]+\}$/,
+  /^\\(?:hline|toprule|midrule|bottomrule)$/, /^\\cline\{\d+-\d+\}$/,
+  /^\.\.\s+[A-Za-z0-9_-]+::$/,          // RST directive without arguments
+]
+
+function isSyntaxOnlyBlock(text: string): boolean {
+  return text.split('\n').every(line => {
+    const trimmed = line.trim()
+    return !trimmed || (!CODE_INDENT.test(line) && SYNTAX_ONLY_LINE.some(pattern => pattern.test(trimmed)))
+  })
 }
 
-/** Split into paragraph-level blocks, tracking the active markdown heading path. */
-function splitBlocks(text: string): Block[] {
-  const blocks: Block[] = []
-  let current = ''
-  /** Fence marker (` ``` ` or `~~~`) when inside a code block — blank lines and
-   *  headings inside the fence must not break the block (Cherry's splitter
-   *  code-fence protection). */
-  let fence = ''
-  const headings: string[] = []
-  const headingPath = (): string | undefined => {
-    // Skip levels never seen (e.g. `#` directly under `###`) so the path has no empty segments.
-    const present = headings.filter(entry => entry !== undefined && entry.trim().length > 0)
-    return present.length > 0 ? present.join(' > ') : undefined
-  }
-
-  const flush = (): void => {
-    if (current.trim().length > 0) {
-      const path = headingPath()
-      blocks.push({ text: current.trim(), ...(path !== undefined ? { heading: path } : {}) })
-    }
-    current = ''
-  }
-
+/** Source offsets keep code recognizable even if a custom separator cuts a line in half. */
+function* codeRanges(text: string, includeIndented: boolean): Generator<{ start: number; end: number }, undefined> {
+  let opening: { start: number; marker: string } | undefined
+  let offset = 0
   for (const line of text.split('\n')) {
-    if (fence !== '') {
-      // Inside a fence: keep everything (including blank lines) in the block.
-      current += (current.length > 0 ? '\n' : '') + line
-      // Close when the line is a run of the SAME fence character at least as
-      // long as the opener (GitHub rule: ```` closes ```, and a 4-backtick
-      // opener needs 4+ backticks). The opener's full string is kept so the
-      // length is not lost.
-      const closer = new RegExp(`^\\s*${fence[0] === '`' ? '`' : '~'}{${fence.length},}\\s*$`)
-      if (closer.test(line)) fence = ''
-      continue
+    const start = offset
+    const end = start + line.length
+    offset = end + 1
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    if (match !== null) {
+      const [, marker, rest] = match
+      if (opening === undefined) {
+        if (marker[0] !== '`' || !rest.includes('`')) opening = { start, marker }
+      } else if (marker[0] === opening.marker[0] && marker.length >= opening.marker.length && !rest.trim()) {
+        yield { start: opening.start, end }
+        opening = undefined
+      }
+    } else if (includeIndented && opening === undefined && CODE_INDENT.test(line) && line.trim()) {
+      yield { start, end }
     }
-    const fenceStart = /^\s*(`{3,}|~{3,})/.exec(line)
-    if (fenceStart !== null) {
-      flush()
-      fence = fenceStart[1]
-      current = line
-      continue
-    }
-    const heading = matchHeading(line)
-    if (heading !== undefined) {
-      flush()
-      // Maintain a heading stack: a heading at level L replaces everything at L and deeper.
-      const level = heading.level
-      headings.length = level
-      headings[level - 1] = heading.title
-      continue
-    }
-    if (line.trim().length === 0) {
-      flush()
-      continue
-    }
-    current += (current.length > 0 ? '\n' : '') + line
   }
-  flush()
+  if (opening !== undefined) yield { start: opening.start, end: text.length }
+}
+
+/** Split at every literal separator, retaining markup-looking pieces inside code. */
+function splitDelimited(text: string, separator: string): string[] {
+  const out: string[] = []
+  const ranges = codeRanges(text, true)
+  let code = ranges.next().value
+  let start = 0
+  for (const raw of text.split(separator)) {
+    const end = start + raw.length
+    const piece = raw.trim()
+    if (piece) {
+      const contentStart = end - raw.trimStart().length
+      while (code !== undefined && code.end <= contentStart) code = ranges.next().value
+      const inCode = code !== undefined && code.start < contentStart + piece.length
+      if (inCode || !isSyntaxOnlyBlock(raw)) out.push(piece)
+    }
+    start = end + separator.length
+  }
+  return out
+}
+
+/** Read paragraphs in section order. Only the ordinary smart path supplies a merge budget. */
+function splitBlocks(text: string, options: { mergeSize?: number; separator?: string }): ChunkPiece[] {
+  const blocks: ChunkPiece[] = []
+  const headings: string[] = []
+  let path: string | undefined
+  let sectionStart = 0
+  const append = (body: string): void => {
+    const previous = blocks.at(-1)
+    if (options.mergeSize !== undefined && previous !== undefined && blocks.length > sectionStart
+      && (previous.text.length < MIN_BLOCK_CHARS || body.length < MIN_BLOCK_CHARS)
+      && previous.text.length + 2 + body.length <= options.mergeSize) {
+      blocks[blocks.length - 1] = { ...previous, text: `${previous.text}\n\n${body}` }
+    } else {
+      blocks.push({ text: body, ...(path !== undefined ? { heading: path } : {}) })
+    }
+  }
+
+  const readProse = (prose: string): void => {
+    let paragraph: string[] = []
+    const flush = (): void => {
+      if (!paragraph.length) return
+      const raw = paragraph.join('\n')
+      paragraph = []
+      if (options.separator !== undefined && raw.includes(options.separator)) {
+        for (const piece of splitDelimited(raw, options.separator)) append(piece)
+      } else if (!isSyntaxOnlyBlock(raw)) {
+        append(raw.trim())
+      }
+    }
+    for (const line of prose.split('\n')) {
+      const heading = matchHeading(line)
+      if (heading !== undefined) {
+        flush()
+        headings.length = heading.level
+        headings[heading.level - 1] = heading.title
+        path = headings.filter(Boolean).join(' > ')
+        // Another occurrence of the same title starts a distinct section.
+        sectionStart = blocks.length
+      } else if (!line.trim()) {
+        flush()
+      } else {
+        paragraph.push(line)
+      }
+    }
+    flush()
+  }
+
+  let offset = 0
+  for (const range of codeRanges(text, false)) {
+    readProse(text.slice(offset, range.start))
+    append(text.slice(range.start, range.end).trim())
+    offset = range.end
+  }
+  readProse(text.slice(offset))
+  if (blocks.length === 0 && headings.length > 0) {
+    // Heading-only documents still have searchable text, even if rules between
+    // the headings were discarded.
+    const titles = text.split('\n').filter(line => matchHeading(line) !== undefined)
+    blocks.push({ text: titles.join('\n\n').trim() })
+  } else if (blocks.length === 0 && options.separator !== undefined && delimiterConsumedText(text, options.separator)) {
+    blocks.push({ text: text.trim() })
+  }
   return blocks
 }
 
 function matchHeading(line: string): { level: number; title: string } | undefined {
-  const match = /^(#{1,6})\s+(.+)$/.exec(line)
+  const match = /^ {0,3}(#{1,6})[ \t]+(\S.*)$/.exec(line)
   if (match === null) return undefined
   return { level: match[1].length, title: match[2].trim() }
 }
@@ -339,7 +397,20 @@ function windowBlock(block: string, size: number, overlap: number): string[] {
     // Prefer a high-quality break within the last WINDOW_RATIO of the budget
     // (heading > code edge > rule > paragraph > list > sentence > newline).
     const windowStart = Math.max(start + 1, end - Math.max(1, Math.round(size * WINDOW_RATIO)))
-    const cut = Math.max(findCut(block, end, windowStart), start + 1)
+    let cut = Math.max(findCut(block, end, windowStart), start + 1)
+    const tailStart = Math.max(cut - overlap, start + 1)
+    if (block.length - tailStart <= size) {
+      const tail = block.slice(tailStart)
+      if (tail.trim() && isSyntaxOnlyBlock(tail)) {
+        // Cutting immediately before a Setext underline can create a final
+        // "---" hit. Rebalance the two windows without losing the underline.
+        const middle = Math.ceil((start + block.length + overlap) / 2)
+        const earliest = Math.max(start + 1, block.length - size + overlap)
+        const searchStart = Math.max(earliest, middle - Math.round(size * WINDOW_RATIO))
+        const balanced = snapSliceEnd(block, findCut(block, middle, searchStart))
+        if (balanced >= earliest) cut = Math.min(cut, balanced)
+      }
+    }
     chunks.push(block.slice(start, cut).trim())
     const next = Math.max(cut - overlap, start + 1)
     if (next <= start) break

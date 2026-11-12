@@ -550,6 +550,8 @@ Global embedding model changes first check every base that inherits the changed 
 | `localWorkerIdleTimeoutMs` | `60000` | Idle time before releasing local embedding sessions; `0` keeps them hot. Settings offer 1 minute, 15 minutes, and resident presets. Runtime status independently shows unloaded/loading/loaded/error and load duration |
 | `chunkStorePath` | `''` | Empty uses `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
 
+Text indexing skips standalone rules such as `---`, `***` and `___` and preserves literal markers in code examples. Smart chunking joins paragraphs shorter than 40 UTF-16 code units to a neighbour in the same section when the chunk budget permits. Semantic chunking uses its similarity threshold. A document containing only recognized markup keeps its source and has zero indexed chunks. Use **Reindex** on an existing document to remove old fragments. Chunks with changed boundaries may need new embeddings.
+
 `knowledge:usage` now supplies only base names; behavioral guidance stays in `knowledge_search`. Set `injectUsagePrompt: false` in deployment/global configuration or override it per base. Auto-retrieval messages use the producer-owned `dsh-knowledge` source accepted by DSH v4. Desktop panels dynamically avoid native window controls using Window Controls Overlay geometry and CSS titlebar environment variables, moving the close button, knowledge toggle, and toasts into the safe area together.
 
 Empty per-base fields inherit the global configuration. `localModelCacheDir`, `localWorkerIdleTimeoutMs`, and `chunkStorePath` are process-wide. API keys are stored as plain text on the local machine, so protect the profile data directory.
