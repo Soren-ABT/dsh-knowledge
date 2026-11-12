@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest'
 import { chunkText, splitSemanticSegments } from '../src/knowledge/chunk.js'
 
 const THEMATIC = /^\s*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/
-const LATEX_DELIMITER = /^\s*(?:\${2,}|\\\[|\\\]|\\begin\{[^}]*\}(?:\[[^\]]*\])?(?:\{[^{}]*\})*|\\end\{[^}]*\}|\\hline|\\toprule|\\midrule|\\bottomrule|\\cline\{[^{}]*\})\s*$/
 
 const longParagraph = (label: string): string => `${label}：${'正'.repeat(60)}`
 
@@ -38,11 +37,24 @@ describe('markup fragment chunks (issue #67)', () => {
     expect(chunks[0]!.text.startsWith('Setext 标题\n---')).toBe(true)
   })
 
+  it('keeps a Setext underline with text when a long heading is windowed', () => {
+    const text = 'x'.repeat(128) + '🙂' + 'y'.repeat(123) + '\n---'
+    const chunks = chunkText(text, 64, 0)
+    expect(chunks).toHaveLength(2)
+    expect(chunks[1].text).toMatch(/y\n---$/)
+    expect(chunks.map(chunk => chunk.text).join('')).toBe(text)
+    for (const chunk of chunks) {
+      expect(chunk.text.length).toBeLessThanOrEqual(256)
+      expect(chunk.text).not.toMatch(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/)
+    }
+  })
+
   it('scales to the reported 120 separator blocks', () => {
-    const text = Array.from({ length: 120 }, (_, index) => `第 ${index} 段正文。\n\n---`).join('\n\n') + '\n\n结尾段落。'
+    const paragraphs = [...Array.from({ length: 120 }, (_, index) => `第 ${index} 段正文。`), '结尾段落。']
+    const text = paragraphs.join('\n\n---\n\n')
     const chunks = chunkText(text, 800, 100, { smartChunk: true, separator: '\n\n' })
     expect(chunks.filter(chunk => THEMATIC.test(chunk.text))).toEqual([])
-    expect(chunks.map(chunk => chunk.text).join('\n')).toContain('结尾段落。')
+    expect(chunks.map(chunk => chunk.text).join('\n\n')).toBe(paragraphs.join('\n\n'))
   })
 
   it('merges short blocks but keeps heading sections apart', () => {
@@ -80,11 +92,9 @@ describe('markup fragment chunks (issue #67)', () => {
       String.raw`\end{document}`,
     ].join('\n\n')
     const chunks = chunkText(tex, 800, 100)
-    expect(chunks.filter(chunk => LATEX_DELIMITER.test(chunk.text))).toEqual([])
-    const joined = chunks.map(chunk => chunk.text).join('\n')
-    expect(joined).toContain('E = mc^2')
-    expect(joined).toContain('a &= b + c')
-    expect(joined).toContain('A & B')
+    expect(chunks.map(chunk => chunk.text).join('\n\n')).toBe([
+      String.raw`\documentclass{article}`, String.raw`\section{引言}`, '正文第一段。', 'E = mc^2', 'a &= b + c', 'A & B',
+    ].join('\n\n'))
     expect(chunks.every(chunk => chunk.heading === undefined)).toBe(true)
   })
 
@@ -97,7 +107,8 @@ describe('markup fragment chunks (issue #67)', () => {
     ]
     for (const { text, fragments } of samples) {
       const chunks = chunkText(text, 800, 100)
-      for (const fragment of fragments) expect(chunks.some(chunk => chunk.text === fragment)).toBe(false)
+      const lines = chunks.flatMap(chunk => chunk.text.split('\n'))
+      for (const fragment of fragments) expect(lines).not.toContain(fragment)
     }
     const html = chunkText(['<h1>标题</h1>', '<hr>', '正文。'].join('\n\n'), 800, 100)
     expect(html.map(chunk => chunk.text).join('\n')).toContain('<h1>标题</h1>')
@@ -120,5 +131,62 @@ describe('markup fragment chunks (issue #67)', () => {
 
   it('still returns one chunk for a lone short block', () => {
     expect(chunkText('短。', 800, 100)).toEqual([{ text: '短。' }])
+  })
+
+  const modes = [
+    { name: 'smart', split: (text: string) => chunkText(text, 800, 100) },
+    { name: 'delimiter', split: (text: string) => chunkText(text, 800, 100, { smartChunk: false }) },
+    { name: 'semantic', split: (text: string) => splitSemanticSegments(text, { separator: '\\n\\n' }) },
+  ]
+
+  it.each(modes)('preserves literal markers in code before trimming in $name mode', ({ split }) => {
+    const input = ['    ---', ' \t***', '___', '````\n---\n````', '正文'].join('\r\n\r\n')
+    const indexed = split(input).map(piece => piece.text).join('\n\n')
+    expect(indexed).toContain('---')
+    expect(indexed).toContain('***')
+    expect(indexed).toContain('````\n---\n````')
+    expect(indexed.match(/---/g)).toHaveLength(2)
+    expect(indexed).not.toContain('___')
+  })
+
+  it('keeps semantic fences intact and honours literal separators in delimiter-only mode', () => {
+    const code = ['~~~text', 'before', '---', 'after\n~~~'].join('\n\n')
+    const text = ['start', code, '---', 'end'].join('\n\n')
+    expect(splitSemanticSegments(text, { separator: '\\n\\n' }).map(piece => piece.text))
+      .toEqual(['start', code, 'end'])
+    expect(chunkText(text, 800, 100, { smartChunk: false }).map(piece => piece.text))
+      .toEqual(['start', '~~~text', 'before', '---', 'after\n~~~', 'end'])
+    const custom = ['start\n~~~text\nbefore', '---', 'after\n~~~\nend', '---', 'tail'].join('||')
+    expect(chunkText(custom, 800, 100, { smartChunk: false, separator: '||' }).map(piece => piece.text))
+      .toEqual(['start\n~~~text\nbefore', '---', 'after\n~~~\nend', 'tail'])
+  })
+
+  it.each(modes)('preserves authored arguments, element names and mixed symbols in $name mode', ({ split }) => {
+    const content = [String.raw`\begin{frame}{Energy budget}`, String.raw`\begin{theorem}[Bayes]`,
+      '<hr-widget>', '+-+-', '$$$']
+    const markup = [String.raw`\begin{tabular}{cc}`, '<hr class="rule" />', '====', '$$']
+    const indexed = split([...content, ...markup, 'end'].join('\n\n')).map(piece => piece.text).join('\n\n')
+    expect(indexed).toBe([...content, 'end'].join('\n\n'))
+  })
+
+  it('respects repeated heading boundaries and the remaining merge budget', () => {
+    const full = 'x'.repeat(240)
+    const one = [full, 'a'.repeat(24), 'b'].join('\n\n')
+    expect(chunkText('# Same\n' + one + '\n\n# Same\nc', 64, 0))
+      .toEqual([full, 'a'.repeat(24) + '\n\nb', 'c'].map(text => ({ text, heading: 'Same' })))
+  })
+
+  it('returns no searchable text for markup-only inputs and keeps a heading-only document', () => {
+    const rules = Array(5).fill('---')
+    const escaped = Array(5).fill('\\---\\').join('\n')
+    for (const { split } of modes) {
+      expect(split('---\n\n***')).toEqual([])
+      expect(split(rules.join('\r\n'))).toEqual([])
+      expect(split(rules.join('\n\n'))).toEqual([])
+      expect(split(escaped)).toEqual([{ text: escaped }])
+    }
+    expect(chunkText('---||***', 800, 0, { smartChunk: false, separator: '||' })).toEqual([])
+    expect(chunkText('# A title', 800, 0)).toEqual([{ text: '# A title' }])
+    expect(chunkText('||', 800, 0, { smartChunk: false, separator: '||' })).toEqual([{ text: '||' }])
   })
 })

@@ -141,6 +141,25 @@ describe('KnowledgeService', () => {
     expect(methods?.context).toBe('guide > Intro > Methods')
   })
 
+  it('indexes Markdown file paragraphs in their original sections on upload and rebuild', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'Markdown' })
+    const content = '# 指南\n\n## 步骤\n\n记录目标。\n\n---\n\n填写依据。\n\n## 步骤\n\n核对签名。'
+    const doc = await service.addFileDocument({
+      baseId: base.id, fileName: 'guide.md', contentBase64: Buffer.from(content).toString('base64'),
+    })
+    await service.waitForIdle()
+    const expected = [
+      { text: '记录目标。\n\n填写依据。', heading: '指南 > 步骤' },
+      { text: '核对签名。', heading: '指南 > 步骤' },
+    ]
+    expect(service.listChunks(doc.id)).toMatchObject(expected)
+    await service.reindexDocument(doc.id)
+    expect(service.listChunks(doc.id)).toMatchObject(expected)
+    const { hits } = await service.search({ baseId: base.id, query: '核对签名', mode: 'lexical' })
+    expect(hits[0]?.text).toBe('核对签名。')
+  })
+
   it('attaches sibling chunks as context around a search hit', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'siblings' })
@@ -744,24 +763,24 @@ describe('KnowledgeService', () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'semantic-import' })
     await service.setConfig({ semanticChunk: true, semanticChunkThreshold: 0.9, chunkSize: 10000 })
-    const text = '第一段内容关于排队论。\n\n第二段内容关于排队论。\n\n第三段内容关于排队论。'
-    // Embedding returns the SAME vector for every segment → all merge into one
-    // chunk (well under chunkSize). This proves the semantic path executed:
-    // pre-chunking would have produced three separate chunks regardless.
-    const scope = vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
-      data: [{ embedding: [1, 0, 0] }, { embedding: [1, 0, 0] }, { embedding: [1, 0, 0] }],
-    }), { status: 200, headers: { 'content-type': 'application/json' } })))
+    const segments = ['第一段内容关于排队论。'.repeat(5), '```text\n\n---\n\n```', '第三段内容关于排队论。'.repeat(5)]
+    const text = segments.join('\n\n---\n\n')
+    const requests: string[][] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: RequestInit) => {
+      const { input } = JSON.parse(String(init.body)) as { input: string[] }
+      requests.push(input)
+      return Response.json({ data: input.map(() => ({ embedding: [1, 0, 0] })) })
+    }))
     try {
       await service.setConfig({ embeddingProvider: 'openai', embeddingBaseUrl: 'http://127.0.0.1:1', embeddingModel: 'test-embed' })
       await service.addTextDocument({ baseId: base.id, title: 'semantic doc', content: text })
       await service.waitForIdle()
       const doc = service.listDocuments(base.id)[0]
       const chunks = service.listChunks(doc.id)
-      expect(chunks.length).toBe(1)
-      expect(chunks[0].text).toContain('第三段内容')
+      expect(requests.flat()).toEqual(segments)
+      expect(chunks.map(chunk => chunk.text)).toEqual([segments.join('\n')])
     } finally {
       vi.unstubAllGlobals()
-      void scope
     }
   })
 

@@ -23,6 +23,17 @@ import type {
   KnowledgeDocument,
 } from './types.js'
 
+/** An explicit false distinguishes a finished empty index from legacy
+ *  source-only rows that still need crash recovery. */
+export function completedChunkState(chunkCount: number): Pick<KnowledgeDocument, 'chunkCount' | 'incomplete'> {
+  return chunkCount === 0 ? { chunkCount, incomplete: false } : { chunkCount }
+}
+
+export function hasCompletedEmptyIndex(doc: KnowledgeDocument): boolean {
+  return doc.chunkCount === 0 && doc.incomplete === false && doc.rawText !== undefined
+    && doc.embeddingError === undefined && doc.errorCode === undefined
+}
+
 export interface ChunkStats {
   count: number
   embedded: boolean
@@ -532,11 +543,7 @@ class DomainStore implements Store {
         if (doc.rawText !== undefined || doc.rawFilePath !== undefined) resume.push(id)
         continue
       }
-      if (withChunks.has(id)) {
-        // Chunks exist and the document is not marked incomplete: a completed
-        // document (possibly with a recording embedding failure) — keep it.
-        continue
-      }
+      if (withChunks.has(id) || hasCompletedEmptyIndex(doc)) continue
       // No chunks at all and no incomplete marker: a placeholder whose source
       // was never persisted (crash before the raw write or before rawText
       // landed) is unrecoverable; one that already holds rawText or a raw
@@ -545,9 +552,7 @@ class DomainStore implements Store {
         if ((doc.updatedAt ?? doc.createdAt) < startedAt) resume.push(id)
         continue
       }
-      // A completed document always has chunks (chunkText yields ≥1, even on
-      // embedding failure); an item with none that predates this process was
-      // left by a crash mid-import.
+      // A stale placeholder without a source or committed index is unrecoverable.
       if ((doc.updatedAt ?? doc.createdAt) >= startedAt) continue
       await this.chunkDb.deleteChunks(id)
       await this.metadata.run(() => this.documents.delete(id))
@@ -867,7 +872,7 @@ class MemoryStore implements Store {
         if (doc.rawText !== undefined || doc.rawFilePath !== undefined) resume.push(id)
         continue
       }
-      if (withChunks.has(id)) continue
+      if (withChunks.has(id) || hasCompletedEmptyIndex(doc)) continue
       if (doc.rawText !== undefined || doc.rawFilePath !== undefined) {
         if ((doc.updatedAt ?? doc.createdAt) < startedAt) resume.push(id)
         continue

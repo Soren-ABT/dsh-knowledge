@@ -7,6 +7,7 @@ import { hashEmbeddingText } from '../src/knowledge/chunkdb.js'
 import type { Config } from '../src/knowledge/config.js'
 import type { KnowledgeService as KnowledgeServiceType } from '../src/knowledge/index.js'
 import { KnowledgeService } from '../src/knowledge/index.js'
+import type { Store } from '../src/knowledge/store.js'
 import type { EmbeddingProvider } from '../src/knowledge/types.js'
 
 // Replace the embedding module with a deterministic stub so we can count how
@@ -99,6 +100,31 @@ async function mountService(): Promise<KnowledgeServiceType> {
 }
 
 describe('embedding hash reuse (Cherry decision A4)', () => {
+  it.each([false, true])('rebuilds markup-only documents without embedding discarded text (semantic=%s)', async semanticChunk => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'markup', config: {
+      embeddingProvider: 'openai', embeddingModel: 'test', embeddingBaseUrl: 'http://x', semanticChunk,
+      chunkSeparator: semanticChunk ? '||' : '\n\n',
+    } })
+    embedTextsMock.mockClear()
+    const content = semanticChunk ? '---||***' : '---\n\n***'
+    const doc = await service.addTextDocument({ baseId: base.id, title: 'rules', content })
+    expect(doc).toMatchObject({ rawText: content, chunkCount: 0 })
+
+    // Reproduce a generation stored by 0.5.3, including its obsolete vector.
+    const store = (service as unknown as { store: Store }).store
+    expect(await store.recoverInterruptedImports(Date.now() + 1)).toEqual({ removed: 0, resume: [] })
+    await store.commitDocumentGeneration({ ...doc, chunkCount: 1 }, [
+      { id: 'old-rule', docId: doc.id, baseId: base.id, index: 0, text: '---', embedding: [1, 0] },
+    ])
+    const rebuilt = await service.reindexDocument(doc.id)
+    expect(rebuilt).toMatchObject({ rawText: content, chunkCount: 0 })
+    expect(service.listChunks(doc.id)).toEqual([])
+    expect(service.listDocuments(base.id)[0]).toMatchObject({ status: 'completed', embedded: false })
+    expect(await store.recoverInterruptedImports(Date.now() + 1)).toEqual({ removed: 0, resume: [] })
+    expect(embedTextsMock).not.toHaveBeenCalled()
+  })
+
   it.each([[false, 1], [true, 1], [false, 32], [true, 32]] as const)('applies the local batch policy to semanticChunk=%s, size=%s', async (semanticChunk, batchSize) => {
     embedTextsMock.mockClear()
     const service = await mountService()
