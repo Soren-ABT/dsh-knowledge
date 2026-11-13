@@ -30,8 +30,24 @@ describe('MemoryStore (openStore(undefined))', () => {
   it('deletes bases', async () => {
     const store = await memoryStore()
     await store.putBase(base('b1'))
+    await store.putDocument(doc('d1', 'b1'))
+    await store.putDocument(doc('d2', 'b1'))
     await store.deleteBase('b1')
     expect(store.getBase('b1')).toBeUndefined()
+    // Deleting a base collects its documents too, so startup recovery has
+    // nothing left to resume under a base that no longer exists.
+    expect(store.getDocument('d1')).toBeUndefined()
+    expect(store.getDocument('d2')).toBeUndefined()
+    await store.close()
+  })
+
+  it('collects documents whose base is gone instead of resuming them', async () => {
+    const store = await memoryStore()
+    // Leftover of a removed base: it holds text but no chunks, so the resume
+    // predicate alone would queue it on every boot.
+    await store.putDocument({ ...doc('d1', 'gone'), rawText: 'leftover text', chunkCount: 0, incomplete: false })
+    expect(await store.recoverInterruptedImports(Date.now() + 1)).toEqual({ removed: 1, resume: [] })
+    expect(store.getDocument('d1')).toBeUndefined()
     await store.close()
   })
 

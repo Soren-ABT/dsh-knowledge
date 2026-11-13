@@ -355,8 +355,14 @@ class DomainStore implements Store {
   deleteBase(id: string): Promise<void> {
     return this.writeDocuments(async () => {
       await this.metadata.run(() => this.bases.delete(id))
-      for (const [, doc] of this.documents.entries()) {
-        if (doc.baseId === id) this.chunkDb.discardDocumentGenerations(doc.id)
+      // Collect the base's document rows too. They live in the shared domain
+      // table, so removing only the base row leaves unreachable records behind
+      // that startup recovery would re-queue forever. Copy the entries because
+      // the loop below mutates the same table.
+      for (const [docId, doc] of [...this.documents.entries()]) {
+        if (doc.baseId !== id) continue
+        this.chunkDb.discardDocumentGenerations(docId)
+        await this.metadata.run(() => this.documents.delete(docId))
       }
     })
   }
@@ -529,6 +535,15 @@ class DomainStore implements Store {
       // restart the import or mark the successfully published generation failed.
       const pending = this.chunkDb.pendingDocumentGeneration(id)
       if (pending !== undefined && pending.previousCreatedAt === doc.createdAt && pending.document.baseId === doc.baseId) continue
+      // A document whose base no longer exists can never be re-indexed: it is a
+      // leftover of a base removal, not a crash mid-import. Collect it instead
+      // of resuming it (and rewriting the whole metadata unit) on every boot.
+      if (this.getBase(doc.baseId) === undefined) {
+        await this.chunkDb.deleteChunks(id)
+        await this.metadata.run(() => this.documents.delete(id))
+        removed += 1
+        continue
+      }
       if (doc.sourceType === 'directory') continue
       // Parsing failed in a completed import. Keep its raw source for an
       // explicit retry, but never re-run a potentially paid processor at boot.
@@ -724,7 +739,11 @@ class MemoryStore implements Store {
 
   async deleteBase(id: string): Promise<void> {
     this.bases.delete(id)
-    for (const [docId, generation] of this.staged) if (generation.document.baseId === id) this.staged.delete(docId)
+    for (const [docId, doc] of [...this.documents.entries()]) {
+      if (doc.baseId !== id) continue
+      this.staged.delete(docId)
+      this.documents.delete(docId)
+    }
   }
 
   listDocuments(baseId: string): KnowledgeDocument[] {
@@ -866,6 +885,12 @@ class MemoryStore implements Store {
     let removed = 0
     const resume: string[] = []
     for (const [id, doc] of [...this.documents.entries()]) {
+      if (!this.bases.has(doc.baseId)) {
+        await this.deleteChunks(id)
+        this.documents.delete(id)
+        removed += 1
+        continue
+      }
       if (doc.sourceType === 'directory') continue
       if (doc.errorCode === 'parse_failed') continue
       if (doc.incomplete === true) {
