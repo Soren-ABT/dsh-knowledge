@@ -190,22 +190,26 @@ export class ArtifactRepository {
     if (this.root !== undefined) await rm(this.path(key), { recursive: true, force: true })
   }
 
-  /** Startup-only GC. Live, staged and recoverable job revisions are pinned;
-   * recent candidates are retained for seven days. Never follow symlinks. */
-  async collectDocument(baseId: string, documentId: string, pinned: readonly string[], now = Date.now()): Promise<number> {
-    if (this.root === undefined) return 0
+  /** Background GC. Resolve live/staged pins at deletion time; keep job
+   * revisions and candidates newer than seven days. Never follow symlinks. */
+  async collectDocument(baseId: string, documentId: string, pinned: readonly string[] | (() => readonly string[]), now = Date.now(), signal?: AbortSignal): Promise<number> {
+    if (this.root === undefined || signal?.aborted) return 0
     const key = this.key(baseId, documentId)
-    const protectedRevisions = new Set(pinned)
-    const job = await this.getJob(baseId, documentId)
-    if (job?.artifact !== undefined) protectedRevisions.add(job.artifact.revision)
     let entries
     try { entries = await readdir(this.path(key), { withFileTypes: true }) }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0; throw error }
     let removed = 0
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[a-zA-Z0-9_-]+(?:\.pending)?$/.test(entry.name) || protectedRevisions.has(entry.name)) continue
+      if (signal?.aborted) break
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[a-zA-Z0-9_-]+(?:\.pending)?$/.test(entry.name)) continue
       const path = this.path(`${key}/${entry.name}`)
       if ((await stat(path)).mtimeMs > now - 7 * 24 * 3600_000) continue
+      // Reads may yield while reindex/recovery publishes a revision. Read job
+      // and metadata pins after the filesystem awaits, immediately before rm.
+      const job = await this.getJob(baseId, documentId)
+      if (signal?.aborted) break
+      const protectedRevisions = typeof pinned === 'function' ? pinned() : pinned
+      if (protectedRevisions.includes(entry.name) || job?.artifact?.revision === entry.name) continue
       await rm(path, { recursive: true, force: true })
       removed++
     }

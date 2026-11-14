@@ -7,13 +7,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { Context } from '@deepseek-ai/cordis'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, stat, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ArtifactRepository } from '../src/knowledge/artifacts.js'
 import { knowledgeDomainSpec } from '../src/knowledge/domain.js'
 import { KnowledgeService } from '../src/knowledge/index.js'
 import type { Config } from '../src/knowledge/config.js'
+import { parsedTextDocument } from '../src/knowledge/parsed-document.js'
+import type { Store } from '../src/knowledge/store.js'
 
 class FakeTable<K extends string, V> implements KvTable<K, V> {
   readonly map = new Map<K, V>()
@@ -75,6 +77,80 @@ async function mountShared(domain: Domain<typeof knowledgeDomainSpec>, dir: stri
 }
 
 describe('startup artifact cleanup (issue #73)', () => {
+  async function seededDomain(count: number) {
+    const domain = fakeDomain()
+    await domain.table('bases').put('base', { id: 'base', name: 'base', description: '', createdAt: 1, updatedAt: 1 })
+    for (let i = 0; i < count; i++) {
+      await domain.table('documents').put(`doc${i}`, {
+        id: `doc${i}`, baseId: 'base', title: 'document', sourceType: 'text', rawText: '',
+        charCount: 0, chunkCount: 0, incomplete: false, createdAt: 1, updatedAt: 1,
+      })
+    }
+    return domain
+  }
+
+  it('keeps a 7,200-document library ready with bounded work and cancels collection on teardown', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kb-startup-gc-cancel-'))
+    dirs.push(dir)
+    vi.stubEnv('DSH_HOME', dir)
+    const domain = await seededDomain(7200)
+    let release!: (value: number) => void
+    const pending = new Promise<number>(resolve => { release = resolve })
+    const collect = vi.spyOn(ArtifactRepository.prototype, 'collectDocument').mockImplementation(() => pending)
+    const mounted = await mountShared(domain, dir)
+    try {
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledTimes(4))
+      const signal = collect.mock.calls[0][4]
+      expect(signal?.aborted).toBe(false)
+      await mounted.dispose()
+      expect(signal?.aborted).toBe(true)
+      release(0)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(collect).toHaveBeenCalledTimes(4)
+    } finally {
+      release(0)
+      await mounted.dispose()
+    }
+  })
+
+  it('pins the latest live revision when a rebuild finishes during the queued scan', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kb-startup-gc-current-'))
+    dirs.push(dir)
+    vi.stubEnv('DSH_HOME', dir)
+    const domain = await seededDomain(1)
+    let pins: Parameters<ArtifactRepository['collectDocument']>[2] | undefined
+    vi.spyOn(ArtifactRepository.prototype, 'collectDocument').mockImplementation(async (_base, _doc, value) => { pins = value; return 0 })
+    const mounted = await mountShared(domain, dir)
+    try {
+      await vi.waitFor(() => expect(pins).toBeDefined())
+      const store = (mounted.service as unknown as { store: Store }).store
+      const doc = store.getDocument('doc0')!
+      await store.putDocument({ ...doc, processing: {
+        revision: 'rebuilt', artifactId: 'base/doc0/rebuilt', sourceHash: 'hash',
+        provider: 'builtin', optionsFingerprint: 'options', parsedAt: 1, completeness: 'complete', warnings: [],
+      } })
+      expect(typeof pins === 'function' ? pins() : pins).toContain('rebuilt')
+    } finally { await mounted.dispose() }
+  })
+
+  it('keeps live and job revisions, drops only stale unpinned artifacts and honors cancellation', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kb-startup-gc-files-'))
+    dirs.push(dir)
+    const repository = new ArtifactRepository(dir)
+    const output = parsedTextDocument('evidence', new Uint8Array([1]), 'builtin', 'options')
+    const [live, job, stale, recent] = await Promise.all(Array.from({ length: 4 }, () => repository.save('base', 'doc', output)))
+    const old = new Date(Date.now() - 8 * 24 * 3600_000)
+    for (const info of [live, job, stale]) await utimes(join(dir, info.artifactId), old, old)
+    await repository.saveJob({ version: 1, baseId: 'base', documentId: 'doc', sourceHash: 'hash',
+      fingerprint: 'options', state: 'running', progress: { stage: 'parsing' }, updatedAt: 1, artifact: job })
+    const canceled = new AbortController()
+    canceled.abort()
+    expect(await repository.collectDocument('base', 'doc', [], Date.now(), canceled.signal)).toBe(0)
+    expect(await repository.collectDocument('base', 'doc', () => [live.revision])).toBe(1)
+    for (const info of [live, job, recent]) expect((await stat(join(dir, info.artifactId))).isDirectory()).toBe(true)
+    await expect(stat(join(dir, stale.artifactId))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('finishes service init before the detached artifact scan completes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kb-startup-gc-'))
     dirs.push(dir)

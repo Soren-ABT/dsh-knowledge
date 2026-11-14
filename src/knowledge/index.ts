@@ -647,16 +647,17 @@ export class KnowledgeService extends Service {
    * large library cannot delay the host's startup walk.
    */
   private async collectStaleArtifacts(): Promise<void> {
+    // Defer even the in-memory target enumeration until init has returned.
+    await new Promise<void>(resolve => setImmediate(resolve))
     const store = this.store
-    if (store === undefined) return
     const signal = this.artifactCleanupController.signal
-    const targets: Array<{ baseId: string; documentId: string; revision?: string }> = []
+    if (store === undefined || signal.aborted) return
+    const targets: Array<{ baseId: string; documentId: string }> = []
     for (const base of store.listBases()) {
       for (const doc of store.listDocuments(base.id)) {
         targets.push({
           baseId: base.id,
           documentId: doc.id,
-          ...(doc.processing?.revision !== undefined ? { revision: doc.processing.revision } : {}),
         })
       }
     }
@@ -671,10 +672,17 @@ export class KnowledgeService extends Service {
         cursor += 1
         if (target === undefined) return
         try {
-          const staged = store.getStagedDocumentGeneration(target.documentId)
-          const pinned = [target.revision, staged?.document.processing?.revision]
-            .filter((value): value is string => value !== undefined)
-          removed += await this.artifacts.collectDocument(target.baseId, target.documentId, pinned)
+          if (store.getDocument(target.documentId)?.baseId !== target.baseId) continue
+          // A queued document may have been rebuilt since enumeration. Resolve
+          // live and staged pins again immediately before a stale deletion.
+          const pinned = (): string[] => {
+            if (signal.aborted) return []
+            const current = store.getDocument(target.documentId)
+            const staged = store.getStagedDocumentGeneration(target.documentId)
+            return [current?.processing?.revision, staged?.document.processing?.revision]
+              .filter((value): value is string => value !== undefined)
+          }
+          removed += await this.artifacts.collectDocument(target.baseId, target.documentId, pinned, Date.now(), signal)
         } catch {
           deferred += 1
         }

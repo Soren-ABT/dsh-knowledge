@@ -185,6 +185,7 @@ v0.5.2 fixes #51: evidence and document-read trimming preserve UTF-16 surrogate 
 - The cache directory supports native folder selection, opening, and safe migration so large local weights can live outside the system drive.
 - Ollama management supports listing, pulling, cancelling, and deleting models. Browsing or pulling never changes the active embedding configuration implicitly.
 - The management panel provides base navigation, document tables, batch rebuild/delete actions, source and chunk previews, recall testing, global/per-base settings, and toast feedback.
+- Startup artifact maintenance runs in the background so its document scan does not delay service readiness. Live, staged, and recoverable-job revisions stay protected; unused revisions are retained for seven days. No reindex is required after upgrading.
 
 **v0.5.1 fix (issue #42):** Cache-directory Browse/Open and the MinerU installation-directory picker support DSH 0.2's new interfaces and the older interfaces. Cancelling preserves the existing input. If the Host lacks a capability, cache-directory actions display a notice and MinerU hides the picker button; paths remain editable manually.
 
