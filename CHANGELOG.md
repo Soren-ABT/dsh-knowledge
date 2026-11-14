@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep panel controls below native desktop titlebars, with host CSS overrides, Electron/Tauri fallbacks, fullscreen updates, and a draggable background band (#69).
+- Allocate shared sidebar footer actions to equal columns in wide mode and stack rail icons in collapsed mode, preserving visibility alongside legacy full-width plugin actions (#72).
+
 ## 0.5.3 — 2026-11-07 — Adaptive embedding batches, directory sync and safe settings
 
 - Fix #59: apply vector similarity thresholds before multi-query rank fusion, rather than comparing RRF rank scores against a cosine threshold. Reranked results still use their relevance threshold.

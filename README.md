@@ -67,6 +67,7 @@ dsh plugin --profile <name> add dsh-knowledge
 ### 3. 完成首次配置
 
 1. 点击侧边栏底部、设置旁的“知识库”入口。
+   多个页脚入口自动分配可用宽度，折叠侧边栏时纵向排列图标。桌面壳中的面板在操作按钮上方保留可拖动的标题栏区域。宿主可在文档根元素设置 `--host-titlebar-inset`（或 `--dsh-windows-titlebar-height`）；未提供时，Electron/Tauri 在 macOS 和 Windows 分别预留 38px 和 40px。DOM 全屏或根元素的 `data-fullscreen="true"` 会移除留白。
 2. 新建知识库并导入文件、目录、网页或文本。
 3. 如需本地向量检索，在“设置 > 本地模型”下载 embedding 模型；也可以配置 OpenAI 兼容服务或 Ollama。
 4. 如需识别扫描件，再下载约 21 MB 的 OCR 模型。
