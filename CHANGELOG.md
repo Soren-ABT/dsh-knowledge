@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Declare the host-provided runtime `zod` import as a peer dependency and verify this contract when checking the packed artifact (#71).
+
 ## 0.5.3 — 2026-11-07 — Adaptive embedding batches, directory sync and safe settings
 
 - Fix #59: apply vector similarity thresholds before multi-query rank fusion, rather than comparing RRF rank scores against a cosine threshold. Reranked results still use their relevance threshold.

@@ -493,6 +493,7 @@ dsh-knowledge 的定位是“一体化文档知识库”。下面的对照用于
 
 - **DSH**：在 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 提交 `b150a55`（2026.8.21）上开发并验证。若更新版本出现问题，请在 Issue 中附上 DSH 提交号。
 - **Node.js**：`^22.19.0 || >=24.0.0`。
+- **宿主依赖**：DSH 须提供符合 `^4.4.3` peer dependency 声明的 `zod`。源码开发使用上述固定 DSH 兼容提交，保持 Zod 类型一致。
 - **平台**：Windows、Linux x64/arm64、macOS Apple Silicon 支持完整功能。
 - **Intel Mac**：onnxruntime 没有 darwin-x64 二进制，本地 embedding 与 OCR 不可用；可改用远程 OpenAI 兼容服务或 Ollama。
 - **旧 Office 格式**：`.doc`、`.ppt`、`.xls` 依赖 `@firecrawl/anydoc` 的平台原生二进制。
