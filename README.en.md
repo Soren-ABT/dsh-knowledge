@@ -491,6 +491,7 @@ The primary differentiator is therefore not another vector-search implementation
 
 - **DSH**: developed and verified against [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) commit `b150a55` (2026.8.21). Include your DSH commit when reporting compatibility problems with a newer version.
 - **Node.js**: `^22.19.0 || >=24.0.0`.
+- **Host dependency**: DSH must provide `zod` matching the declared `^4.4.3` peer dependency. Source development also uses the pinned DSH compatibility anchor to align Zod types.
 - **Platforms**: Windows, Linux x64/arm64, and macOS on Apple Silicon support the complete feature set.
 - **Intel Mac**: onnxruntime does not provide a darwin-x64 binary, so local embeddings and OCR are unavailable. Use an OpenAI-compatible remote provider or Ollama instead.
 - **Legacy Office formats**: `.doc`, `.ppt`, and `.xls` parsing depends on the platform-native binaries from `@firecrawl/anydoc`.
