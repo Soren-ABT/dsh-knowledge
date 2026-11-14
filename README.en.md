@@ -123,6 +123,7 @@ Then rerun the same `dsh plugin --profile <profile> add ...` command. If YAML re
 ### Documents and source tracking
 
 - Create, rename, group, and delete bases; collapse groups in the sidebar and move bases between them.
+- Deleting a base also removes its document records. Startup recovery cleans up records left by previously deleted bases instead of repeatedly resuming their imports; no manual rebuild is needed.
 - Import documents from uploads, absolute file paths, directories, URLs, or plain text. Directory sources retain a stable ID, kind, and original path for later rescans.
 - Upload up to 20 files per selection, with a 22 MB per-file limit and a five-way background import pool.
 - Resolve same-name conflicts through server-authoritative rename, replace, or cancel choices; content hashes prevent duplicate imports.

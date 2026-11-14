@@ -530,20 +530,19 @@ class DomainStore implements Store {
     let removed = 0
     const resume: string[] = []
     for (const [id, doc] of [...this.documents.entries()]) {
-      // SQLite already published this generation. If its metadata acknowledgement
-      // was deferred, the old domain row may still say incomplete; it must not
-      // restart the import or mark the successfully published generation failed.
-      const pending = this.chunkDb.pendingDocumentGeneration(id)
-      if (pending !== undefined && pending.previousCreatedAt === doc.createdAt && pending.document.baseId === doc.baseId) continue
       // A document whose base no longer exists can never be re-indexed: it is a
       // leftover of a base removal, not a crash mid-import. Collect it instead
       // of resuming it (and rewriting the whole metadata unit) on every boot.
       if (this.getBase(doc.baseId) === undefined) {
         await this.chunkDb.deleteChunks(id)
         await this.metadata.run(() => this.documents.delete(id))
+        this.chunkDb.discardDocumentGenerations(id)
         removed += 1
         continue
       }
+      // Only a live base can retain a published generation awaiting metadata.
+      const pending = this.chunkDb.pendingDocumentGeneration(id)
+      if (pending !== undefined && pending.previousCreatedAt === doc.createdAt && pending.document.baseId === doc.baseId) continue
       if (doc.sourceType === 'directory') continue
       // Parsing failed in a completed import. Keep its raw source for an
       // explicit retry, but never re-run a potentially paid processor at boot.
@@ -739,6 +738,7 @@ class MemoryStore implements Store {
 
   async deleteBase(id: string): Promise<void> {
     this.bases.delete(id)
+    for (const [docId, generation] of this.staged) if (generation.document.baseId === id) this.staged.delete(docId)
     for (const [docId, doc] of [...this.documents.entries()]) {
       if (doc.baseId !== id) continue
       this.staged.delete(docId)

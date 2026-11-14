@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -7,6 +7,7 @@ import { knowledgeDomainSpec } from '../src/knowledge/domain.js'
 import { openStore } from '../src/knowledge/store.js'
 import type { StorageDomainFacility } from '../src/knowledge/store.js'
 import type { KnowledgeBase, KnowledgeChunk, KnowledgeDocument } from '../src/knowledge/types.js'
+import type { ChunkDatabase } from '../src/knowledge/chunkdb.js'
 
 /** Minimal in-memory KvTable matching the storage-domain runtime contract. */
 class FakeTable<K extends string, V> implements KvTable<K, V> {
@@ -99,6 +100,53 @@ describe('deleting a base collects its documents', () => {
 })
 
 describe('startup recovery never resumes documents of a removed base', () => {
+  it('collects an orphan even when its published generation awaits metadata acknowledgement', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-kb-orphan-generation-'))
+    const domain = fakeDomain()
+    const store = await domainStore(dir, domain)
+    try {
+      await store.putBase(base('b1'))
+      await store.putDocument(doc('d1', 'b1'))
+      const documents = domain.table('documents')
+      const put = vi.spyOn(documents, 'put').mockRejectedValueOnce(new Error('disk unavailable'))
+      await expect(store.commitDocumentGeneration(doc('d1', 'b1', { chunkCount: 1 }), [chunk('c1', 'd1', 'b1')]))
+        .rejects.toMatchObject({ published: true })
+      put.mockRestore()
+      await domain.table('bases').delete('b1')
+
+      expect(await store.recoverInterruptedImports(Date.now())).toEqual({ removed: 1, resume: [] })
+      expect(store.getDocument('d1')).toBeUndefined()
+      expect(store.listChunksByDoc('d1')).toEqual([])
+      const db = (store as unknown as { chunkDb: ChunkDatabase }).chunkDb
+      expect(db.pendingDocumentGeneration('d1')).toBeUndefined()
+      expect(await store.recoverInterruptedImports(Date.now())).toEqual({ removed: 0, resume: [] })
+    } finally {
+      await store.close()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('discards staged chunks when collecting a removed base directory record', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-kb-orphan-staged-'))
+    const domain = fakeDomain()
+    const store = await domainStore(dir, domain)
+    try {
+      await store.putBase(base('b1'))
+      const directory = doc('d1', 'b1', { sourceType: 'directory', errorCode: 'parse_failed' })
+      await store.putDocument(directory)
+      await store.stageDocumentGeneration(directory, [chunk('c1', 'd1', 'b1')])
+      await domain.table('bases').delete('b1')
+
+      expect(await store.recoverInterruptedImports(Date.now())).toEqual({ removed: 1, resume: [] })
+      const db = (store as unknown as { chunkDb: ChunkDatabase }).chunkDb
+      expect(db.getStagedDocumentGeneration('d1')).toBeUndefined()
+      expect(store.getDocument('d1')).toBeUndefined()
+    } finally {
+      await store.close()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('collects a base-less document whatever its embedding state', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'dsh-kb-base-gone-'))
     const domain = fakeDomain()
