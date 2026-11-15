@@ -80,7 +80,7 @@ dsh plugin --profile <name> add dsh-knowledge
 
 ```bash
 # GitHub Release 或 npm pack 生成的 tarball
-dsh plugin --profile <name> add ./dsh-knowledge-0.5.3.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.4.tgz
 
 # 本地源码目录，需要先完成构建
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -278,6 +278,18 @@ HTTP `POST /knowledge/search` 在 `filter` 内接受 `excludeDocIds` 和 `titleE
 - 元数据写入（知识库、文档和全局配置）共用一条写入链；`EPERM`、`EBUSY`、`EACCES` 按 20/50/100/200/400 ms 有界重试，最多写入 6 次。持续 I/O 错误会明确报错并保留之前的元数据。
 - 启动成功加载后，自愈写入失败会警告并跳过其余清理，保留可读取的持久库；后台恢复逐条处理失败，恢复状态写入失败也不会产生未处理的拒绝或中止宿主（#55）。无需格式迁移或禁用 `resumeInterruptedOnStartup`；宿主通用 `rename` 问题仍需上游修复。
 - `knowledge.json` 包含库名、文档记录和配置，不是可随意删除的缓存；仅备份 SQLite 并不完整，备份应同时保留 storage domain 元数据、SQLite 和 `knowledge-raw`。
+
+---
+
+## v0.5.4 更新重点
+
+- **分块质量（#67 / #68）**：过滤已识别的纯标记片段，在同一标题节内合并较短的智能分块，保留字面代码和正文；已完成的空索引不会在每次启动时反复恢复。
+- **启动与删除（#70 / #73 / #74）**：产物清理改为后台执行，最多四个 worker，删除前检查最新 revision，卸载时取消。删除知识库同时清理文档记录，启动恢复会移除旧版本遗留的无主记录。
+- **桌面布局（#69 / #72 / #75）**：标题和关闭按钮避让原生窗口控件，共享页脚入口自动分配宽度，折叠侧边栏时纵向排列图标。
+- **宿主依赖（#71）**：明确声明运行时使用的 `zod` peer dependency，并在发布包检查中验证。
+- **升级方式**：从 0.5.3 升级无需数据库格式迁移或重新下载模型。已有索引保持可用；需要应用新分块规则的文档可手动重建。大量历史无主记录的首次清理仍可能耗时。
+
+[查看 v0.5.4 发布说明](./docs/releases/v0.5.4.md) · [查看 CHANGELOG](./CHANGELOG.md)
 
 ---
 
