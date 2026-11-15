@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Collect document metadata when deleting a base, and remove existing base-less records during startup recovery instead of repeatedly reindexing them. Discard their staged and pending generations too; live bases retain normal recovery behavior. No storage migration or manual index rebuild is required (#70).
 - Run startup artifact cleanup in the background with four bounded workers, keeping it off service readiness. Resolve live/staged/job revision pins at deletion time and cancel collection on teardown; keep the seven-day retention window (#73, #74).
 
 ## 0.5.3 — 2026-11-07 — Adaptive embedding batches, directory sync and safe settings
