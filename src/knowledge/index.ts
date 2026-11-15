@@ -230,6 +230,9 @@ const LOCAL_RERANK_LOAD_ALLOWANCE_MS = 120_000
 const EMBED_MAX_ATTEMPTS = 3
 const EMBED_RETRY_BASE_DELAY_MS = 1000
 const EMBED_RETRY_MAX_DELAY_MS = 30_000
+/** Startup artifact GC is I/O-bound; a few workers finish it faster without
+ *  letting a huge library monopolize the disk while the app becomes usable. */
+const ARTIFACT_CLEANUP_CONCURRENCY = 4
 
 interface BackgroundJob {
   readonly baseId: string
@@ -320,6 +323,8 @@ export class KnowledgeService extends Service {
   private readonly processingQueue = new ProcessingQueue()
   private readonly processingProgress = new Map<string, ProcessingProgress>()
   private readonly processingControllers = new Map<string, AbortController>()
+  /** Aborts the detached startup artifact scan when the plugin unloads. */
+  private readonly artifactCleanupController = new AbortController()
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'knowledge')
@@ -357,22 +362,20 @@ export class KnowledgeService extends Service {
     this.artifacts = new ArtifactRepository(store.raw !== undefined
       ? join(dirname(resolveChunkStorePath(this.baseConfig.chunkStorePath)), 'knowledge-artifacts')
       : undefined)
-    for (const base of store.listBases()) {
-      for (const doc of store.listDocuments(base.id)) {
-        const staged = store.getStagedDocumentGeneration(doc.id)
-        const pinned = [doc.processing?.revision, staged?.document.processing?.revision].filter((value): value is string => value !== undefined)
-        await this.artifacts.collectDocument(base.id, doc.id, pinned).catch(() => {
-          this.ctx.logger.warn('knowledge: artifact cleanup deferred (artifact_io)')
-        })
-      }
-    }
     this.resolveStore()
     this.ctx.effect(() => () => {
       this.directorySyncDisposed = true
       this.directorySyncScheduler.dispose()
+      this.artifactCleanupController.abort()
       for (const controller of this.processingControllers.values()) controller.abort()
       for (const active of this.indexing.values()) active.controller?.abort()
     }, 'knowledge: cancel document processors')
+    // Artifact GC deletes revision directories older than seven days; it is not
+    // needed for readiness. Scanning every document here used to put two
+    // filesystem calls per document on the startup path — on a large library
+    // (7k+ documents) that could exceed the host's 60s startup budget. Run it
+    // detached so the panel and tools become available immediately.
+    this.runBackground('artifact cleanup', this.collectStaleArtifacts())
     // Reapply the RUNTIME overrides persisted in the domain (they survive
     // restarts): without this, a saved localModelCacheDir / hfEndpoint was
     // only live after the next explicit save — model downloads/checks and the
@@ -635,6 +638,65 @@ export class KnowledgeService extends Service {
     void task.catch(error => {
       this.ctx.logger.warn(`knowledge: ${label} failed: ${error instanceof Error ? error.message : String(error)}`)
     })
+  }
+
+  /**
+   * Detached startup GC for the artifact store: drop revision directories
+   * older than seven days while keeping live/staged revisions. The scan uses a
+   * small worker pool and stops on teardown; it never gates readiness, so a
+   * large library cannot delay the host's startup walk.
+   */
+  private async collectStaleArtifacts(): Promise<void> {
+    // Defer even the in-memory target enumeration until init has returned.
+    await new Promise<void>(resolve => setImmediate(resolve))
+    const store = this.store
+    const signal = this.artifactCleanupController.signal
+    if (store === undefined || signal.aborted) return
+    const targets: Array<{ baseId: string; documentId: string }> = []
+    for (const base of store.listBases()) {
+      for (const doc of store.listDocuments(base.id)) {
+        targets.push({
+          baseId: base.id,
+          documentId: doc.id,
+        })
+      }
+    }
+    if (targets.length === 0 || signal.aborted) return
+    let cursor = 0
+    let removed = 0
+    let deferred = 0
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (signal.aborted) return
+        const target = targets[cursor]
+        cursor += 1
+        if (target === undefined) return
+        try {
+          if (store.getDocument(target.documentId)?.baseId !== target.baseId) continue
+          // A queued document may have been rebuilt since enumeration. Resolve
+          // live and staged pins again immediately before a stale deletion.
+          const pinned = (): string[] => {
+            if (signal.aborted) return []
+            const current = store.getDocument(target.documentId)
+            const staged = store.getStagedDocumentGeneration(target.documentId)
+            return [current?.processing?.revision, staged?.document.processing?.revision]
+              .filter((value): value is string => value !== undefined)
+          }
+          removed += await this.artifacts.collectDocument(target.baseId, target.documentId, pinned, Date.now(), signal)
+        } catch {
+          deferred += 1
+        }
+      }
+    }
+    await Promise.all(Array.from(
+      { length: Math.min(ARTIFACT_CLEANUP_CONCURRENCY, targets.length) },
+      () => worker(),
+    ))
+    if (signal.aborted || (removed === 0 && deferred === 0)) return
+    const summary = `knowledge: artifact cleanup scanned ${targets.length} document(s), removed ${removed} stale revision(s)`
+      + (deferred > 0 ? `, ${deferred} deferred` : '')
+    if (deferred > 0) this.ctx.logger.warn(summary)
+    else this.ctx.logger.info(summary)
   }
 
   /**
