@@ -732,12 +732,11 @@ describe('KnowledgeService', () => {
     })
     await service.deleteBase(base.id)
     await service.waitForIdle()
-    // deleteBase leaves the document row behind (no cascade), but the in-flight
-    // task must not write chunks back under the removed base (Cherry's
-    // deleting-guard) nor flip the row to a terminal state.
+    // deleteBase collects the base's document rows, so nothing is left to
+    // re-index under the removed base; the in-flight task must not write chunks
+    // back either (Cherry's deleting-guard).
+    expect(service.listDocuments(base.id)).toEqual([])
     expect(service.listChunks(doc.id)).toHaveLength(0)
-    const orphan = service.listDocuments(base.id)[0]
-    expect(orphan?.embeddingError).toBeUndefined()
   })
 
   it('uploads a PDF end to end: row lands, pool parses, chunks are indexed', async () => {

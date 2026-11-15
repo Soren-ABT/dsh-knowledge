@@ -525,6 +525,9 @@ describe('ChunkDatabase (per-chunk SQL layout)', () => {
 
   it('keeps explicitly failed parser imports out of automatic recovery', async () => {
     const store = await openStore(undefined)
+    // Documents belong to an existing base; a base-less row is collected by
+    // recovery, which is not what this test is about.
+    await store.putBase({ id: 'b1', name: 'b1', description: '', createdAt: 1, updatedAt: 1 })
     const failed: KnowledgeDocument = {
       id: 'failed', baseId: 'b1', title: 'scan.pdf', sourceType: 'file',
       rawFilePath: 'b1/scan.pdf', errorCode: 'parse_failed',
