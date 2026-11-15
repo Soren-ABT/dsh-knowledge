@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.6.4 — 2026-11-15 — Cleaner chunks, background maintenance and desktop layout
+
+- Filter recognized markup-only fragments and merge short smart-chunk blocks within their heading section and size budget. Preserve literal code and authored content; keep explicitly completed empty indexes out of startup recovery. Reindex existing documents to apply the updated chunking rules (#67, #68).
 - Keep panel controls below native desktop titlebars, with host CSS overrides, Electron/Tauri fallbacks, fullscreen updates, and a draggable background band (#69).
 - Allocate shared sidebar footer actions to equal columns in wide mode and stack rail icons in collapsed mode, preserving visibility alongside legacy full-width plugin actions (#72).
 - Collect document metadata when deleting a base, and remove existing base-less records during startup recovery instead of repeatedly reindexing them. Discard their staged and pending generations too; live bases retain normal recovery behavior. No storage migration or manual index rebuild is required (#70).
