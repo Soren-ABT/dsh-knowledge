@@ -78,7 +78,7 @@ Lexical retrieval works without downloading a model. Scanned-document OCR, local
 
 ```bash
 # Tarball from GitHub Releases or npm pack
-dsh plugin --profile <name> add ./dsh-knowledge-0.5.3.tgz
+dsh plugin --profile <name> add ./dsh-knowledge-0.5.4.tgz
 
 # Local source directory; build it first
 dsh plugin --profile <name> add file:/path/to/dsh-knowledge
@@ -276,6 +276,18 @@ Filters apply only to the current request. No database migration, reindex, or do
 - Metadata writes for bases, documents, and global configuration share one queue. `EPERM`, `EBUSY`, and `EACCES` receive bounded retries after 20/50/100/200/400 ms, for at most six write attempts. Persistent I/O errors are reported and retain the previous metadata.
 - After a successful startup load, a failed self-healing write warns and skips remaining cleanup, keeping the durable library readable. Background recovery handles each document independently; failure to persist recovery state does not cause an unhandled rejection or terminate the host (#55). No format migration or disabling `resumeInterruptedOnStartup` is required; the host's general `rename` issue still needs an upstream fix.
 - `knowledge.json` contains base names, document records, and configuration; do not delete it as disposable cache. A SQLite-only backup is incomplete: retain storage-domain metadata, SQLite, and `knowledge-raw` together.
+
+---
+
+## v0.5.4 highlights
+
+- **Chunk quality (#67 / #68):** filter recognized markup-only fragments and merge short smart chunks within their heading section and size budget. Preserve literal code and authored content; completed empty indexes no longer restart recovery on every boot.
+- **Startup and deletion (#70 / #73 / #74):** collect artifacts in the background with at most four workers, resolve current revision pins before deletion, and cancel on unload. Deleting a base also collects its document records; startup recovery removes historical base-less records.
+- **Desktop layout (#69 / #72 / #75):** keep panel actions below native window controls, share footer width between plugin actions, and stack icons in collapsed sidebars.
+- **Host dependency (#71):** declare the runtime `zod` peer dependency and verify it when checking the package.
+- **Upgrade:** no database-format migration or model redownload is required from 0.5.3. Existing indexes remain usable; manually rebuild documents to apply the new chunking rules. The first cleanup of a large historical orphan set can still take time.
+
+[Read the v0.5.4 release notes](./docs/releases/v0.5.4.md) · [Read the changelog](./CHANGELOG.md)
 
 ---
 
