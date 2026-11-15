@@ -124,6 +124,7 @@ Then rerun the same `dsh plugin --profile <profile> add ...` command. If YAML re
 ### Documents and source tracking
 
 - Create, rename, group, and delete bases; collapse groups in the sidebar and move bases between them.
+- Deleting a base also removes its document records. Startup recovery cleans up records left by previously deleted bases instead of repeatedly resuming their imports; no manual rebuild is needed.
 - Import documents from uploads, absolute file paths, directories, URLs, or plain text. Directory sources retain a stable ID, kind, and original path for later rescans.
 - Upload up to 20 files per selection, with a 22 MB per-file limit and a five-way background import pool.
 - Resolve same-name conflicts through server-authoritative rename, replace, or cancel choices; content hashes prevent duplicate imports.
@@ -186,6 +187,7 @@ v0.5.2 fixes #51: evidence and document-read trimming preserve UTF-16 surrogate 
 - The cache directory supports native folder selection, opening, and safe migration so large local weights can live outside the system drive.
 - Ollama management supports listing, pulling, cancelling, and deleting models. Browsing or pulling never changes the active embedding configuration implicitly.
 - The management panel provides base navigation, document tables, batch rebuild/delete actions, source and chunk previews, recall testing, global/per-base settings, and toast feedback.
+- Startup artifact maintenance runs in the background so its document scan does not delay service readiness. Live, staged, and recoverable-job revisions stay protected; unused revisions are retained for seven days. No reindex is required after upgrading.
 
 **v0.5.1 fix (issue #42):** Cache-directory Browse/Open and the MinerU installation-directory picker support DSH 0.2's new interfaces and the older interfaces. Cancelling preserves the existing input. If the Host lacks a capability, cache-directory actions display a notice and MinerU hides the picker button; paths remain editable manually.
 
@@ -492,6 +494,7 @@ The primary differentiator is therefore not another vector-search implementation
 
 - **DSH**: developed and verified against [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) commit `b150a55` (2026.8.21). Include your DSH commit when reporting compatibility problems with a newer version.
 - **Node.js**: `^22.19.0 || >=24.0.0`.
+- **Host dependency**: DSH must provide `zod` matching the declared `^4.4.3` peer dependency. Source development also uses the pinned DSH compatibility anchor to align Zod types.
 - **Platforms**: Windows, Linux x64/arm64, and macOS on Apple Silicon support the complete feature set.
 - **Intel Mac**: onnxruntime does not provide a darwin-x64 binary, so local embeddings and OCR are unavailable. Use an OpenAI-compatible remote provider or Ollama instead.
 - **Legacy Office formats**: `.doc`, `.ppt`, and `.xls` parsing depends on the platform-native binaries from `@firecrawl/anydoc`.

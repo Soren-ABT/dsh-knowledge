@@ -72,6 +72,9 @@ async function main() {
   const pkg = JSON.parse(await readFile('package.json', 'utf8'))
   const manifest = JSON.parse(await readFile('dsh.plugin.json', 'utf8'))
   const errors = []
+  // zod is externalized by build.mjs and resolved from the DSH host at runtime.
+  // A devDependency alone hides a missing peer contract in source checkouts.
+  if (!pkg.peerDependencies?.zod) errors.push('host-provided runtime import zod must be declared as a peer dependency')
   if (pkg.version !== manifest.version) errors.push(`manifest version ${manifest.version} differs from package version ${pkg.version}`)
   for (const path of new Set([pkg.main, pkg.types, ...exportedPaths(pkg.exports)])) {
     if (typeof path !== 'string') continue

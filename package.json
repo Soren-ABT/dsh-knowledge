@@ -123,6 +123,9 @@
   "optionalDependencies": {
     "@napi-rs/canvas-win32-x64-msvc": "^1.0.6"
   },
+  "peerDependencies": {
+    "zod": "^4.4.3"
+  },
   "devDependencies": {
     "@deepseek-ai/cordis": "link:../dsh/vendor/cordis",
     "@deepseek-ai/dsh-host-webserver": "link:../dsh/packages/host/webserver",
