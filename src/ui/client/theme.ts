@@ -74,6 +74,19 @@ body, .kb-panel-in {
 .kb-sidebar-action { background: transparent }
 .kb-sidebar-action:hover { background: var(--kb-hover) }
 .kb-sidebar-action:active { background: var(--kb-active) }
+/* The shared slot may contain legacy actions sized to a whole row. Grid
+   resolves each action's percentage width against its own equal track rather
+   than the entire sidebar. Scope coordination to our direct slot container. */
+:where(*):has(> button.kb-sidebar-action[data-wide="true"]) {
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr);
+  align-items: center; column-gap: 4px;
+}
+:where(*):has(> button.kb-sidebar-action[data-wide="false"]) {
+  display: grid; grid-auto-flow: row; justify-items: center;
+}
+.kb-sidebar-action > svg { flex-shrink: 0 }
+.kb-sidebar-action > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.kb-titlebar-band { -webkit-app-region: drag; app-region: drag }
 .kb-dangerbtn:hover { color: var(--dsw-alias-state-error-primary, #e5484d); background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 10%, transparent) }
 /* Primary (accent-filled) buttons: DSH's brand-primary inverts between themes
    (near-black in light, near-white in dark) and ships a dedicated hover token,
@@ -114,8 +127,10 @@ body, .kb-panel-in {
 export const style = {
   panel: {
     position: 'fixed', inset: 0, zIndex: 300, display: 'flex', flexDirection: 'column',
-    top: 'max(var(--kb-titlebar-inset, 0px), calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 0px)))',
     background: C.bg, color: C.text, pointerEvents: 'auto',
+  } as CSSProperties,
+  titlebarBand: {
+    height: 'var(--kb-titlebar-inset, 0px)', flexShrink: 0, background: C.surface,
   } as CSSProperties,
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -255,12 +270,9 @@ export const style = {
   } as CSSProperties,
   modalHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 } as CSSProperties,
   sidebarAction: {
-    // Geometry mirrors the shell's Settings trigger (ui-settings-general
-    // SettingsRoot.module.css) so the two footer rows read as one. Background
-    // is set by the .kb-sidebar-action class (hover must be able to override).
-    flex: 'none', display: 'flex', alignItems: 'center', gap: 8,
-    width: 'calc(100% + 8px)', height: 34,
-    margin: '4px -4px 4px', padding: '6px 2px 6px 10px',
+    flex: '1 1 0%', display: 'flex', alignItems: 'center', gap: 8,
+    width: '100%', minWidth: 0, maxWidth: '100%', height: 34,
+    margin: '4px 0', padding: '6px 10px',
     boxSizing: 'border-box', border: 'none', borderRadius: 12,
     cursor: 'pointer', overflow: 'hidden',
     color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit',

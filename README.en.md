@@ -65,6 +65,7 @@ The plugin is installed at the profile level, so the same command works whether 
 ### 3. Complete the first setup
 
 1. Open Knowledge from the bottom of the sidebar, beside Settings.
+   Shared footer actions divide the available width; collapsed sidebars stack the icon buttons. In desktop shells the panel reserves a draggable titlebar band above its actions. Hosts can set `--host-titlebar-inset` (or `--dsh-windows-titlebar-height`) on the document root; otherwise Electron/Tauri use 38px on macOS and 40px on Windows. DOM fullscreen and `data-fullscreen="true"` on the root remove the band.
 2. Create a base and import files, a directory, a web page, or text.
 3. For local vector retrieval, download an embedding model from Settings > Local Models. You can instead configure an OpenAI-compatible endpoint or Ollama.
 4. Download the approximately 21 MB OCR model if you need scanned-document recognition.

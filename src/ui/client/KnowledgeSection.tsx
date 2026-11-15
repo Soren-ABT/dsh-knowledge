@@ -108,7 +108,9 @@ export function SidebarKnowledgeAction(props: {
   const open = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot)
   return (
     <button
+      type="button"
       className="kb-sidebar-action"
+      data-wide={props.wide}
       style={{
         ...style.sidebarAction,
         ...(props.wide ? {} : style.sidebarActionRail),
@@ -1368,6 +1370,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
   return (
     <div style={{ ...style.panel, '--kb-titlebar-inset': `${titlebarInset}px` } as CSSProperties} className="kb-panel-in">
+      <div className="kb-titlebar-band" style={style.titlebarBand} aria-hidden="true" />
       <div style={style.header}>
         <div style={style.headerLeft}>
           <IconBook size={20} color={C.accent} />
