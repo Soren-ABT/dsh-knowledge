@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Run startup artifact cleanup in the background with four bounded workers, keeping it off service readiness. Resolve live/staged/job revision pins at deletion time and cancel collection on teardown; keep the seven-day retention window (#73, #74).
+
 ## 0.5.3 — 2026-11-07 — Adaptive embedding batches, directory sync and safe settings
 
 - Fix #59: apply vector similarity thresholds before multi-query rank fusion, rather than comparing RRF rank scores against a cosine threshold. Reranked results still use their relevance threshold.
