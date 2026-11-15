@@ -619,8 +619,7 @@ export async function loadLocalModel(modelId: string, task: 'feature-extraction'
   await callWorker('release', { modelId, cacheDir: staging })
   const finalPath = join(localModelCacheDir(), modelId)
   await mkdir(dirname(finalPath), { recursive: true })
-  await rm(finalPath, { recursive: true, force: true })
-  await rename(stagingModelPath(modelId), finalPath)
+  await promoteDownload(stagingModelPath(modelId), finalPath)
   await callWorker('load', { modelId })
   const probe = await callWorker('embed', { modelId, texts: ['dsh local embedding readiness probe'], pooling: poolingFor(modelId) }) as number[][]
   await writeLocalEmbeddingReadiness(modelId, probe[0]?.length ?? 0)
@@ -645,6 +644,41 @@ async function isDownloadedAt(modelRoot: string): Promise<boolean> {
     return false
   } catch {
     return false
+  }
+}
+
+/** Promotion retry budget for a staged download. The delays sum to ~10s:
+ * long enough for a Windows antivirus or search-indexer scan of freshly
+ * written weights to finish, short enough that a genuinely stuck lock still
+ * surfaces promptly. */
+const PROMOTION_RETRY_DELAYS_MS = [100, 250, 500, 1000, 1000, 2000, 2000, 3000] as const
+
+/** Locks that a scanner race produces on the promotion path; anything else
+ * (a missing staging directory, a disk error) must not be retried. */
+function isTransientPromotionLock(code: string | undefined): boolean {
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY' || code === 'ENOTEMPTY'
+}
+
+/** Move a fully downloaded staging directory into its final cache location.
+ * Windows can fail the rename with EPERM for a moment after every process
+ * handle is closed, because antivirus or the search indexer is still holding
+ * the fresh weights; retry those codes briefly instead of surfacing the scan
+ * as a failed download. The staging directory is left intact on failure, so
+ * a later retry starts from the same complete download. */
+async function promoteDownload(stagingPath: string, finalPath: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rm(finalPath, { recursive: true, force: true })
+      await rename(stagingPath, finalPath)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (attempt >= PROMOTION_RETRY_DELAYS_MS.length || !isTransientPromotionLock(code)) throw error
+      await new Promise(resolve => {
+        const timer = setTimeout(resolve, PROMOTION_RETRY_DELAYS_MS[attempt])
+        timer.unref?.()
+      })
+    }
   }
 }
 
