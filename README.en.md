@@ -35,7 +35,7 @@ Bring project manuals, papers, and team wikis into DSH. In chat, you can search 
 
 ## Install and try it
 
-Use Node.js 24.9.0 or newer for the DSH releases listed here and choose a working profile. Merge these entries into `allowBuilds` in the profile’s `pnpm-workspace.yaml`.
+Start DSH `0.2.2-rc.5` with Node.js 24.9.0 or newer and choose a profile. Merge these entries into `allowBuilds` in the profile’s `pnpm-workspace.yaml`.
 
 ```yaml
 allowBuilds:
@@ -92,6 +92,6 @@ Omitting the base arguments searches the enabled scope. Passing `baseIds: []` re
 
 ## Running and maintaining the plugin
 
-- Packed-install CI starts the plugin on Windows and Ubuntu with DSH `0.2.2-rc.3`, `0.2.2-rc.4`, and `0.2.2-rc.5`. On Intel Macs, use keyword search or a remote model.
+- Packed-install CI boots the plugin on Windows and Ubuntu with DSH `0.2.2-rc.5`. On Intel Macs, use keyword search or a remote model.
 - Back up DSH storage-domain metadata, the SQLite chunk database, `knowledge-raw` originals, and the `knowledge-artifacts` processing outputs together.
 - [Changelog](./CHANGELOG.md) · [Retrieval benchmarks](./benchmarks/README.md) · [Contributing](./CONTRIBUTING.md) · [Security reporting](./SECURITY.md) · [AGPL-3.0 license](./LICENSE)

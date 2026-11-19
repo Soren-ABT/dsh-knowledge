@@ -37,7 +37,7 @@
 
 ## 安装并试用
 
-使用 Node.js 24.9.0 或更高版本启动本页所列的 DSH，并选好一个 profile。将下面的条目合并到该 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds` 中。
+使用 Node.js 24.9.0 或更高版本启动 DSH `0.2.2-rc.5`，选好一个 profile。将下面的条目合并到该 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds` 中。
 
 ```yaml
 allowBuilds:
@@ -94,6 +94,6 @@ dsh plugin --profile <profile> add dsh-knowledge@0.6.0-beta.1
 
 ## 运行与维护
 
-- DSH 打包安装测试覆盖 `0.2.2-rc.3`、`0.2.2-rc.4` 和 `0.2.2-rc.5`，在 Windows 和 Ubuntu 上启动安装后的插件。Intel Mac 可使用关键词检索或远程模型。
+- DSH 打包安装测试在 Windows 和 Ubuntu 上使用 `0.2.2-rc.5` 启动安装后的插件。Intel Mac 可使用关键词检索或远程模型。
 - 备份时一并保存 DSH 的 storage-domain 元数据、分块 SQLite、`knowledge-raw` 原文和 `knowledge-artifacts` 解析产物。
 - [版本记录](./CHANGELOG.md) · [检索评测](./benchmarks/README.md) · [贡献指南](./CONTRIBUTING.md) · [安全问题报告](./SECURITY.md) · [AGPL-3.0 许可](./LICENSE)

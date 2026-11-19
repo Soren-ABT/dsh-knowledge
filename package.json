@@ -133,8 +133,11 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "link:../dsh/vendor/cordis",
     "@deepseek-ai/dsh-host-webserver": "link:../dsh/packages/host/webserver",
+    "@deepseek-ai/dsh-llm": "link:../dsh/packages/llm/llm",
     "@deepseek-ai/dsh-storage": "link:../dsh/packages/storage/storage",
     "@deepseek-ai/dsh-storage-domain": "link:../dsh/packages/storage/storage-domain",
+    "@deepseek-ai/dsh-system-prompt": "link:../dsh/packages/core/system-prompt",
+    "@deepseek-ai/dsh-tool-executor-native": "link:../dsh/packages/core/tool-executor-native",
     "@deepseek-ai/dsh-tools": "link:../dsh/packages/core/tools",
     "@deepseek-ai/schemastery": "link:../dsh/vendor/schemastery",
     "@types/node": "^24.0.0",

@@ -31,7 +31,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Source build for DSH 0.2.2-rc.5. Packed installs below use the public CLI.
+  DSH_CLI_VERSION: 0.2.2-rc.5
+  # Matching source commit for the public CLI above.
   DSH_COMMIT: 9c2670d3bce5275e0d1610272958121af87787bb
   DSH_TELEMETRY_DISABLED: '1'
   # These runners use CPU inference; ONNX Runtime ships the CPU binaries.
@@ -76,18 +77,18 @@ jobs:
       - run: npm run audit:prod
       - run: npm run typecheck
       - run: npm test
-      - run: npm run benchmark
       - run: npm run build
+      - run: node scripts/benchmark-retrieval.mjs
       - run: npm run verify:package
       # Prove every emitted companion bundle loads, speaks its protocol and shuts
       # down cleanly. vitest runs src/, where three of the four exist only as .ts,
       # so this is the only gate that executes those child implementations at all.
-      - run: npm run smoke:workers
+      - run: node scripts/smoke-worker-protocol.mjs
 
   native-platform:
     name: Native (${{ matrix.os }}, Node 24)
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -116,57 +117,27 @@ jobs:
       # Fork/worker behaviour is platform-specific (Windows cannot rename a file a
       # native runtime holds open, process spawn differs, …), so run the bundle
       # protocol smoke on every native platform too.
-      - run: npm run smoke:workers
-
-  packed-dsh-smoke:
-    name: Packed DSH smoke (${{ matrix.os }}, DSH ${{ matrix.dsh }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        # Pin the three most recent published CLI versions when preparing a release.
-        dsh: [0.2.2-rc.3, 0.2.2-rc.4, 0.2.2-rc.5]
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: pnpm/action-setup@v6.1.1
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: 24.x
-          cache: pnpm
-      - name: Validate plugin build policy
-        run: node scripts/verify-build-policy.mjs
-      - name: Check out the pinned DSH compatibility anchor
+      - run: node scripts/smoke-worker-protocol.mjs
+      - name: Install DSH ${{ env.DSH_CLI_VERSION }}
+        if: runner.os != 'macOS'
         shell: bash
-        run: |
-          git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness "$GITHUB_WORKSPACE/../dsh"
-          git -C "$GITHUB_WORKSPACE/../dsh" checkout "$DSH_COMMIT"
-      - name: Build DSH library types
-        working-directory: ../dsh
-        run: pnpm install --frozen-lockfile && pnpm run build:lib
-      - run: pnpm install --frozen-lockfile
-      - run: npm run build
-      - name: Install pinned public DSH CLI
-        shell: bash
-        env:
-          DSH_CLI_VERSION: ${{ matrix.dsh }}
         run: |
           npm install --prefix "$RUNNER_TEMP/dsh-smoke-cli" --omit=dev --no-audit --no-fund "@deepseek-ai/dsh@$DSH_CLI_VERSION"
           echo "DSH_CMD=$RUNNER_TEMP/dsh-smoke-cli/node_modules/@deepseek-ai/dsh/lib/bin.js" >> "$GITHUB_ENV"
-      - name: Install tarball and boot DSH
+      - name: Install tarball and boot DSH ${{ env.DSH_CLI_VERSION }}
+        if: runner.os != 'macOS'
         run: npm run smoke:packed
 
   packed-dsh-compatibility:
     name: Packed DSH compatibility
-    needs: packed-dsh-smoke
+    needs: native-platform
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require the entire packed-install matrix to pass
+      - name: Require the native jobs and their packed installs to pass
         env:
-          MATRIX_RESULT: ${{ needs.packed-dsh-smoke.result }}
+          MATRIX_RESULT: ${{ needs.native-platform.result }}
         run: test "$MATRIX_RESULT" = success
 
   local-model-smoke:

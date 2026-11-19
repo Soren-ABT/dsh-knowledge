@@ -8,7 +8,7 @@
 - Separate tool registration, evidence selection and rendering from the search engine, reranker and context assembly. Existing tool schemas and service entry points are preserved.
 - Retry local embedding cache promotion through transient file locks after a completed download. Keep the staged files if retries run out and allow cancellation during the wait (#78, #79).
 - Use ONNX Runtime 1.30.0 for PaddleOCR and Transformers.js so the two engines share one native dependency and satisfy PaddleOCR's peer requirement (#80).
-- Test packed installs on Windows and Ubuntu with DSH 0.2.2-rc.3, rc.4 and rc.5. The public npm prerelease channel is `beta`.
+- Test packed installs with DSH 0.2.2-rc.5 in the existing Windows and Ubuntu jobs. The public npm prerelease channel is `beta`.
 
 ## 0.5.4 — 2026-11-15 — Cleaner chunks, background maintenance and desktop layout
 
