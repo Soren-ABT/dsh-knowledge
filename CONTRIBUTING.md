@@ -18,7 +18,8 @@ workspace/
 
 For this release, source builds use DSH `0.2.2-rc.5` at the commit below.
 CI pins one published `@deepseek-ai/dsh` version and its matching source
-commit. Building the sibling DSH checkout first makes its
+commit. Build the host libraries in the sibling DSH checkout for its SDK types
+and runtime modules. Installing the host dependencies also makes the
 `storage-domain` copy of Zod available to the plugin. Both compile the same
 document schemas, and installed plugins use the host's runtime peer. The Windows
 and Ubuntu native jobs also install the tarball and boot the public CLI.
@@ -29,7 +30,7 @@ git -C dsh checkout 9c2670d3bce5275e0d1610272958121af87787bb
 git clone https://github.com/Soren-ABT/dsh-knowledge.git dsh-knowledge
 cd dsh
 pnpm install --frozen-lockfile
-pnpm run build:lib
+pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries
 cd ../dsh-knowledge
 pnpm install --frozen-lockfile
 ```
