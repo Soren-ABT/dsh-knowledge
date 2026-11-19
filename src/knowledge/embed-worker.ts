@@ -22,7 +22,6 @@ import { applyGlobalProxy, NETWORK_HINT } from './net.js'
 import {
   LOCAL_EMBED_PROTOCOL_VERSION,
   isLocalEmbedRequest,
-  type LocalEmbedRequest,
   type LocalEmbedOperation,
 } from './embed-protocol.js'
 

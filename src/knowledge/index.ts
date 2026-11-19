@@ -10,7 +10,6 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
 import { cp, mkdir, readdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
-import { isIP } from 'node:net'
 import { chunkText, mergeSemanticSegments, refineChunksByTokenLimit, splitSemanticSegments } from './chunk.js'
 import type { ChunkPiece } from './chunk.js'
 import { chunkParsedDocument } from './structured-chunk.js'
@@ -22,7 +21,9 @@ import type { DocumentEvidence, ProcessingProgress } from './processing-types.js
 import { composeDocumentEvidence } from './evidence.js'
 import { ProcessingQueue } from './processing-queue.js'
 import { processingBudget } from './processor-transport.js'
-import { composeContextWindow, estimateContextTokens, serializeContextWindow } from './context.js'
+import { composeContextWindow } from './context.js'
+import { clampInt } from './bounds.js'
+import { KnowledgeSearch, type SearchExecutionOptions } from './search.js'
 import { snapSliceEnd, snapSliceStart } from './text-safety.js'
 import { Config, resolveConfig, resolveConfigFor } from './config.js'
 import { embeddingBatchSize, embedWithMemoryFallback, isEmbeddingBatchLimitError, isEmbeddingOutOfMemory } from './embedding-batch.js'
@@ -45,17 +46,13 @@ import {
 import type { LocalModelStatus } from './embed.js'
 import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, hasActiveLocalRerankDownload, listLocalModels, LOCAL_MODELS, registerCustomLocalReranker, selfTestLocalModel } from './localModels.js'
 import type { LocalModelSummary } from './localModels.js'
-import { disposeLocalRerankProcess, localRerankChildIsWarm, setLocalRerankIdleTimeoutMs } from './local-rerank.js'
+import { disposeLocalRerankProcess, setLocalRerankIdleTimeoutMs } from './local-rerank.js'
 import { downloadOcrModels, disposeOcrWorker, getOcrModelStatus, removeOcrModels, type OcrModelStatus } from './ocr.js'
-import { httpFetch } from './net.js'
+import { fetchUrlDocument } from './url-document.js'
 import { knowledgeRoute } from './http.js'
-import { SUPPORTED_DOCUMENT_EXTENSIONS, extractHtmlDocument, extractFromHtml, extensionOf } from './parse.js'
-import { rank } from './retrieval.js'
-import { maximalMarginalRelevance, reciprocalRankFusion, RRF_K } from './retrieval.js'
-import type { RankedHit } from './retrieval.js'
-import { rerankCandidates, rerankErrorDetail, rerankTechnicalMessage } from './rerank.js'
+import { SUPPORTED_DOCUMENT_EXTENSIONS, extensionOf } from './parse.js'
+import { searchTextOf } from './retrieval.js'
 import { hashEmbeddingText, resolveChunkStorePath } from './chunkdb.js'
-import type { RetrievalDocumentFilter } from './chunkdb.js'
 import { completedChunkState, hasCompletedEmptyIndex, openStore, StorageUnavailableError } from './store.js'
 import type { StorageDomainFacility, Store } from './store.js'
 import { isMetadataWriteFailure } from './metadata-write.js'
@@ -90,18 +87,13 @@ import type {
   EmbeddingProvider,
   ImportDirectoryRequest,
   ImportUrlRequest,
+  InvocationScope,
   KnowledgeBase,
   KnowledgeChunk,
   KnowledgeConfig,
   KnowledgeDocument,
-  SearchHit,
-  SearchMode,
-  SearchScoreKind,
   SearchRequest,
   SearchResult,
-  RetrievalStatus,
-  RerankErrorDetail,
-  RerankStatus,
   PathImportResult,
   ReindexDocumentResult,
   ReindexDocumentsResult,
@@ -117,45 +109,12 @@ export { extractWithMineruLocal, probeMineruLocal } from './mineru-local.js'
 export { composeContextWindow, estimateContextTokens, serializeContextWindow } from './context.js'
 export { embedTexts, getLocalModelStatus, DEFAULT_LOCAL_MODEL } from './embed.js'
 export { tokenize, cosineSimilarity, rank } from './retrieval.js'
-
-/** Per-call execution controls that are deliberately kept out of the public
- * search request/HTTP contract. Proactive retrieval uses these controls to
- * obtain lexical candidates without accidentally invoking a configured
- * reranker. */
-export interface SearchExecutionOptions {
-  readonly rerank?: 'configured' | 'skip'
-  readonly signal?: AbortSignal
-  /** Absolute deadline for synchronous retrieval lanes. Internal callers use
-   * this alongside signal so SQLite can interrupt itself while JS is blocked. */
-  readonly deadlineAt?: number
-}
+export { localEmbeddingErrorText, type SearchExecutionOptions } from './search.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
     knowledge: KnowledgeService
   }
-}
-
-/** User-facing message for a local-model embedding failure. Classifies the
- *  model-cache reality (checked from disk) so a broken binding/runtime error
- *  is NOT misrouted to "download the model" — the files may be intact and the
- *  fault is a worker/binding reload (e.g. "Module did not self-register"). */
-export function localEmbeddingErrorText(onDisk: boolean, detail: string): string {
-  if (onDisk) {
-    return `local embedding model failed to load (${detail}); ` 
-      + 'the model files are present but the runtime could not start — '
-      + 'restart the service or retry later. If it persists, check the local model runtime install.'
-  }
-  return `local embedding model is unavailable (${detail}); `
-    + 'download it in Settings → Local Models, or switch the embedding provider'
-}
-
-/** Build the classified local-model failure error for the given config. */
-async function localEmbeddingError(config: KnowledgeConfig, error: unknown): Promise<Error> {
-  const detail = error instanceof Error ? error.message : String(error)
-  const modelId = config.embeddingModel.trim() || DEFAULT_LOCAL_MODEL
-  const onDisk = await isLocalModelDownloaded(modelId).catch(() => false)
-  return new Error(localEmbeddingErrorText(onDisk, detail))
 }
 
 /** Curated model-id suggestions for the settings comboboxes (DSH exposes chat models, not embedding models). */
@@ -200,9 +159,6 @@ export const MODEL_SUGGESTIONS = {
   ],
 } as const
 
-/** Candidate-pool cap for SQL retrieval lanes, bounding FTS + brute-force vector scans. */
-const LANE_CANDIDATE_CAP = 200
-
 /** Max characters one deep-read slice returns (Cherry's CONCEPT_READ_MAX_CHARS). */
 const CONCEPT_READ_MAX_CHARS = 20_000
 /** Characters of context kept on each side of a grep match in its snippet (Cherry's pad). */
@@ -223,9 +179,6 @@ const PROGRESS_LINGER_TTL_MS = 60_000
  *  linger: the reported embedding failure expired after 60s, so a user who
  *  looked a minute later saw the job simply vanish with no recorded error. */
 const FAILURE_LINGER_TTL_MS = 10 * 60_000
-/** Extra deadline granted to a COLD local rerank child so its model load is not
- *  charged to the inference budget of the query that triggered it (issue #18). */
-const LOCAL_RERANK_LOAD_ALLOWANCE_MS = 120_000
 /** Embedding batch retry policy (Cherry's job retry contract). */
 const EMBED_MAX_ATTEMPTS = 3
 const EMBED_RETRY_BASE_DELAY_MS = 1000
@@ -233,6 +186,21 @@ const EMBED_RETRY_MAX_DELAY_MS = 30_000
 /** Startup artifact GC is I/O-bound; a few workers finish it faster without
  *  letting a huge library monopolize the disk while the app becomes usable. */
 const ARTIFACT_CLEANUP_CONCURRENCY = 4
+
+interface RebuiltSource {
+  text: string
+  processed?: ProcessedFile
+  title?: string
+  urlCheckedAt?: number
+  rawFilePath?: string
+  candidateRawFilePath?: string
+  previousRawFilePath?: string
+}
+
+interface UrlTaskResult {
+  document: KnowledgeDocument
+  changed: boolean
+}
 
 interface BackgroundJob {
   readonly baseId: string
@@ -312,19 +280,22 @@ export class KnowledgeService extends Service {
   private readonly localEmbeddingBatchLimits = new Map<string, number>()
   private readonly directorySyncChains = new Map<string, Promise<unknown>>()
   private readonly directoryScans = new Map<string, Promise<ReindexDocumentResult>>()
-  private directorySyncDisposed = false
+  private readonly shutdown = new AbortController()
+  /** Manual and scheduled refreshes of the same snapshot share one writer. */
+  private readonly urlTasks = new Map<string, Promise<UrlTaskResult>>()
   private readonly directorySyncScheduler = new DirectorySyncScheduler(
     id => this.reindexDocument(id),
     (id, error) => this.ctx.logger.warn(`knowledge: scheduled directory sync ${id} failed: ${error instanceof Error ? error.message : String(error)}`),
   )
-  /** Last rerank failure code per model; only state transitions are logged. */
-  private readonly rerankLogState = new Map<string, string>()
+  private readonly searchEngine = new KnowledgeSearch(
+    () => this.requireStore(),
+    baseId => this.getConfigFor(baseId),
+    message => this.warn(message),
+  )
   private artifacts = new ArtifactRepository()
   private readonly processingQueue = new ProcessingQueue()
   private readonly processingProgress = new Map<string, ProcessingProgress>()
   private readonly processingControllers = new Map<string, AbortController>()
-  /** Aborts the detached startup artifact scan when the plugin unloads. */
-  private readonly artifactCleanupController = new AbortController()
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'knowledge')
@@ -351,12 +322,16 @@ export class KnowledgeService extends Service {
     // Teardown is registered unconditionally: without a store the plugin still
     // answers status/model calls, so a local model worker it started must not
     // outlive it.
-    this.ctx.effect(() => async () => { await store?.close() }, 'knowledge: close store')
+    this.ctx.effect(() => async () => {
+      this.shutdown.abort()
+      await Promise.allSettled(this.urlTasks.values())
+      await store?.close()
+    }, 'knowledge: close store')
     // Terminate the local-model inference worker on teardown so a loaded
     // ~600MB model can never outlive the plugin (Cherry: lifecycle-managed worker).
-    this.ctx.effect(() => () => { void disposeLocalModelWorker() }, 'knowledge: dispose local model worker')
-    this.ctx.effect(() => () => { void disposeLocalRerankProcess() }, 'knowledge: dispose local rerank process')
-    this.ctx.effect(() => () => { void disposeOcrWorker() }, 'knowledge: dispose OCR worker')
+    this.ctx.effect(() => () => disposeLocalModelWorker(), 'knowledge: dispose local model worker')
+    this.ctx.effect(() => () => disposeLocalRerankProcess(), 'knowledge: dispose local rerank process')
+    this.ctx.effect(() => () => disposeOcrWorker(), 'knowledge: dispose OCR worker')
     this.ctx.effect(() => () => this.mineruDeployment.dispose(), 'knowledge: dispose MinerU deployment')
     if (store === undefined) { this.resolveStore(); return }
     this.artifacts = new ArtifactRepository(store.raw !== undefined
@@ -364,9 +339,8 @@ export class KnowledgeService extends Service {
       : undefined)
     this.resolveStore()
     this.ctx.effect(() => () => {
-      this.directorySyncDisposed = true
+      this.shutdown.abort()
       this.directorySyncScheduler.dispose()
-      this.artifactCleanupController.abort()
       for (const controller of this.processingControllers.values()) controller.abort()
       for (const active of this.indexing.values()) active.controller?.abort()
     }, 'knowledge: cancel document processors')
@@ -385,11 +359,10 @@ export class KnowledgeService extends Service {
     setLocalModelCacheDir(resolved.localModelCacheDir)
     setLocalWorkerIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
     setLocalRerankIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
-    for (const base of store.listBases()) {
-      for (const source of store.listDocuments(base.id)) {
-        if (source.sourceType === 'directory' && source.sourcePath !== undefined && source.parentDirectoryId === undefined) {
-          this.directorySyncScheduler.configure(source.id, source.syncIntervalMinutes ?? 0)
-        }
+    for (const source of store.listDocuments()) {
+      if (source.sourceType === 'directory' && source.sourcePath !== undefined && source.parentDirectoryId === undefined
+          && store.getBase(source.baseId) !== undefined) {
+        this.directorySyncScheduler.configure(source.id, source.syncIntervalMinutes ?? 0)
       }
     }
     // One-time compatibility path for caches created before readiness markers:
@@ -401,12 +374,16 @@ export class KnowledgeService extends Service {
         if (modelId !== '') configuredLocalRerankers.add(modelId)
       }
     }
-    void listLocalModels().then(models => {
-      for (const modelId of configuredLocalRerankers) {
-        const model = models.find(entry => entry.id === modelId)
-        if (model?.status === 'unhealthy' && model.health === 'unchecked') void selfTestLocalModel(modelId)
-      }
-    }).catch(() => {})
+    if (configuredLocalRerankers.size > 0) {
+      void listLocalModels(configuredLocalRerankers).then(models => {
+        for (const model of models) {
+          if (this.shutdown.signal.aborted) return
+          if (model.status === 'unhealthy' && model.health === 'unchecked') {
+            this.runBackground('local reranker validation', selfTestLocalModel(model.id, this.shutdown.signal))
+          }
+        }
+      }).catch(() => {})
+    }
     // Resume documents a previous process left mid-embedding: their chunks are
     // partially persisted, so re-running the embed with hash reuse completes
     // them without re-embedding the batches that already landed. (openStore
@@ -446,46 +423,41 @@ export class KnowledgeService extends Service {
 
   // ── scheduled URL refresh (Cherry's snapshot + manual refresh, automated) ──
 
-  private urlRefreshTimer: ReturnType<typeof setInterval> | null = null
-  private urlRefreshing = false
-
-  /** Arm the hourly sweep that refreshes URL documents older than `urlRefreshHours`. */
+  /** Read settings at sweep time so changes in the panel apply to a running service. */
   private armUrlRefreshTimer(): void {
-    const hours = this.getConfigFor(undefined).urlRefreshHours
-    if (hours <= 0) return
-    const run = (): void => {
-      if (this.urlRefreshing) return
-      this.urlRefreshing = true
-      void this.refreshStaleUrls(hours).catch(error => {
-        this.ctx.logger.warn(`knowledge: URL refresh sweep failed: ${error instanceof Error ? error.message : String(error)}`)
-      }).finally(() => { this.urlRefreshing = false })
+    let timer: ReturnType<typeof setTimeout>
+    const arm = (delay: number): void => {
+      if (this.shutdown.signal.aborted) return
+      timer = setTimeout(() => {
+        this.runBackground('URL refresh sweep', this.refreshStaleUrls().finally(() => arm(60 * 60_000)))
+      }, delay)
+      timer.unref?.()
     }
-    // First sweep shortly after startup (imports settle first), then hourly.
-    const first = setTimeout(run, 5 * 60_000)
-    first.unref?.()
-    this.urlRefreshTimer = setInterval(run, 60 * 60_000)
-    this.urlRefreshTimer.unref?.()
-    this.ctx.effect(() => () => {
-      clearTimeout(first)
-      if (this.urlRefreshTimer !== null) clearInterval(this.urlRefreshTimer)
-    }, 'knowledge: URL refresh timer')
+    arm(5 * 60_000)
+    this.ctx.effect(() => () => clearTimeout(timer), 'knowledge: URL refresh timer')
   }
 
-  /** Re-fetch every URL document whose last update predates `hours`; failures are logged, never thrown. */
-  private async refreshStaleUrls(hours: number): Promise<void> {
+  private async refreshStaleUrls(): Promise<void> {
     const store = this.requireStore()
-    const cutoff = Date.now() - hours * 3600_000
-    const stale: string[] = []
+    const cutoffs = new Map<string, number>()
+    const now = Date.now()
     for (const base of store.listBases()) {
-      for (const doc of store.listDocuments(base.id)) {
-        if (doc.sourceType === 'url' && doc.url !== undefined && (doc.updatedAt ?? 0) < cutoff) stale.push(doc.id)
-      }
+      const hours = this.getConfigFor(base.id).urlRefreshHours
+      if (hours > 0) cutoffs.set(base.id, now - hours * 3600_000)
+    }
+    if (cutoffs.size === 0) return
+    const stale: string[] = []
+    for (const doc of store.listDocuments()) {
+      const cutoff = cutoffs.get(doc.baseId)
+      if (doc.sourceType === 'url' && doc.url && cutoff !== undefined && (doc.urlCheckedAt ?? doc.updatedAt ?? 0) < cutoff) stale.push(doc.id)
     }
     for (const id of stale) {
+      if (this.shutdown.signal.aborted) return
       try {
         const result = await this.refreshUrlDocument(id)
         if (result.changed) this.ctx.logger.info(`knowledge: URL auto-refreshed: ${result.title}`)
       } catch (error) {
+        if (this.shutdown.signal.aborted) return
         this.ctx.logger.warn(`knowledge: URL auto-refresh failed for ${id}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
@@ -622,7 +594,7 @@ export class KnowledgeService extends Service {
     return this.getConfig()
   }
 
-  /** Emit a structured warning on behalf of model-facing retrieval helpers. */
+  /** Prefix warnings from both the search engine and model-facing retrieval. */
   warn(message: string): void {
     this.ctx.logger.warn(`knowledge: ${message}`)
   }
@@ -650,17 +622,11 @@ export class KnowledgeService extends Service {
     // Defer even the in-memory target enumeration until init has returned.
     await new Promise<void>(resolve => setImmediate(resolve))
     const store = this.store
-    const signal = this.artifactCleanupController.signal
+    const signal = this.shutdown.signal
     if (store === undefined || signal.aborted) return
-    const targets: Array<{ baseId: string; documentId: string }> = []
-    for (const base of store.listBases()) {
-      for (const doc of store.listDocuments(base.id)) {
-        targets.push({
-          baseId: base.id,
-          documentId: doc.id,
-        })
-      }
-    }
+    const targets = store.listDocuments()
+      .filter(doc => store.getBase(doc.baseId) !== undefined)
+      .map(doc => ({ baseId: doc.baseId, documentId: doc.id }))
     if (targets.length === 0 || signal.aborted) return
     let cursor = 0
     let removed = 0
@@ -704,12 +670,12 @@ export class KnowledgeService extends Service {
    * base config: the global rerank model wins; otherwise the first enabled
    * base that configured one. Returns undefined when none is set.
    */
-  rerankSettings(): { model: string; baseUrl: string; apiKey: string } | undefined {
+  rerankSettings(bases?: ReadonlyArray<Pick<KnowledgeBase, 'id'>>): { model: string; baseUrl: string; apiKey: string } | undefined {
     const global = this.getConfig()
     if (global.rerankModel.trim() !== '') {
       return { model: global.rerankModel, baseUrl: global.rerankBaseUrl, apiKey: global.rerankApiKey }
     }
-    for (const base of this.enabledBases()) {
+    for (const base of bases ?? this.resolveInvocationScope().enabled) {
       const config = this.getConfigFor(base.id)
       if (!config.autoRetrieve || config.autoRetrieveWeight === 0) continue
       if (config.rerankModel.trim() !== '') {
@@ -766,7 +732,7 @@ export class KnowledgeService extends Service {
   }
 
   async setEnabled(enabled: boolean): Promise<void> {
-    await this.requireStore().setEnabled(enabled)
+    await this.setInvocationSettings({ enabled })
   }
 
   getEnabledBaseIds(): string[] {
@@ -774,30 +740,42 @@ export class KnowledgeService extends Service {
   }
 
   async setEnabledBaseIds(ids: readonly string[]): Promise<void> {
-    await this.requireStore().setEnabledBaseIds([...new Set(ids)])
+    await this.setInvocationSettings({ enabledBaseIds: ids })
+  }
+
+  async setInvocationSettings(patch: { enabled?: boolean; enabledBaseIds?: readonly string[] }): Promise<void> {
+    if (patch.enabled === undefined && patch.enabledBaseIds === undefined) return
+    await this.requireStore().setInvocationSettings({
+      ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+      ...(patch.enabledBaseIds !== undefined ? { enabledBaseIds: [...new Set(patch.enabledBaseIds)] } : {}),
+    })
   }
 
   /**
-   * Resolve the effective search scope for a model call. `undefined` means no
-   * ids were configured (every base); an empty array means a non-empty saved
-   * selection has gone entirely stale and must fail closed.
+   * Intersect a caller's requested ids with the saved selection and live bases.
+   * An absent request inherits the selection. An explicit empty request or an
+   * entirely stale selection matches nothing.
    */
-  enabledScope(): string[] | undefined {
+  resolveInvocationScope(requestedBaseIds?: readonly string[]): InvocationScope {
     const store = this.requireStore()
-    const ids = store.getEnabledBaseIds()
-    if (ids.length === 0) return undefined
-    const existing = new Set(store.listBases().map(base => base.id))
-    const valid = ids.filter(id => existing.has(id))
-    return valid
+    const all = store.listBases().map(({ id, name }) => ({ id, name }))
+    const saved = store.getEnabledBaseIds()
+    if (saved.length === 0 && requestedBaseIds === undefined) return { all, enabled: all, baseIds: undefined }
+    const existing = new Set(all.map(base => base.id))
+    const requested = requestedBaseIds === undefined ? undefined : new Set(requestedBaseIds)
+    const baseIds = (saved.length > 0 ? saved : Array.from(requested ?? []))
+      .filter(id => existing.has(id) && (requested === undefined || requested.has(id)))
+    const allowed = new Set(baseIds)
+    return { all, enabled: all.filter(base => allowed.has(base.id)), baseIds }
+  }
+
+  enabledScope(): string[] | undefined {
+    return this.resolveInvocationScope().baseIds
   }
 
   /** Existing bases inside the strict model-invocation scope. */
   enabledBases(): BaseSummary[] {
-    const bases = this.listBases()
-    const scope = this.enabledScope()
-    if (scope === undefined) return bases
-    const allowed = new Set(scope)
-    return bases.filter(base => allowed.has(base.id))
+    return this.listBases(this.enabledScope())
   }
 
   // ── bases ─────────────────────────────────────────────────────────────────
@@ -861,6 +839,7 @@ export class KnowledgeService extends Service {
         ...(doc.fileName !== undefined ? { fileName: doc.fileName } : {}),
         ...(doc.mimeType !== undefined ? { mimeType: doc.mimeType } : {}),
         ...(doc.url !== undefined ? { url: doc.url } : {}),
+        ...(doc.urlTitleOverride ? { urlTitleOverride: true } : {}),
         ...(rawFilePath !== undefined ? { rawFilePath } : {}),
         text,
       })
@@ -943,10 +922,15 @@ export class KnowledgeService extends Service {
     return next
   }
 
-  listBases(): BaseSummary[] {
+  listBases(baseIds?: readonly string[]): BaseSummary[] {
     const store = this.requireStore()
-    return store.listBases().map(base => {
-      const documents = store.listDocuments(base.id)
+    const allowed = baseIds === undefined ? undefined : new Set(baseIds)
+    const bases = store.listBases().filter(base => allowed === undefined || allowed.has(base.id))
+    if (bases.length === 0) return []
+    const byBase = new Map(bases.map(base => [base.id, [] as KnowledgeDocument[]]))
+    for (const doc of store.listDocuments()) byBase.get(doc.baseId)?.push(doc)
+    return bases.map(base => {
+      const documents = byBase.get(base.id)!
       const chunkCount = documents.reduce((sum, doc) => sum + doc.chunkCount, 0)
       const charCount = documents.reduce((sum, doc) => sum + doc.charCount, 0)
       const tokenCount = documents.reduce((sum, doc) => sum + (doc.tokenCount ?? 0), 0)
@@ -1595,37 +1579,25 @@ export class KnowledgeService extends Service {
     return { set: 1 }
   }
 
-  async addUrlDocument(request: ImportUrlRequest): Promise<KnowledgeDocument> {
+  async addUrlDocument(request: ImportUrlRequest, signal?: AbortSignal): Promise<KnowledgeDocument> {
     const store = this.requireStore()
     if (store.getBase(request.baseId) === undefined) throw new Error(`knowledge base not found: ${request.baseId}`)
-    const html = await fetchHtml(request.url)
-    const extracted = await extractHtmlDocument(html)
-    if (extracted.text.trim().length === 0) throw new Error('URL returned no extractable text')
-    // Persist the fetched text as the URL's snapshot (Cherry's snapshot model:
-    // the base owns a stable copy; refresh re-fetches and overwrites it).
     const docId = crypto.randomUUID()
-    const title = request.title?.trim() || extracted.title || request.url
-    let rawFilePath: string | undefined
-    if (store.raw !== undefined) {
-      rawFilePath = await store.raw.write(request.baseId, docId, '.md', encodeUtf8(extracted.text))
-    }
-    return this.ingestDocument({
-      baseId: request.baseId,
-      title,
-      sourceType: 'url',
-      url: request.url,
-      ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
-      rawFilePath,
-      text: extracted.text,
+    const result = await this.runUrlTask(docId, request.baseId, request.title ?? request.url, async taskSignal => {
+      const active = signal ? AbortSignal.any([taskSignal, signal]) : taskSignal
+      const extracted = await fetchUrlDocument(request.url, active)
+      const document = await this.ingestDocument({
+        documentId: docId, baseId: request.baseId, sourceType: 'url', url: request.url,
+        title: request.title?.trim() || extracted.title || request.url,
+        urlTitleOverride: Boolean(request.title?.trim()),
+        parentDirectoryId: request.parentDirectoryId, text: extracted.text,
+      }, active)
+      return { document, changed: true }
     })
+    return result.document
   }
 
-  /**
-   * Cherry-style URL refresh: re-fetch the page, and when its text changed,
-   * overwrite the snapshot and re-index the document (hash reuse re-embeds
-   * only the chunks that changed). A failed fetch or an unchanged page leaves
-   * the current snapshot and index untouched — refresh never degrades.
-   */
+  /** Publish changed URL content through the same generation journal as file rebuilds. */
   async refreshUrlDocument(id: string): Promise<{ changed: boolean; title: string; chunkCount: number }> {
     const store = this.requireStore()
     const document = store.getDocument(id)
@@ -1633,29 +1605,41 @@ export class KnowledgeService extends Service {
     if (document.sourceType !== 'url' || document.url === undefined) {
       throw new Error(`document "${document.title}" is not a URL document`)
     }
-    const html = await fetchHtml(document.url)
-    const extracted = await extractHtmlDocument(html)
-    if (extracted.text.trim().length === 0) throw new Error('URL returned no extractable text')
-    const title = extracted.title.trim().length > 0 ? extracted.title.trim() : document.title
-    if (extracted.text === document.rawText && title === document.title) {
-      return { changed: false, title: document.title, chunkCount: document.chunkCount }
-    }
-    // Overwrite the snapshot (or persist a new one for pre-snapshot docs).
-    let rawFilePath = document.rawFilePath
-    if (store.raw !== undefined) {
-      const ext = rawFilePath !== undefined ? rawExtensionOf(rawFilePath) : '.md'
-      rawFilePath = await store.raw.write(document.baseId, document.id, ext, encodeUtf8(extracted.text))
-    }
-    const refreshed = await this.ingestDocument({
-      baseId: document.baseId,
-      title,
-      sourceType: 'url',
-      url: document.url,
-      rawFilePath,
-      text: extracted.text,
-      placeholderId: document.id,
+    const url = document.url
+    const result = await this.runUrlTask(id, document.baseId, document.title, async signal => {
+      const extracted = await fetchUrlDocument(url, signal)
+      signal.throwIfAborted()
+      const current = store.getDocument(id)
+      if (!current) throw new Error(`document not found: ${id}`)
+      const title = current.urlTitleOverride ? current.title : extracted.title.trim() || current.title
+      const urlCheckedAt = Date.now()
+      if (extracted.text === current.rawText && title === current.title) {
+        if (this.getConfigFor(current.baseId).urlRefreshHours > 0) await store.putDocument({ ...current, urlCheckedAt })
+        return { document: current, changed: false }
+      }
+      const rawFilePath = await store.raw?.write(current.baseId, crypto.randomUUID(), '.md', encodeUtf8(extracted.text))
+      const refreshed = await this.commitRebuiltDocument(current, {
+        text: extracted.text, title, urlCheckedAt, rawFilePath,
+        candidateRawFilePath: rawFilePath, previousRawFilePath: current.rawFilePath,
+      }, signal)
+      return { document: refreshed, changed: true }
     })
-    return { changed: true, title: refreshed.title, chunkCount: refreshed.chunkCount }
+    return { changed: result.changed, title: result.document.title, chunkCount: result.document.chunkCount }
+  }
+
+  private runUrlTask(id: string, baseId: string, title: string, work: (signal: AbortSignal) => Promise<UrlTaskResult>): Promise<UrlTaskResult> {
+    this.shutdown.signal.throwIfAborted()
+    const existing = this.urlTasks.get(id)
+    if (existing) return existing
+    if (this.indexing.has(id)) throw new Error(`"${title}" is still being indexed — try again when it finishes`)
+    const controller = new AbortController()
+    this.indexing.set(id, { baseId, title, phase: 'parsing', total: 0, progress: 0, controller })
+    const task = work(AbortSignal.any([this.shutdown.signal, controller.signal])).finally(() => {
+      this.indexing.delete(id)
+      this.urlTasks.delete(id)
+    })
+    this.urlTasks.set(id, task)
+    return task
   }
 
   /** Preview the exact tree and durable raw snapshots affected by a delete.
@@ -1783,10 +1767,16 @@ export class KnowledgeService extends Service {
   }
 
   async renameDocument(id: string, title: string): Promise<KnowledgeDocument> {
+    // A refresh publishes the title together with its chunks. Apply a user's
+    // rename after that write, including when the refresh rolled back.
+    const refreshing = this.urlTasks.get(id)
+    if (refreshing) await refreshing.catch(() => {})
     const store = this.requireStore()
     const existing = store.getDocument(id)
     if (existing === undefined) throw new Error(`document not found: ${id}`)
-    const next = { ...existing, title: title.trim() || existing.title, updatedAt: Date.now() }
+    const next = { ...existing, title: title.trim() || existing.title, updatedAt: Date.now(),
+      ...(existing.sourceType === 'url' && title.trim() ? { urlTitleOverride: true } : {}),
+    }
     await store.putDocument(next)
     return next
   }
@@ -1843,7 +1833,7 @@ export class KnowledgeService extends Service {
     // source that cannot be rebuilt.
     const controller = new AbortController()
     this.indexing.set(id, { baseId: document.baseId, title: document.title, phase: 'parsing', total: 0, progress: 0, controller })
-    let rebuilt: Awaited<ReturnType<KnowledgeService['sourceTextOf']>>
+    let rebuilt: RebuiltSource
     try {
       if (options.mode === 'rechunk') {
         const parsed = document.processing !== undefined
@@ -1854,12 +1844,17 @@ export class KnowledgeService extends Service {
       } else {
         rebuilt = await this.sourceTextOf(document, controller.signal, options.strictSource)
       }
-      controller.signal.throwIfAborted()
-      if (!rebuilt.text.trim()) throw new Error('parsed document is empty')
-    } catch (error) {
+      return await this.commitRebuiltDocument(document, rebuilt, controller.signal)
+    } finally {
       this.indexing.delete(id)
-      throw error
+      this.processingProgress.delete(id)
     }
+  }
+
+  /** File rebuilds and URL refreshes publish through the same generation journal. */
+  private async commitRebuiltDocument(document: KnowledgeDocument, rebuilt: RebuiltSource, signal: AbortSignal): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
+    const id = document.id
     const discardCandidate = async (): Promise<void> => {
       if (rebuilt.candidateRawFilePath === undefined) return
       try {
@@ -1868,29 +1863,34 @@ export class KnowledgeService extends Service {
         this.ctx.logger.warn(`knowledge: failed to discard uncommitted raw source ${rebuilt.candidateRawFilePath}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
+    let generationStarted = false
     let candidateCommitted = false
     try {
+      signal.throwIfAborted()
+      if (!rebuilt.text.trim()) throw new Error('parsed document is empty')
       const config = this.getConfigFor(document.baseId)
       // Mark the document incomplete so a crash mid-reindex is resumed on the
       // next start (buildChunks persists each embedded batch; hash reuse makes
       // the resume re-embed only what never landed). The document continues to
       // reference the previous raw copy until the complete replacement commits.
       await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
+      generationStarted = true
       const candidate: KnowledgeDocument = { ...document, rawText: rebuilt.text,
+        ...(rebuilt.title !== undefined ? { title: rebuilt.title } : {}),
+        ...(rebuilt.urlCheckedAt !== undefined ? { urlCheckedAt: rebuilt.urlCheckedAt } : {}),
         ...(rebuilt.rawFilePath !== undefined ? { rawFilePath: rebuilt.rawFilePath } : {}),
         processing: rebuilt.processed?.processing,
       }
       const pieces = this.processingChunks(rebuilt.processed, config)
       await store.stageDocumentGeneration(candidate, [])
-      const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, document.id, document.title, rebuilt.text, config, pieces, batch => store.stageDocumentGeneration(candidate, batch), controller.signal, candidate.processing?.revision)
-      controller.signal.throwIfAborted()
+      const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, id, candidate.title, rebuilt.text, config, pieces, batch => store.stageDocumentGeneration(candidate, batch), signal, candidate.processing?.revision)
+      signal.throwIfAborted()
       if (embeddingError !== undefined && document.chunkCount > 0) throw Object.assign(new Error('embedding failed; the previous document generation was preserved'), { code: embeddingErrorCode })
       const { embeddingError: _staleError, errorCode: _staleCode, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = candidate
+      const contentHash = sha256(rebuilt.text)
       const next: KnowledgeDocument = {
         ...rest,
-        ...(rebuilt.rawFilePath !== undefined ? { rawFilePath: rebuilt.rawFilePath } : {}),
-        rawText: rebuilt.text,
-        contentHash: sha256(rebuilt.text),
+        contentHash,
         charCount: rebuilt.text.length,
         tokenCount: estimateTokens(rebuilt.text),
         ...completedChunkState(chunks.length),
@@ -1907,7 +1907,15 @@ export class KnowledgeService extends Service {
         await discardCandidate()
         return document
       }
-      await store.commitDocumentGeneration(next, chunks)
+      if (rebuilt.urlCheckedAt !== undefined) {
+        await this.withBaseWriteLock(document.baseId, async () => {
+          signal.throwIfAborted()
+          this.assertUniqueContent(document.baseId, contentHash, id)
+          await store.commitDocumentGeneration(next, chunks)
+        })
+      } else {
+        await store.commitDocumentGeneration(next, chunks)
+      }
       candidateCommitted = true
 
       if (rebuilt.previousRawFilePath !== undefined && rebuilt.previousRawFilePath !== rebuilt.rawFilePath) {
@@ -1922,16 +1930,14 @@ export class KnowledgeService extends Service {
       await this.touchBase(document.baseId)
       return next
     } catch (error) {
-      if (isMetadataWriteFailure(error)) throw error
-      if (!candidateCommitted && (error as { published?: boolean }).published !== true) {
+      if (!generationStarted) {
+        await discardCandidate()
+      } else if (!candidateCommitted && !isMetadataWriteFailure(error) && (error as { published?: boolean } | null)?.published !== true) {
         await store.discardStagedDocumentGeneration(id)
         await discardCandidate()
         if (store.getDocument(id) !== undefined) await store.putDocument(document)
       }
       throw error
-    } finally {
-      this.indexing.delete(id)
-      this.processingProgress.delete(id)
     }
   }
 
@@ -1984,13 +1990,7 @@ export class KnowledgeService extends Service {
    *  (parsed through the base's configured processor: MinerU first when set),
    *  then persisted text, then reconstructed chunks are used. Returns the rebuilt
    *  text and, when the raw copy was refreshed, its new base-relative path. */
-  private async sourceTextOf(document: KnowledgeDocument, signal?: AbortSignal, strictSource = false): Promise<{
-    text: string
-    processed?: ProcessedFile
-    rawFilePath?: string
-    candidateRawFilePath?: string
-    previousRawFilePath?: string
-  }> {
+  private async sourceTextOf(document: KnowledgeDocument, signal?: AbortSignal, strictSource = false): Promise<RebuiltSource> {
     const store = this.requireStore()
     const sourceFailures: string[] = []
     let failedLiveSourceBytes: Uint8Array | undefined
@@ -2122,7 +2122,7 @@ export class KnowledgeService extends Service {
   private withDirectorySyncLock<T>(baseId: string, task: () => Promise<T>): Promise<T> {
     const previous = this.directorySyncChains.get(baseId) ?? Promise.resolve()
     const execute = (): Promise<T> => {
-      if (this.directorySyncDisposed) throw new Error('knowledge service is stopping')
+      if (this.shutdown.signal.aborted) throw new Error('knowledge service is stopping')
       return task()
     }
     const run = previous.then(execute, execute)
@@ -2286,7 +2286,7 @@ export class KnowledgeService extends Service {
     items: DirectorySyncItem[]
   }): Promise<void> {
     const { rootPath, diskPath, directory, depth, childrenByParent, items } = args
-    if (this.directorySyncDisposed) throw new Error('knowledge service is stopping')
+    if (this.shutdown.signal.aborted) throw new Error('knowledge service is stopping')
     this.assertIndexTargetAlive(directory.id, directory.baseId)
     if (depth > DIRECTORY_MAX_DEPTH) {
       items.push({
@@ -2340,7 +2340,7 @@ export class KnowledgeService extends Service {
     }
 
     for (const entry of entries) {
-      if (this.directorySyncDisposed) throw new Error('knowledge service is stopping')
+      if (this.shutdown.signal.aborted) throw new Error('knowledge service is stopping')
       this.assertIndexTargetAlive(directory.id, directory.baseId)
       const fullPath = join(diskPath, entry.name)
       const relativePath = this.relativeSourcePath(rootPath, fullPath)
@@ -2398,7 +2398,7 @@ export class KnowledgeService extends Service {
           children.push(document)
           childrenByParent.set(directory.id, children)
         } else {
-          action = await this.syncDirectoryFile(document, fullPath, entry.name)
+          action = await this.syncDirectoryFile(document, fullPath)
           const refreshed = this.requireStore().getDocument(document.id)
           if (refreshed !== undefined) {
             const documentIndex = children.findIndex(candidate => candidate.id === document!.id)
@@ -2460,7 +2460,7 @@ export class KnowledgeService extends Service {
    * snapshot. A changed source is parsed once up front so an invalid on-disk
    * replacement cannot be silently treated as a successful old-snapshot
    * rebuild. */
-  private async syncDirectoryFile(document: KnowledgeDocument, sourcePath: string, fileName: string): Promise<'updated' | 'unchanged'> {
+  private async syncDirectoryFile(document: KnowledgeDocument, sourcePath: string): Promise<'updated' | 'unchanged'> {
     if (this.indexing.has(document.id)) throw new Error(`"${document.title}" is still being indexed — try again when it finishes`)
     const store = this.requireStore()
     const buffer = await readFile(sourcePath)
@@ -2687,57 +2687,6 @@ export class KnowledgeService extends Service {
     for (const baseId of touched) await this.touchBase(baseId)
     await this.reconcileAfterDelete()
     return { deleted, roots: removedRoots }
-  }
-
-  /**
-   * Resolve inclusion metadata and title exclusions within the requested base
-   * scope. Exclusion-only requests leave docIds absent rather than enumerating
-   * every remaining document. An empty docIds array matches no documents.
-   */
-  private resolveSearchFilter(request: SearchRequest): RetrievalDocumentFilter | undefined {
-    const filter = request.filter
-    if (filter === undefined) return undefined
-    const { docIds, excludeDocIds, titleIncludes, titleExcludes, sourceTypes, updatedAfter, updatedBefore } = filter
-    // Presence is semantically distinct from absence: callers use an empty
-    // allow-list to mean "match no documents", never "remove the filter".
-    if (docIds !== undefined && docIds.length === 0) return { docIds: [] }
-    if (sourceTypes !== undefined && sourceTypes.length === 0) return { docIds: [] }
-    const hasDocIds = docIds !== undefined
-    const title = titleIncludes?.trim().toLowerCase()
-    const hasTitle = title !== undefined && title.length > 0
-    const hasTypes = sourceTypes !== undefined
-    const hasTime = updatedAfter !== undefined || updatedBefore !== undefined
-    const hasInclusion = hasDocIds || hasTitle || hasTypes || hasTime
-    const excludedTitles = [...new Set((titleExcludes ?? []).map(term => term.trim().toLowerCase()).filter(term => term.length > 0))]
-    const excluded = new Set(excludeDocIds)
-    if (!hasInclusion && excluded.size === 0 && excludedTitles.length === 0) return undefined
-    if (!hasInclusion && excludedTitles.length === 0) return { excludeDocIds: [...excluded] }
-
-    const store = this.requireStore()
-    const scope = request.baseId !== undefined
-      ? [request.baseId]
-      : request.baseIds !== undefined && request.baseIds.length > 0
-        ? [...request.baseIds]
-        : store.listBases().map(base => base.id)
-    const included = hasDocIds ? new Set(docIds) : undefined
-    const allowed = hasInclusion ? new Set<string>() : undefined
-    for (const baseId of scope) {
-      for (const doc of store.listDocuments(baseId)) {
-        const normalizedTitle = doc.title.toLowerCase()
-        if (excludedTitles.some(term => normalizedTitle.includes(term))) excluded.add(doc.id)
-        if (allowed === undefined || excluded.has(doc.id)) continue
-        if (included !== undefined && !included.has(doc.id)) continue
-        if (hasTitle && !normalizedTitle.includes(title!)) continue
-        if (hasTypes && !sourceTypes!.includes(doc.sourceType)) continue
-        if (updatedAfter !== undefined && (doc.updatedAt ?? doc.createdAt) < updatedAfter) continue
-        if (updatedBefore !== undefined && (doc.updatedAt ?? doc.createdAt) > updatedBefore) continue
-        allowed.add(doc.id)
-      }
-    }
-    return {
-      ...(allowed !== undefined ? { docIds: [...allowed] } : {}),
-      ...(excluded.size > 0 ? { excludeDocIds: [...excluded] } : {}),
-    }
   }
 
   /**
@@ -3396,516 +3345,7 @@ export class KnowledgeService extends Service {
   // ── retrieval ─────────────────────────────────────────────────────────────
 
   async search(request: SearchRequest, execution: SearchExecutionOptions = {}): Promise<SearchResult> {
-    const startedAt = Date.now()
-    throwIfAborted(execution.signal)
-    throwIfDeadline(execution.deadlineAt)
-    const query = request.query.trim()
-    if (query.length === 0) return emptySearchResult(query, request.mode ?? 'lexical', 0)
-    if (query.length > 2000) throw new Error('search query must not exceed 2000 characters')
-
-    const variants = normalizeQueryVariants(query, request.queries)
-    const allowRerank = execution.rerank !== 'skip'
-    if (variants.length === 1) {
-      return this.searchSingle({ ...request, query, queries: undefined }, allowRerank, startedAt, execution.signal, execution.deadlineAt)
-    }
-
-    const config = this.getConfigFor(request.baseId)
-    const requestedMode = request.mode ?? config.searchMode
-    const topK = clampInt(request.topK ?? config.topK, 1, 50, 6)
-    const subTopK = Math.min(50, Math.max(topK * 2, 12))
-    const results = await Promise.all(variants.map(variant => this.searchSingle({
-      ...request,
-      query: variant,
-      queries: undefined,
-      topK: subTopK,
-    }, false, startedAt, execution.signal, execution.deadlineAt)))
-    throwIfAborted(execution.signal)
-    return this.finishMultiQuerySearch(config, query, requestedMode, results, topK, request.threshold, startedAt, allowRerank, execution.signal)
-  }
-
-  /** One retrieval pass. Multi-query orchestration lives in search() so each
-   * variant cannot independently invoke an expensive reranker. */
-  private async searchSingle(
-    request: SearchRequest,
-    allowRerank: boolean,
-    startedAt: number,
-    signal?: AbortSignal,
-    deadlineAt?: number,
-  ): Promise<SearchResult> {
-    throwIfAborted(signal)
-    throwIfDeadline(deadlineAt)
-    const store = this.requireStore()
-    const config = this.getConfigFor(request.baseId)
-    const query = request.query.trim()
-    if (query.length === 0) return emptySearchResult(query, request.mode ?? config.searchMode, 0)
-    const requestedMode = request.mode ?? config.searchMode
-    const topK = clampInt(request.topK ?? config.topK, 1, 50, 6)
-    if (request.baseId === undefined && request.baseIds !== undefined && request.baseIds.length === 0) {
-      return emptySearchResult(query, requestedMode, Date.now() - startedAt)
-    }
-    // A stale base id (e.g. a base deleted without sweeping child records)
-    // must not surface orphaned content.
-    if (request.baseId !== undefined && store.getBase(request.baseId) === undefined) {
-      return emptySearchResult(query, requestedMode, 0)
-    }
-
-    const threshold = request.threshold ?? config.similarityThreshold
-
-    // Both retrieval paths apply the same document selection before their
-    // candidate limits, so excluded rows cannot consume retrieval seats.
-    const documentFilter = this.resolveSearchFilter(request)
-    // A present-but-empty allow-list is an explicit "match nothing" result.
-    // Never pass it to a storage implementation that might interpret [] as
-    // unrestricted scope.
-    if (documentFilter?.docIds !== undefined && documentFilter.docIds.length === 0) {
-      return emptySearchResult(query, requestedMode, Date.now() - startedAt)
-    }
-
-    const lane = store.retrievalLane
-    if (lane !== undefined) {
-      const scope = request.baseId !== undefined
-        ? [request.baseId]
-        : request.baseIds !== undefined && request.baseIds.length > 0
-          ? [...request.baseIds]
-          : store.listBases().map(base => base.id)
-      const poolSize = Math.min(Math.max(topK * 4, 20), LANE_CANDIDATE_CAP)
-
-      let queryVector: number[] | undefined
-      if ((requestedMode === 'vector' || requestedMode === 'hybrid' || requestedMode === 'auto') && config.embeddingProvider !== 'none') {
-        try {
-          const [vector] = await embedTexts(
-            config.embeddingProvider,
-            config.embeddingBaseUrl,
-            config.embeddingModel,
-            config.embeddingApiKey,
-            [query],
-            signal,
-          )
-          throwIfAborted(signal)
-          queryVector = vector
-        } catch (error) {
-          throwIfAborted(signal)
-          // A configured local model that cannot load (weights deleted, download
-          // failed) is a configuration problem, not a transient failure — surface
-          // it instead of silently degrading to lexical (the user believes hybrid
-          // is on). A model whose files ARE on disk but whose binding/worker
-          // reload failed ("Module did not self-register") is a runtime error,
-          // not a missing download — say so instead of sending them to re-download.
-          if (config.embeddingProvider === 'local') {
-            throw await localEmbeddingError(config, error)
-          }
-          this.ctx.logger.warn(`knowledge: embedding failed, using lexical retrieval: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
-
-      const useVector = queryVector !== undefined && requestedMode !== 'lexical'
-      let ranked: RankedHit[] = []
-      const byId = new Map<string, KnowledgeChunk>()
-      let total = 0
-      let vectorAttempted = false
-      let vectorSucceeded = false
-      let vectorReturned = 0
-      let vectorError: string | undefined
-      let lexicalAttempted = false
-      let lexicalSucceeded = false
-      let lexicalReturned = 0
-      let lexicalError: string | undefined
-
-      let vec: Awaited<ReturnType<typeof lane.vector>> | undefined
-      if (useVector) {
-        vectorAttempted = true
-        try {
-          vec = await lane.vector(queryVector!, scope, poolSize, documentFilter, deadlineAt)
-          vectorSucceeded = true
-          vectorReturned = vec.hits.length
-          total = Math.max(total, vec.total)
-          for (const hit of vec.hits) byId.set(hit.id, hit)
-        } catch (error) {
-          vectorError = retrievalErrorCode(error)
-          this.ctx.logger.warn(`knowledge: vector retrieval failed, using lexical retrieval: ${safeErrorMessage(error)}`)
-        }
-      } else if (requestedMode !== 'lexical' && config.embeddingProvider !== 'none' && queryVector === undefined) {
-        vectorError = 'embedding_unavailable'
-      }
-
-      // Hybrid/auto always execute lexical when vector worked, even when the
-      // vector lane returned zero rows: a successful empty lane is distinct
-      // from a failed lane in the public contract.
-      let lex: Awaited<ReturnType<typeof lane.lexical>> | undefined
-      if (requestedMode !== 'vector' || vec === undefined) {
-        lexicalAttempted = true
-        try {
-          lex = await lane.lexical(query, scope, poolSize, documentFilter, deadlineAt)
-          lexicalSucceeded = true
-          lexicalReturned = lex.hits.length
-          total = Math.max(total, lex.total)
-          for (const hit of lex.hits) if (!byId.has(hit.id)) byId.set(hit.id, hit)
-        } catch (error) {
-          lexicalError = retrievalErrorCode(error)
-          this.ctx.logger.warn(`knowledge: lexical retrieval failed: ${safeErrorMessage(error)}`)
-        }
-      }
-
-      if (vec !== undefined && lex !== undefined) {
-        // Hybrid/auto: fuse both lanes with Reciprocal Rank Fusion; the vector
-        // lane carries the configured relative weight.
-        const vectorOrder = vec.hits.map(hit => hit.id)
-        const lexicalOrder = lex.hits.map(hit => hit.id)
-        const vectorWeight = config.rrfVectorWeight
-        const fused = reciprocalRankFusion([vectorOrder, lexicalOrder], [vectorWeight, 1])
-        const maxFused = (vectorWeight + 1) / (RRF_K + 1)
-        const vectorScores = new Map(vec.hits.map(hit => [hit.id, hit.score]))
-        const lexicalScores = new Map(lex.hits.map(hit => [hit.id, hit.score]))
-        ranked = [...new Set([...vectorOrder, ...lexicalOrder])].map(id => ({
-          id,
-          score: (fused.get(id) ?? 0) / maxFused,
-          vectorScore: vectorScores.get(id),
-          lexicalScore: lexicalScores.get(id),
-        }))
-      } else if (vec !== undefined) {
-        ranked = vec.hits.map(hit => ({ id: hit.id, score: hit.score, vectorScore: hit.score }))
-      } else if (lex !== undefined) {
-        ranked = lex.hits.map(hit => ({ id: hit.id, score: hit.score, lexicalScore: hit.score }))
-      }
-      const laneStatus = retrievalStatus(requestedMode, {
-        attempted: lexicalAttempted,
-        succeeded: lexicalSucceeded,
-        returnedCount: lexicalReturned,
-        ...(lexicalError !== undefined ? { errorCode: lexicalError } : {}),
-      }, {
-        attempted: vectorAttempted,
-        succeeded: vectorSucceeded,
-        returnedCount: vectorReturned,
-        ...(vectorError !== undefined ? { errorCode: vectorError } : {}),
-      })
-
-      ranked.sort((a, b) => b.score - a.score)
-      if (request.mmr ?? config.mmrDiversity > 0) {
-        if (config.mmrDiversity > 0 && queryVector !== undefined) {
-          ranked = maximalMarginalRelevance(ranked, byId, queryVector, config.mmrDiversity, Math.max(topK * 3, 12))
-        }
-      }
-      throwIfAborted(signal)
-      return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, total, startedAt, laneStatus, allowRerank, signal)
-    }
-
-    const allowed = documentFilter?.docIds !== undefined ? new Set(documentFilter.docIds) : undefined
-    const excluded = new Set(documentFilter?.excludeDocIds)
-    const chunks = (request.baseId !== undefined
-      ? store.listChunks(request.baseId)
-      : request.baseIds !== undefined && request.baseIds.length > 0
-        ? request.baseIds.flatMap(id => store.listChunks(id))
-        : store.listBases().flatMap(base => store.listChunks(base.id)))
-      .filter(chunk => (allowed === undefined || allowed.has(chunk.docId)) && !excluded.has(chunk.docId))
-    if (chunks.length === 0) return emptySearchResult(query, requestedMode, 0)
-
-    const byId = new Map(chunks.map(chunk => [chunk.id, chunk]))
-    const candidates = chunks.map(chunk => ({
-      id: chunk.id,
-      text: chunkSearchText(chunk),
-      embedding: chunk.embedding,
-    }))
-
-    let queryVector: number[] | undefined
-    if (requestedMode !== 'lexical' && config.embeddingProvider !== 'none') {
-      try {
-        const [vector] = await embedTexts(
-          config.embeddingProvider,
-          config.embeddingBaseUrl,
-          config.embeddingModel,
-          config.embeddingApiKey,
-          [query],
-          signal,
-        )
-        throwIfAborted(signal)
-        queryVector = vector
-      } catch (error) {
-        throwIfAborted(signal)
-        // See the lane path: a broken local model must not silently degrade.
-        if (config.embeddingProvider === 'local') {
-          throw await localEmbeddingError(config, error)
-        }
-        this.ctx.logger.warn(`knowledge: embedding failed, using lexical retrieval: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    }
-
-    // Retrieval produces a candidate pool; rerank (if configured) re-scores it
-    // before the threshold + Top K cut, exactly like Cherry Studio's pipeline.
-    const poolSize = Math.min(chunks.length, Math.max(topK * 4, 20))
-    const ranked = rank(query, candidates, {
-      mode: requestedMode,
-      topK: poolSize,
-      threshold: 0,
-      mmr: request.mmr ?? config.mmrDiversity > 0,
-      mmrLambda: config.mmrDiversity,
-      queryVector,
-    })
-    throwIfAborted(signal)
-    const retrieval = retrievalStatus(
-      requestedMode,
-      { attempted: true, succeeded: true, returnedCount: ranked.filter(hit => hit.lexicalScore !== undefined).length },
-      {
-        attempted: requestedMode !== 'lexical' && config.embeddingProvider !== 'none',
-        succeeded: queryVector !== undefined,
-        returnedCount: ranked.filter(hit => hit.vectorScore !== undefined).length,
-      },
-    )
-    return this.finishSearch(store, config, query, requestedMode, ranked, byId, topK, threshold, chunks.length, startedAt, retrieval, allowRerank, signal)
-  }
-
-  /** Merge independent query rankings with RRF, then optionally rerank once. */
-  private async finishMultiQuerySearch(
-    config: KnowledgeConfig,
-    query: string,
-    requestedMode: SearchMode,
-    results: readonly SearchResult[],
-    topK: number,
-    requestedThreshold: number | undefined,
-    startedAt: number,
-    allowRerank: boolean,
-    signal?: AbortSignal,
-  ): Promise<SearchResult> {
-    const store = this.requireStore()
-    throwIfAborted(signal)
-    const orders = results.map(result => result.hits.map(hit => hit.chunkId))
-    const fused = reciprocalRankFusion(orders)
-    const maxFused = results.length / (RRF_K + 1)
-    const byId = new Map<string, SearchHit>()
-    for (const result of results) {
-      for (const hit of result.hits) if (!byId.has(hit.chunkId)) byId.set(hit.chunkId, hit)
-    }
-    let hits = [...byId.values()]
-      .map(hit => ({ ...hit, score: (fused.get(hit.chunkId) ?? 0) / maxFused }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, Math.min(50, Math.max(topK * 4, 20)))
-    const applied = await this.applyRerank(store, config, query, hits, topK, allowRerank, signal)
-    hits = applied.hits
-
-    const retrieval = combineRetrievalStatus(requestedMode, results)
-    const mode = retrieval.effectiveMode
-    const threshold = requestedThreshold ?? config.similarityThreshold
-    // Each variant already threshold-filtered its own lane scores inside
-    // finishSearch (raw cosine for a vector query). After fusion the score is
-    // an RRF rank value, so the vector threshold must not be re-applied here —
-    // only rerank relevance scores share the threshold's 0–1 semantics.
-    if (applied.reranked) hits = hits.filter(hit => hit.score >= threshold)
-    const finalHits = attachContextWindows(store, hits.slice(0, topK), query, config.siblingChunks, SEARCH_EVIDENCE_TOKENS)
-    return {
-      query,
-      mode,
-      scoreKind: applied.reranked ? 'rerank' : 'rrf',
-      retrieval,
-      total: results.reduce((max, result) => Math.max(max, result.total), 0),
-      reranked: applied.reranked,
-      ...(applied.rerank !== undefined ? { rerank: applied.rerank } : {}),
-      elapsedMs: Date.now() - startedAt,
-      hits: finalHits,
-    }
-  }
-
-  /** Shared tail: rerank (optional), threshold + top-K cut, and hit mapping. */
-  private async finishSearch(
-    store: Store,
-    config: KnowledgeConfig,
-    query: string,
-    requestedMode: SearchMode,
-    initial: RankedHit[],
-    byId: ReadonlyMap<string, KnowledgeChunk>,
-    topK: number,
-    threshold: number,
-    total: number,
-    startedAt: number,
-    // Required, and placed before the optional tail so the compiler enforces it:
-    // the status must come from the lanes that actually ran. The old row-derived
-    // default is gone because that inference IS the #16 defect — a search whose
-    // vector lane contributed reported `mode: "lexical"` whenever no single row
-    // happened to carry both scores.
-    retrieval: RetrievalStatus,
-    allowRerank = true,
-    signal?: AbortSignal,
-  ): Promise<SearchResult> {
-    throwIfAborted(signal)
-    const ranked = initial
-    const candidates = ranked
-      .map(hit => searchHitOf(store, byId.get(hit.id), hit))
-      .filter((hit): hit is SearchHit => hit !== undefined)
-    const applied = await this.applyRerank(store, config, query, candidates, topK, allowRerank, signal)
-
-    // Cherry's applyRelevanceThreshold: only 'relevance' scores are
-    // threshold-filtered — pure-vector cosine (mode 'vector') and reranked
-    // relevance. Raw BM25/hybrid ranking scores (incomparable scales) never
-    // are, even with a threshold configured.
-    const relevanceScores = applied.reranked || requestedMode === 'vector'
-    const hits = attachContextWindows(
-      store,
-      applied.hits
-        .filter(hit => (relevanceScores ? hit.score >= threshold : true))
-        .slice(0, topK),
-      query,
-      config.siblingChunks,
-      SEARCH_EVIDENCE_TOKENS,
-    )
-
-    return {
-      query,
-      mode: retrieval.effectiveMode,
-      scoreKind: applied.reranked ? 'rerank' : scoreKindForMode(retrieval.effectiveMode),
-      retrieval,
-      total,
-      reranked: applied.reranked,
-      ...(applied.rerank !== undefined ? { rerank: applied.rerank } : {}),
-      elapsedMs: Date.now() - startedAt,
-      hits,
-    }
-  }
-
-  /** One canonical rerank stage for both single-query retrieval and RRF-fused
-   * multi-query retrieval. It owns contextual input, deadline/retry policy,
-   * stable tie handling, structured degradation, and original-order fallback. */
-  private async applyRerank(
-    store: Store,
-    config: KnowledgeConfig,
-    query: string,
-    input: readonly SearchHit[],
-    topK: number,
-    allowRerank: boolean,
-    signal?: AbortSignal,
-  ): Promise<{ hits: SearchHit[]; reranked: boolean; rerank?: RerankStatus }> {
-    throwIfAborted(signal)
-    const original = [...input]
-    const rerankModel = allowRerank ? config.rerankModel.trim() : ''
-    if (rerankModel === '') return { hits: original, reranked: false }
-    if (original.length <= 1) {
-      return {
-        hits: original,
-        reranked: false,
-        rerank: this.notNeededRerankStatus(rerankModel, original.length),
-      }
-    }
-
-    const rerankQuery = fitRerankQuery(query)
-    const contextual = attachContextWindows(
-      store,
-      original,
-      query,
-      config.siblingChunks,
-      RERANK_EVIDENCE_TOKENS,
-      hit => rerankTitleReserve(hit.documentTitle),
-    )
-    const candidateCount = contextual.length
-    const rerankStartedAt = Date.now()
-    // A cold local child loads ~280MB before it can score anything, and that load
-    // shares this single deadline with the inference it precedes. Without an
-    // allowance the first query after a restart (or after an idle release) could
-    // be killed mid-load, which used to latch the readiness gate and leave the
-    // reranker unusable until a manual self-test (issue #18). The allowance is
-    // granted only when the child has not scored anything yet.
-    const rerankTimeoutMs = rerankModel.startsWith('local:')
-      ? config.localRerankTimeoutMs + (localRerankChildIsWarm() ? 0 : LOCAL_RERANK_LOAD_ALLOWANCE_MS)
-      : 60_000
-    try {
-      const scores = await rerankCandidates(
-        config.rerankBaseUrl,
-        config.rerankModel,
-        config.rerankApiKey,
-        rerankQuery,
-        contextual.map(hit => ({
-          id: hit.chunkId,
-          text: rerankEvidenceText(hit),
-        })),
-        {
-          topN: topK,
-          timeoutMs: rerankTimeoutMs,
-          deadlineAt: rerankStartedAt + rerankTimeoutMs,
-          retries: rerankModel.startsWith('local:') ? 0 : 1,
-          ...(signal !== undefined ? { signal } : {}),
-        },
-      )
-      throwIfAborted(signal)
-      const order = new Map(contextual.map((hit, index) => [hit.chunkId, index]))
-      const rescored = contextual
-        .filter(hit => scores.has(hit.chunkId))
-        .map(hit => ({ ...hit, score: scores.get(hit.chunkId)! }))
-        .sort((left, right) => right.score - left.score
-          || (order.get(left.chunkId) ?? 0) - (order.get(right.chunkId) ?? 0))
-      // rerankCandidates rejects an empty response, but retain this defensive
-      // branch for custom/test providers so an empty set never erases hits.
-      if (rescored.length === 0) {
-        const detail: RerankErrorDetail = {
-          code: 'invalid_response',
-          message: 'rerank provider returned no scored candidates',
-          retryable: false,
-          action: 'check_config',
-        }
-        const rerank = this.degradedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt, detail)
-        this.logRerankFailure(rerankModel, detail.code, candidateCount, rerank.elapsedMs ?? 0, detail.message)
-        return { hits: original, reranked: false, rerank }
-      }
-      this.rerankLogState.delete(rerankModel)
-      return {
-        hits: rescored,
-        reranked: true,
-        rerank: this.appliedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt),
-      }
-    } catch (error) {
-      throwIfAborted(signal)
-      const detail = rerankErrorDetail(error)
-      const rerank = this.degradedRerankStatus(rerankModel, candidateCount, Date.now() - rerankStartedAt, detail)
-      this.logRerankFailure(rerankModel, detail.code, candidateCount, rerank.elapsedMs ?? 0, rerankTechnicalMessage(error))
-      return { hits: original, reranked: false, rerank }
-    }
-  }
-
-  private rerankProvider(model: string): 'local' | 'remote' {
-    return model.startsWith('local:') ? 'local' : 'remote'
-  }
-
-  private notNeededRerankStatus(model: string, candidateCount: number): RerankStatus {
-    return {
-      configured: true,
-      provider: this.rerankProvider(model),
-      model,
-      status: 'not_needed',
-      attempted: false,
-      applied: false,
-      candidateCount,
-    }
-  }
-
-  private appliedRerankStatus(model: string, candidateCount: number, elapsedMs: number): RerankStatus {
-    return {
-      configured: true,
-      provider: this.rerankProvider(model),
-      model,
-      status: 'applied',
-      attempted: true,
-      applied: true,
-      candidateCount,
-      elapsedMs,
-    }
-  }
-
-  private degradedRerankStatus(model: string, candidateCount: number, elapsedMs: number, error: RerankErrorDetail): RerankStatus {
-    const skipped = ['model_not_downloaded', 'model_checking', 'model_unhealthy', 'unsupported_model', 'circuit_open', 'busy'].includes(error.code)
-    return {
-      configured: true,
-      provider: this.rerankProvider(model),
-      model,
-      // A gate refusal is not a degradation: nothing was attempted, so say so
-      // and omit the elapsed time rather than reporting a failure at 0ms.
-      status: skipped ? 'skipped' : 'degraded',
-      attempted: !skipped,
-      applied: false,
-      candidateCount,
-      ...(skipped ? {} : { elapsedMs }),
-      error,
-    }
-  }
-
-  private logRerankFailure(model: string, code: string, candidateCount: number, elapsedMs: number, technicalMessage: string): void {
-    if (this.rerankLogState.get(model) === code) return
-    this.rerankLogState.set(model, code)
-    this.ctx.logger.warn(`knowledge: rerank degraded model=${JSON.stringify(model)} code=${code} candidates=${candidateCount} elapsedMs=${elapsedMs} detail=${JSON.stringify(technicalMessage)}`)
+    return this.searchEngine.search(request, execution)
   }
 
   // ── internal ──────────────────────────────────────────────────────────────
@@ -3958,8 +3398,15 @@ export class KnowledgeService extends Service {
   private withBaseWriteLock<T>(baseId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.baseWriteChains.get(baseId) ?? Promise.resolve()
     const run = prev.then(fn, fn)
-    this.baseWriteChains.set(baseId, run.then(() => undefined, () => undefined))
+    this.baseWriteChains.set(baseId, run)
+    const cleanup = () => { if (this.baseWriteChains.get(baseId) === run) this.baseWriteChains.delete(baseId) }
+    void run.then(cleanup, cleanup)
     return run
+  }
+
+  private assertUniqueContent(baseId: string, hash: string, exceptId?: string): void {
+    const duplicate = this.requireStore().listDocuments(baseId).find(doc => doc.id !== exceptId && doc.contentHash === hash)
+    if (duplicate) throw new Error(`duplicate document: "${duplicate.title}" already contains identical content`)
   }
 
   /**
@@ -3989,6 +3436,7 @@ export class KnowledgeService extends Service {
     fileName?: string
     mimeType?: string
     url?: string
+    urlTitleOverride?: boolean
     parentDirectoryId?: string
     text: string
     documentId?: string
@@ -4007,6 +3455,7 @@ export class KnowledgeService extends Service {
     // imports of identical content must not both pass the check (Cherry guards
     // the same read-then-write with its per-base mutation lock).
     const half = await this.withBaseWriteLock(input.baseId, async () => {
+      signal?.throwIfAborted()
       // Cherry's deleting-guard: a base deleted while a queued import waited
       // must not accept new rows; a placeholder row deleted by the user before
       // its queued task ran must not be recreated.
@@ -4016,15 +3465,13 @@ export class KnowledgeService extends Service {
       if (input.placeholderId !== undefined && store.getDocument(input.placeholderId) === undefined) {
         throw new Error('document no longer exists (deleted while indexing)')
       }
-      for (const doc of store.listDocuments(input.baseId)) {
-        if (doc.id === input.placeholderId) continue
-        if (doc.contentHash === contentHash) {
-          throw new Error(`duplicate document: "${doc.title}" already contains identical content`)
-        }
-      }
+      this.assertUniqueContent(input.baseId, contentHash, input.placeholderId)
       const docId = input.placeholderId ?? input.documentId ?? crypto.randomUUID()
       const prior = input.placeholderId !== undefined ? store.getDocument(docId) : undefined
       const createdAt = prior?.createdAt ?? Date.now()
+      const snapshot = input.sourceType === 'url' && input.rawFilePath === undefined && input.placeholderId === undefined
+        ? await store.raw?.write(input.baseId, docId, '.md', encodeUtf8(input.text)) : undefined
+      const rawFilePath = snapshot ?? input.rawFilePath
       // Persist the document (with its source text) BEFORE embedding starts and
       // mark it incomplete: a crash mid-embedding then leaves a recoverable
       // record — startup recovery re-runs the embed with hash reuse, which only
@@ -4040,8 +3487,9 @@ export class KnowledgeService extends Service {
         ...(input.fileName !== undefined ? { fileName: input.fileName } : {}),
         ...(input.mimeType !== undefined ? { mimeType: input.mimeType } : {}),
         ...(input.url !== undefined ? { url: input.url } : {}),
+        ...(input.urlTitleOverride ? { urlTitleOverride: true } : {}),
         ...(input.parentDirectoryId !== undefined ? { parentDirectoryId: input.parentDirectoryId } : {}),
-        ...(input.rawFilePath !== undefined ? { rawFilePath: input.rawFilePath } : {}),
+        ...(rawFilePath !== undefined ? { rawFilePath } : {}),
         ...(input.sourcePath !== undefined ? { sourcePath: input.sourcePath } : {}),
         contentHash,
         rawText: input.text,
@@ -4052,7 +3500,13 @@ export class KnowledgeService extends Service {
         createdAt,
         updatedAt: Date.now(),
       }
-      await store.putDocument(halfDoc)
+      try {
+        signal?.throwIfAborted()
+        await store.putDocument(halfDoc)
+      } catch (error) {
+        if (snapshot !== undefined && store.getDocument(docId)?.rawFilePath !== snapshot) await store.raw?.delete(snapshot)
+        throw error
+      }
       return halfDoc
     })
     this.indexingFailures.delete(half.id)
@@ -4199,7 +3653,7 @@ export class KnowledgeService extends Service {
         // reindexing, and re-importing text already indexed elsewhere — the
         // reuse key is the hash of the exact text the model sees, so an equal
         // hash guarantees an equal vector.
-        const hashes = chunks.map(chunk => hashEmbeddingText(chunkSearchText(chunk)))
+        const hashes = chunks.map(chunk => hashEmbeddingText(searchTextOf(chunk)))
         const stored = key !== undefined
           ? this.requireStore().listEmbeddingVectorsByHashes(hashes, key)
           : new Map<string, number[]>()
@@ -4221,7 +3675,7 @@ export class KnowledgeService extends Service {
             chunks[i] = { ...chunks[i], embedding: cached, ...(key !== undefined ? { embeddingModel: key } : {}) }
           } else {
             need.push(i)
-            needTexts.push(chunkSearchText(chunks[i]))
+            needTexts.push(searchTextOf(chunks[i]))
           }
         }
         // Embed in batches and persist every finished batch as it lands: a
@@ -4313,7 +3767,7 @@ export class KnowledgeService extends Service {
     signal?.throwIfAborted()
     if (failedSize <= 1 || !isEmbeddingBatchLimitError(error)) throw error
     const reduced = Math.max(1, Math.floor(failedSize / 2))
-    this.ctx.logger.warn(`knowledge: embedding provider rejected batch size ${failedSize}, retrying with ${reduced}: ${safeErrorMessage(error)}`)
+    this.ctx.logger.warn(`knowledge: embedding provider rejected batch size ${failedSize}, retrying with ${reduced}: ${error instanceof Error ? error.message : String(error)}`)
     return reduced
   }
 
@@ -4387,12 +3841,6 @@ export class KnowledgeService extends Service {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-function chunkSearchText(chunk: KnowledgeChunk): string {
-  return chunk.context !== undefined && chunk.context.length > 0
-    ? `${chunk.context}\n${chunk.text}`
-    : chunk.text
-}
-
 /** Stable identifier for the embedding source, used to detect model changes. */
 function embeddingKey(config: KnowledgeConfig): string | undefined {
   if (config.embeddingProvider === 'none') return undefined
@@ -4403,80 +3851,6 @@ function embeddingKey(config: KnowledgeConfig): string | undefined {
     : config.embeddingModel.trim()
   if (model === '') return undefined
   return `${config.embeddingProvider}:${model}`
-}
-
-function retrievalStatus(
-  requestedMode: SearchMode,
-  lexical: RetrievalStatus['lexical'],
-  vector: RetrievalStatus['vector'],
-): RetrievalStatus {
-  const effectiveMode: SearchMode = lexical.succeeded && vector.succeeded
-    ? 'hybrid'
-    : vector.succeeded
-      ? 'vector'
-      : 'lexical'
-  return { requestedMode, effectiveMode, lexical, vector }
-}
-
-function emptyRetrievalStatus(requestedMode: SearchMode): RetrievalStatus {
-  return retrievalStatus(
-    requestedMode,
-    { attempted: false, succeeded: false, returnedCount: 0 },
-    { attempted: false, succeeded: false, returnedCount: 0 },
-  )
-}
-
-function emptySearchResult(query: string, requestedMode: SearchMode, elapsedMs: number): SearchResult {
-  const retrieval = emptyRetrievalStatus(requestedMode)
-  return {
-    query,
-    mode: retrieval.effectiveMode,
-    scoreKind: scoreKindForMode(retrieval.effectiveMode),
-    retrieval,
-    total: 0,
-    reranked: false,
-    elapsedMs,
-    hits: [],
-  }
-}
-
-function combineRetrievalStatus(requestedMode: SearchMode, results: readonly SearchResult[]): RetrievalStatus {
-  const lexical = results.reduce((total, result) => total + (result.retrieval?.lexical.returnedCount ?? 0), 0)
-  const vector = results.reduce((total, result) => total + (result.retrieval?.vector.returnedCount ?? 0), 0)
-  const lexicalAttempted = results.some(result => result.retrieval?.lexical.attempted === true)
-  const vectorAttempted = results.some(result => result.retrieval?.vector.attempted === true)
-  const lexicalSucceeded = results.some(result => result.retrieval?.lexical.succeeded === true)
-  const vectorSucceeded = results.some(result => result.retrieval?.vector.succeeded === true)
-  const lexicalError = results.find(result => result.retrieval?.lexical.errorCode !== undefined)?.retrieval?.lexical.errorCode
-  const vectorError = results.find(result => result.retrieval?.vector.errorCode !== undefined)?.retrieval?.vector.errorCode
-  return retrievalStatus(requestedMode, {
-    attempted: lexicalAttempted,
-    succeeded: lexicalSucceeded,
-    returnedCount: lexical,
-    ...(lexicalError !== undefined ? { errorCode: lexicalError } : {}),
-  }, {
-    attempted: vectorAttempted,
-    succeeded: vectorSucceeded,
-    returnedCount: vector,
-    ...(vectorError !== undefined ? { errorCode: vectorError } : {}),
-  })
-}
-
-function scoreKindForMode(mode: SearchMode): SearchScoreKind {
-  if (mode === 'hybrid') return 'rrf'
-  if (mode === 'vector') return 'vector_similarity'
-  return 'lexical_relevance'
-}
-
-function safeErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function retrievalErrorCode(error: unknown): string {
-  if (error !== null && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string') {
-    return (error as { code: string }).code
-  }
-  return 'lane_error'
 }
 
 function safeIndexingErrorMessage(message: string): string {
@@ -4541,182 +3915,6 @@ function reconstructFromChunks(chunks: KnowledgeChunk[]): string {
 }
 
 /**
- * Sibling context of a search hit: the `radius` chunks before and after it in
- * the same document, in reading order, each prefixed with its heading path so
- * the caller can see where the excerpt sits. Empty when the chunk has no
- * neighbours. This is the "full paragraph" a RAG answer needs — a bare chunk
- * often cuts a sentence mid-way, and the neighbouring chunks carry the rest.
- */
-const RERANK_EVIDENCE_TOKENS = 352
-const RERANK_QUERY_TOKENS = 128
-const RERANK_TITLE_TOKENS = 64
-const SEARCH_EVIDENCE_TOKENS = 768
-
-/** Deterministically retain both the intent at the start and qualifiers at the
- * end of an oversized rerank query. The estimator is the same one used for
- * evidence, so the pair budget remains enforceable without a model download. */
-function fitRerankQuery(query: string): string {
-  if (estimateContextTokens(query) <= RERANK_QUERY_TOKENS) return query
-  let low = 0
-  let high = query.length
-  let best = ''
-  while (low <= high) {
-    const retained = Math.floor((low + high) / 2)
-    const head = Math.ceil(retained * 0.6)
-    const tail = retained - head
-    const headEnd = snapSliceEnd(query, head)
-    const tailStart = snapSliceStart(query, query.length - tail)
-    const candidate = `${query.slice(0, headEnd).trimEnd()} … ${query.slice(tailStart).trimStart()}`
-    if (estimateContextTokens(candidate) <= RERANK_QUERY_TOKENS) {
-      best = candidate
-      low = retained + 1
-    } else {
-      high = retained - 1
-    }
-  }
-  return best || query.slice(0, snapSliceEnd(query, 1))
-}
-
-/** Bound untrusted document metadata before it enters the cross-encoder pair.
- * The title remains useful for disambiguation, but can never crowd the
- * query-centred anchor out of the fixed 352-token evidence budget. */
-function fitRerankTitle(title: string): string {
-  const trimmed = title.trim()
-  if (estimateContextTokens(trimmed) <= RERANK_TITLE_TOKENS) return trimmed
-  let low = 0
-  let high = trimmed.length
-  let best = ''
-  while (low <= high) {
-    const length = Math.floor((low + high) / 2)
-    const candidate = `${trimmed.slice(0, snapSliceEnd(trimmed, length)).trimEnd()}…`
-    if (estimateContextTokens(candidate) <= RERANK_TITLE_TOKENS) {
-      best = candidate
-      low = length + 1
-    } else {
-      high = length - 1
-    }
-  }
-  return best
-}
-
-function rerankTitleReserve(title: string): number {
-  const fitted = fitRerankTitle(title)
-  return fitted.length === 0 ? 0 : estimateContextTokens(`${fitted}\n`)
-}
-
-function rerankEvidenceText(hit: SearchHit): string {
-  const title = fitRerankTitle(hit.documentTitle)
-  const evidence = hit.contextWindow !== undefined ? serializeContextWindow(hit.contextWindow) : hit.text
-  const combined = title.length === 0 ? evidence : `${title}\n${evidence}`
-  // attachContextWindows reserved the exact fitted-title cost. Keep this
-  // defensive assertion local so a future serializer change degrades rerank
-  // instead of silently violating the public pair budget.
-  if (estimateContextTokens(combined) > RERANK_EVIDENCE_TOKENS) {
-    throw new Error('rerank evidence exceeded the 352-token budget')
-  }
-  return combined
-}
-
-function searchHitOf(store: Store, chunk: KnowledgeChunk | undefined, hit: RankedHit): SearchHit | undefined {
-  if (chunk === undefined) return undefined
-  return {
-    chunkId: chunk.id,
-    docId: chunk.docId,
-    baseId: chunk.baseId,
-    documentTitle: store.getDocument(chunk.docId)?.title ?? chunk.docId,
-    ...(chunk.heading !== undefined ? { heading: chunk.heading } : {}),
-    index: chunk.index,
-    text: chunk.text,
-    ...(chunk.sourceSpans !== undefined ? { sourceSpans: chunk.sourceSpans } : {}),
-    ...(chunk.processingRevision !== undefined ? { processingRevision: chunk.processingRevision } : {}),
-    score: hit.score,
-    ...(hit.vectorScore !== undefined ? { vectorScore: hit.vectorScore } : {}),
-    ...(hit.lexicalScore !== undefined ? { lexicalScore: hit.lexicalScore } : {}),
-  }
-}
-
-/** Attach token-bounded ordered context to all hits while loading all merged
- * document ranges through one storage operation. */
-function attachContextWindows(
-  store: Store,
-  hits: readonly SearchHit[],
-  focus: string,
-  radius: number,
-  maxTokens: number,
-  reserveTokens?: (hit: SearchHit) => number,
-): SearchHit[] {
-  if (hits.length === 0) return []
-  const safeRadius = clampInt(radius, 0, 10, 0)
-  const ranges = mergeChunkRanges(hits.map(hit => ({
-    docId: hit.docId,
-    fromIdx: Math.max(0, hit.index - safeRadius),
-    toIdx: hit.index + safeRadius,
-  })))
-  const loaded = store.listChunksByIndexRanges(ranges)
-  const byDoc = new Map<string, KnowledgeChunk[]>()
-  for (const chunk of loaded) {
-    const list = byDoc.get(chunk.docId) ?? []
-    list.push(chunk)
-    byDoc.set(chunk.docId, list)
-  }
-  return hits.map(hit => {
-    const anchor: KnowledgeChunk = {
-      id: hit.chunkId,
-      docId: hit.docId,
-      baseId: hit.baseId,
-      index: hit.index,
-      text: hit.text,
-      ...(hit.sourceSpans !== undefined ? { sourceSpans: hit.sourceSpans } : {}),
-      ...(hit.processingRevision !== undefined ? { processingRevision: hit.processingRevision } : {}),
-      ...(hit.heading !== undefined ? { heading: hit.heading } : {}),
-    }
-    const neighbours = byDoc.get(hit.docId) ?? [anchor]
-    const document = store.getDocument(hit.docId)
-    const contextWindow = composeContextWindow(neighbours, anchor, {
-      before: safeRadius,
-      after: safeRadius,
-      maxTokens: Math.max(1, maxTokens - (reserveTokens?.(hit) ?? 0)),
-      focus,
-      documentChunkCount: document?.chunkCount,
-    })
-    const legacy = safeRadius > 0
-      ? neighbours
-        .filter(chunk => chunk.id !== anchor.id && chunk.index >= anchor.index - safeRadius && chunk.index <= anchor.index + safeRadius)
-        .sort((a, b) => a.index - b.index)
-        .map(chunk => `${chunk.heading !== undefined ? `[${chunk.heading}] ` : ''}${chunk.text}`)
-        .join('\n\n')
-      : ''
-    const { siblingContext: _oldSibling, contextWindow: _oldWindow, ...base } = hit
-    return {
-      ...base,
-      contextWindow,
-      ...(legacy.length > 0 ? { siblingContext: legacy } : {}),
-    }
-  })
-}
-
-function mergeChunkRanges(
-  ranges: readonly { docId: string; fromIdx: number; toIdx: number }[],
-): Array<{ docId: string; fromIdx: number; toIdx: number }> {
-  const ordered = [...ranges].sort((a, b) => a.docId.localeCompare(b.docId) || a.fromIdx - b.fromIdx || a.toIdx - b.toIdx)
-  const merged: Array<{ docId: string; fromIdx: number; toIdx: number }> = []
-  for (const range of ordered) {
-    const previous = merged[merged.length - 1]
-    if (previous !== undefined && previous.docId === range.docId && range.fromIdx <= previous.toIdx + 1) {
-      previous.toIdx = Math.max(previous.toIdx, range.toIdx)
-    } else {
-      merged.push({ ...range })
-    }
-  }
-  return merged
-}
-
-function clampInt(value: number, min: number, max: number, fallback: number): number {
-  if (!Number.isFinite(value)) return fallback
-  return Math.min(max, Math.max(min, Math.trunc(value)))
-}
-
-/**
  * Clamp a caller-supplied `rawTextLimit` to `[0, MAX_RAW_TEXT_LIMIT]`.
  * `undefined` and non-finite values mean "no cap" (the caller did not ask for
  * one); anything else is truncated and bounded. Exported for tests.
@@ -4724,36 +3922,6 @@ function clampInt(value: number, min: number, max: number, fallback: number): nu
 export function clampRawTextLimit(limit: number | undefined): number | undefined {
   if (limit === undefined || !Number.isFinite(limit)) return undefined
   return Math.min(MAX_RAW_TEXT_LIMIT, Math.max(0, Math.trunc(limit)))
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted !== true) return
-  if (signal.reason instanceof Error) throw signal.reason
-  throw new DOMException('The operation was aborted', 'AbortError')
-}
-
-function throwIfDeadline(deadlineAt: number | undefined): void {
-  if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
-    throw new DOMException('knowledge search deadline exceeded', 'TimeoutError')
-  }
-}
-
-/** Trim, validate, normalize, and cap multi-query variants. */
-function normalizeQueryVariants(primary: string, queries?: readonly string[]): string[] {
-  const variants = [primary]
-  const seen = new Set([primary.toLowerCase()])
-  for (const raw of (queries ?? []) as readonly unknown[]) {
-    if (typeof raw !== 'string') continue
-    const query = raw.trim()
-    if (query.length === 0) continue
-    if (query.length > 2000) throw new Error('extra search query must not exceed 2000 characters')
-    const key = query.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    variants.push(query)
-    if (variants.length >= 4) break
-  }
-  return variants
 }
 
 /** Drop empty-string config fields so a base only stores real overrides. */
@@ -4806,112 +3974,6 @@ function safeRawExtension(fileName: string): string {
 function rawExtensionOf(relativePath: string): string {
   const ext = extname(relativePath).toLowerCase()
   return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : '.bin'
-}
-
-/** Hosts that must never be fetched by URL import — loopback, link-local,
- *  and RFC1918 private ranges. Blocks the classic SSRF targets (metadata
- *  endpoints, internal services); DNS-rebinding is outside this check (the
- *  plugin trusts the host's resolver for public names).
- *
- *  Entries are the forms `URL.hostname` actually returns: it keeps the brackets
- *  on an IPv6 literal, and the lookup below strips them before comparing, so the
- *  previous bracketed entries could never match and EVERY IPv6 host bypassed the
- *  guard (`http://[::1]/`, `http://[::ffff:127.0.0.1]:11434/`). Literal
- *  addresses are now classified with `isIP` instead of a string table. */
-const BLOCKED_URL_HOSTS = new Set([
-  'localhost',
-  '0.0.0.0',
-  'metadata.google.internal',
-])
-
-/** Private, loopback, link-local, CGNAT, benchmarking, multicast and reserved
- *  IPv4 space: none of it is a legitimate target for a document-supplied URL. */
-function isBlockedIpv4(host: string): boolean {
-  const parts = host.split('.').map(part => Number(part))
-  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return true
-  const a = parts[0]!
-  const b = parts[1]!
-  if (a === 0 || a === 10 || a === 127) return true
-  if (a === 169 && b === 254) return true
-  if (a === 172 && b >= 16 && b <= 31) return true
-  if (a === 192 && b === 168) return true
-  if (a === 100 && b >= 64 && b <= 127) return true
-  if (a === 192 && b === 0) return true
-  if (a === 198 && (b === 18 || b === 19)) return true
-  if (a >= 224) return true
-  return false
-}
-
-/** Loopback, unspecified, unique-local, link-local and multicast IPv6, plus the
- *  forms that reach the IPv4 stack (IPv4-mapped, in both notations). */
-function isBlockedIpv6(host: string): boolean {
-  if (host === '::' || host === '::1') return true
-  const mappedDotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(host)
-  if (mappedDotted !== null) return isBlockedIpv4(mappedDotted[1]!)
-  const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host)
-  if (mappedHex !== null) {
-    const high = Number.parseInt(mappedHex[1]!, 16)
-    const low = Number.parseInt(mappedHex[2]!, 16)
-    return isBlockedIpv4(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`)
-  }
-  const firstGroup = host.split(':').find(part => part.length > 0)
-  const first = firstGroup === undefined ? 0 : Number.parseInt(firstGroup, 16)
-  if (Number.isNaN(first)) return true
-  if ((first & 0xfe00) === 0xfc00) return true // fc00::/7 unique local
-  if ((first & 0xffc0) === 0xfe80) return true // fe80::/10 link local
-  if ((first & 0xff00) === 0xff00) return true // ff00::/8 multicast
-  return false
-}
-
-function isBlockedUrlHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  if (BLOCKED_URL_HOSTS.has(host)) return true
-  const family = isIP(host)
-  if (family === 4) return isBlockedIpv4(host)
-  if (family === 6) return isBlockedIpv6(host)
-  // Named hosts keep the documented posture: the resolver is trusted, so only
-  // the explicit deny-list above applies.
-  return false
-}
-
-async function fetchHtml(url: string): Promise<string> {
-  // Manual redirect handling: `fetch` follows redirects by default, which
-  // would let a public page 302 to a loopback/private address and bypass the
-  // SSRF check below — every hop is validated here instead.
-  let current = url
-  for (let hop = 0; hop <= 5; hop += 1) {
-    let parsed: URL
-    try {
-      parsed = new URL(current)
-    } catch {
-      throw new Error(`invalid URL: ${current}`)
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new Error(`URL protocol not allowed: ${parsed.protocol}`)
-    }
-    if (isBlockedUrlHost(parsed.hostname)) {
-      throw new Error(`URL host not allowed: ${parsed.hostname}`)
-    }
-    const response = await httpFetch(parsed.toString(), {
-      method: 'GET',
-      headers: { 'user-agent': 'dsh-knowledge/0.1 (+knowledge-base-import)' },
-      timeoutMs: 30000,
-      redirect: 'manual',
-    })
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      if (location === null) throw new Error(`URL redirect without Location (HTTP ${response.status})`)
-      current = new URL(location, parsed).toString()
-      continue
-    }
-    if (!response.ok) throw new Error(`URL fetch failed: HTTP ${response.status}`)
-    const contentType = (response.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase()
-    if (contentType !== '' && contentType !== 'text/html' && contentType !== 'application/xhtml+xml') {
-      throw new Error(`URL did not return HTML (content-type: ${contentType || 'unknown'})`)
-    }
-    return response.text()
-  }
-  throw new Error('URL redirect limit exceeded')
 }
 
 /** Lowercased extensions accepted by addFileDocument (defensive gate; the UI filters first). */

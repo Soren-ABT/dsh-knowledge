@@ -16,7 +16,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fork, type ChildProcess } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { applyGlobalProxy, httpFetch, NETWORK_HINT } from './net.js'
+import { applyGlobalProxy, httpFetch } from './net.js'
 import {
   LOCAL_EMBED_PROTOCOL_VERSION,
   isLocalEmbedProgress,

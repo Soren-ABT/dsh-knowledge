@@ -1,9 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.6.0-beta.1 — 2026-11-19 — Markdown sources and scoped retrieval
 
+- Import raw Markdown URLs from the panel, HTTP API or agent tool. Bound downloads to 8 MiB and 30 seconds. Concurrent refreshes share one request and publish through the existing generation journal. A failed candidate preserves the previous snapshot and index. Scheduled refreshes use the current settings for each base (#57).
+- `knowledge_search` accepts a `baseIds` subset of the enabled bases. Model scope and names can be resolved without reading documents. Invalid scope updates return HTTP 400 and leave the saved selection intact. Retrieval history belongs to the service and session that produced it (#57).
+- Enumerate document metadata once for base summaries and read staged headers during raw snapshot reconciliation. Startup model validation examines only configured local rerankers. Plugin disposal waits for URL work and local worker shutdown.
+- Separate tool registration, evidence selection and rendering from the search engine, reranker and context assembly. Existing tool calls and service entry points remain compatible.
 - Retry local embedding cache promotion through transient file locks after a completed download. Keep the staged files if retries run out and allow cancellation during the wait (#78, #79).
 - Use ONNX Runtime 1.30.0 for PaddleOCR and Transformers.js so the two engines share one native dependency and satisfy PaddleOCR's peer requirement (#80).
+- Test packed installs with DSH 0.2.2-rc.5 in the existing Windows and Ubuntu jobs. The public npm prerelease channel is `beta`.
 
 ## 0.5.4 — 2026-11-15 — Cleaner chunks, background maintenance and desktop layout
 

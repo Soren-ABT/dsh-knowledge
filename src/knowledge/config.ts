@@ -7,6 +7,7 @@
  */
 
 import Schema from '@deepseek-ai/schemastery'
+import { clampInt } from './bounds.js'
 import type { ConfigOverrides } from './domain.js'
 import type { BaseConfig, EmbeddingProvider, KnowledgeConfig, SearchMode } from './types.js'
 import type { DocumentProcessor, MineruTier } from './processing-types.js'
@@ -266,11 +267,6 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     injectUsagePrompt: baseConfig.injectUsagePrompt ?? resolved.injectUsagePrompt,
     autoRetrieveWeight: clampInt(baseConfig.autoRetrieveWeight ?? resolved.autoRetrieveWeight, 0, 5, 3),
   }
-}
-
-function clampInt(value: number, min: number, max: number, fallback: number): number {
-  if (!Number.isFinite(value)) return fallback
-  return Math.min(max, Math.max(min, Math.trunc(value)))
 }
 
 function clampNumber(value: number, min: number, max: number, fallback: number): number {

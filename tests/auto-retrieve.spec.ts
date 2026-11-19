@@ -54,11 +54,11 @@ function stubKnowledge(overrides: Partial<{
   })
   return {
     isEnabled: () => overrides.enabled ?? true,
-    listBases,
-    enabledBases: () => {
-      if (overrides.scope === undefined) return listBases()
+    resolveInvocationScope: () => {
+      const all = listBases()
+      if (overrides.scope === undefined) return { all, enabled: all }
       const allowed = new Set(overrides.scope)
-      return listBases().filter(base => allowed.has(base.id))
+      return { all, enabled: all.filter(base => allowed.has(base.id)), baseIds: overrides.scope }
     },
     getConfig: () => ({ autoRetrieve: overrides.autoRetrieve ?? true }) as never,
     getConfigFor: (baseId?: string) => {
@@ -137,6 +137,22 @@ afterEach(() => {
 })
 
 describe('autoRetrieveBackground', () => {
+  it('isolates injection history when two service instances see the same agent id', async () => {
+    const search = async (): Promise<SearchResult> => ({
+      query: 'q', mode: 'lexical', total: 1, reranked: false, elapsedMs: 0,
+      hits: [hit('报销流程和发票要求', 0.95)],
+    })
+    const first = stubKnowledge({ search })
+    const second = stubKnowledge({ search })
+    const agent = stubAgent()
+    const query = '请说明报销流程和发票要求'
+    const message = await buildAutoRetrieveMessage(first, agent, query)
+    expect(message).toBeDefined()
+    message!.commit()
+    expect(await buildAutoRetrieveMessage(first, agent, query)).toBeUndefined()
+    expect(await buildAutoRetrieveMessage(second, agent, query)).toBeDefined()
+  })
+
   it('requires approval only for permanent delete tools', () => {
     expect(knowledgeDestructiveApprovalReason('knowledge_delete_base')).toContain('permanently')
     expect(knowledgeDestructiveApprovalReason('knowledge_delete_document')).toContain('permanently')

@@ -75,4 +75,21 @@ describe('knowledge UI policy', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('gives synchronous URL indexing the same request budget as a file rebuild', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+    vi.stubGlobal('fetch', async () => Response.json({ ok: true, value: {} }))
+    try {
+      const api = new KnowledgeApi()
+      await api.reindexDocument('id')
+      await api.addUrlDocument('base', 'https://example.com/wiki.md')
+      await api.refreshUrlDocument('id')
+      const budgets = timeout.mock.calls.map(([duration]) => duration)
+      expect(budgets[0]).toBeGreaterThan(60_000)
+      expect(budgets).toEqual([budgets[0], budgets[0], budgets[0]])
+    } finally {
+      timeout.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
 })

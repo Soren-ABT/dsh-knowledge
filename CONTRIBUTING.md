@@ -6,7 +6,8 @@ environment rather than an optional extra.
 
 ## Development setup
 
-Use Node.js 22.19.0 or Node.js 24 and pnpm 11.7.0. Check out the repositories
+Use Node.js 24.9.0 or newer and the pnpm version declared by each repository.
+Check out the repositories
 as siblings because the development dependencies use `link:../dsh/...`:
 
 ```text
@@ -15,19 +16,38 @@ workspace/
 └── dsh-knowledge/
 ```
 
-The compatibility anchor for 0.3.6 is DSH commit
-`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.
+For this release, source builds use DSH `0.2.2-rc.5` at the commit below.
+CI pins one published `@deepseek-ai/dsh` version and its matching source
+commit. Build the host libraries in the sibling DSH checkout for its SDK types
+and runtime modules. Installing the host dependencies also makes the
+`storage-domain` copy of Zod available to the plugin. Both compile the same
+document schemas, and installed plugins use the host's runtime peer. The Windows
+and Ubuntu native jobs also install the tarball and boot the public CLI.
 
 ```bash
 git clone https://github.com/deepseek-ai/deepseek-harness.git dsh
-git -C dsh checkout b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+git -C dsh checkout 9c2670d3bce5275e0d1610272958121af87787bb
 git clone https://github.com/Soren-ABT/dsh-knowledge.git dsh-knowledge
 cd dsh
 pnpm install --frozen-lockfile
-pnpm run build:lib
+pnpm exec tsx scripts/compile-referenced-projects.ts host-libraries
 cd ../dsh-knowledge
 pnpm install --frozen-lockfile
 ```
+
+## Where to change retrieval
+
+| When you change | Start here |
+| --- | --- |
+| Search filters, candidate retrieval, or fusion across queries | [Search engine](src/knowledge/search.ts). Both the tool and the HTTP API call `KnowledgeService.search()`. |
+| Reranker behavior or the context attached to a hit | [Search reranking](src/knowledge/search-rerank.ts) and [context assembly](src/knowledge/search-context.ts). The service owns reranker state for its lifetime. |
+| Automatic retrieval on a new message or follow-up | [Query planning](src/tool-knowledge/auto-retrieve-query.ts) handles intent and identifiers. [Evidence selection](src/tool-knowledge/auto-retrieve-selection.ts) applies score thresholds and per-base limits. [The pre-step hook](src/tool-knowledge/auto-retrieve.ts) owns cancellation and per-agent history. |
+| Source labels, clipping, or the text shown to the model | [Evidence rendering](src/tool-knowledge/render.ts) applies the explicit-search and automatic-injection budgets. |
+| Tool parameters, execution, or access | Use the matching [search](src/tool-knowledge/search-tool.ts), [library](src/tool-knowledge/library-tools.ts), or [document](src/tool-knowledge/document-tools.ts) registration. [Tool access](src/tool-knowledge/tool-access.ts) owns shared scope and approval checks. |
+
+The [tool plugin entry](src/tool-knowledge/index.ts) wires these registrations
+and exposes the public helpers. When changing behavior, exercise the normal
+tool, pre-step, or service entry in the relevant tests.
 
 ## Required checks
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { build } from 'esbuild'
 import {
   composeContextWindow,
   estimateContextTokens,
@@ -349,11 +350,16 @@ describe('context protocol boundary', () => {
     expect(protocolEstimate('中文'.repeat(10))).toBe(Math.ceil(20 / 1.5))
   })
 
-  it('keeps the model tools on the protocol module instead of the engine module', () => {
-    // The tool host entry must not re-import the engine module: a stateful
-    // helper added there would be silently duplicated into both bundles.
-    const source = readFileSync(new URL('../src/tool-knowledge/index.ts', import.meta.url), 'utf8')
-    expect(source).toMatch(/from '\.\.\/knowledge\/context-protocol\.js'/)
-    expect(source).not.toMatch(/from '\.\.\/knowledge\/context\.js'/)
+  it('bundles only the shared context protocol into the model tools', async () => {
+    const { metafile } = await build({
+      absWorkingDir: fileURLToPath(new URL('../', import.meta.url)),
+      entryPoints: ['src/tool-knowledge/index.ts'],
+      platform: 'node', format: 'esm', packages: 'external',
+      bundle: true, write: false, metafile: true,
+    })
+    const inputs = Object.keys(metafile.inputs)
+    expect(inputs).toContain('src/knowledge/context-protocol.ts')
+    expect(inputs).not.toContain('src/knowledge/context.ts')
+    expect(inputs).not.toContain('src/knowledge/index.ts')
   })
 })

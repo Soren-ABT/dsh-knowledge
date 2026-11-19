@@ -7,7 +7,6 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import type { CSSProperties } from 'react'
 import { KnowledgeApi } from './api.js'
 import type { BaseConfig, BaseSummary, EmbeddingProvider, KnowledgeConfig, LocalModelStatus, ModelSuggestions, SearchMode } from './api.js'
 import { accentSoft, C, style } from './theme.js'

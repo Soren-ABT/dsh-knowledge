@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
+import type { Domain } from '@deepseek-ai/dsh-storage-domain'
+import { FakeTable } from './helpers/memory-kv-table.js'
 import { Context } from '@deepseek-ai/cordis'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
@@ -8,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { knowledgeDomainSpec } from '../src/knowledge/domain.js'
 import { ChunkDatabase, hashEmbeddingText, migrateLegacyChunkFile } from '../src/knowledge/chunkdb.js'
+import { MetadataWriteError } from '../src/knowledge/metadata-write.js'
 import { openStore, StorageUnavailableError } from '../src/knowledge/store.js'
 import type { StorageDomainFacility, Store } from '../src/knowledge/store.js'
 import { KnowledgeService } from '../src/knowledge/index.js'
@@ -54,43 +56,6 @@ const TEST_CONFIG: Config = {
   autoRetrieve: true,
   autoRetrieveWeight: 3,
   localWorkerIdleTimeoutMs: 60000,
-}
-
-/** Minimal in-memory KvTable matching the storage-domain runtime contract. */
-class FakeTable<K extends string, V> implements KvTable<K, V> {
-  readonly map = new Map<K, V>()
-
-  get(key: K): V | undefined {
-    return this.map.get(key)
-  }
-
-  entries(): IterableIterator<[K, V]> {
-    return this.map.entries()
-  }
-
-  keys(): IterableIterator<K> {
-    return this.map.keys()
-  }
-
-  get size(): number {
-    return this.map.size
-  }
-
-  async put(key: K, value: V): Promise<void> {
-    this.map.set(key, value)
-  }
-
-  async delete(key: K): Promise<boolean> {
-    return this.map.delete(key)
-  }
-
-  async update(key: K, fn: (current: V) => V): Promise<V> {
-    const current = this.map.get(key)
-    if (current === undefined) throw new Error(`missing key ${key}`)
-    const next = fn(current)
-    this.map.set(key, next)
-    return next
-  }
 }
 
 function fakeDomain(): Domain<typeof knowledgeDomainSpec> {
@@ -1052,6 +1017,118 @@ describe('local-path import source tracking', () => {
   }
   const storeOf = (service: KnowledgeService): Store =>
     (service as unknown as { store: Store }).store
+
+  it('keeps URL snapshots and chunks together across concurrent refresh, duplicate content, and a write failure', async () => {
+    const dir = await tempDir()
+    const service = await mount(dir)
+    const store = storeOf(service)
+    let markdown = '# Notes\n\n`<tag>` and $f(x)$ in the original.'
+    const fetchMock = vi.fn(async () => new Response(markdown, { headers: { 'content-type': 'text/plain; charset=utf-8' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const base = await service.createBase({ name: 'URL snapshots' })
+      const folder = await service.createDirectory(base.id, 'References')
+      const request = { baseId: base.id, parentDirectoryId: folder.id, title: 'My reference', url: 'https://example.com/wiki.md' }
+      const imported = await service.addUrlDocument(request)
+      expect(imported.rawText).toBe(markdown)
+      const originalChunks = service.listChunks(imported.id)
+      const raw = store.raw!
+      expect(await raw.listAll()).toEqual([imported.rawFilePath])
+      await expect(service.addUrlDocument(request)).rejects.toThrow(/duplicate/)
+      expect(await raw.listAll()).toEqual([imported.rawFilePath])
+
+      await service.addTextDocument({ baseId: base.id, title: 'existing', content: 'existing material' })
+      markdown = 'existing material'
+      await expect(service.refreshUrlDocument(imported.id)).rejects.toThrow(/duplicate/)
+      expect(decode(await raw.read(imported.rawFilePath!))).toBe(imported.rawText)
+      expect(service.listChunks(imported.id)).toEqual(originalChunks)
+      markdown = '# Revised\n\n`<tag>` and $f(y)$.'
+      vi.spyOn(store, 'commitDocumentGeneration').mockRejectedValueOnce(new Error('simulated failed commit'))
+      await expect(service.refreshUrlDocument(imported.id)).rejects.toThrow('simulated failed commit')
+      expect(store.getDocument(imported.id)).toEqual(imported)
+      expect(await raw.listAll()).toEqual([imported.rawFilePath])
+
+      fetchMock.mockClear()
+      const [a, b] = await Promise.all([service.refreshUrlDocument(imported.id), service.refreshUrlDocument(imported.id)])
+      expect(b).toEqual(a)
+      expect(a).toMatchObject({ changed: true, title: 'My reference' })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const current = store.getDocument(imported.id)!
+      expect(current.parentDirectoryId).toBe(folder.id)
+      expect(knowledgeDomainSpec.tables.documents.valueSchema.parse(current)).toMatchObject({
+        urlTitleOverride: true, urlCheckedAt: expect.any(Number),
+      })
+      expect(current.rawText).toBe(markdown)
+      expect(decode(await raw.read(current.rawFilePath!))).toBe(markdown)
+      expect(await raw.listAll()).toEqual([current.rawFilePath])
+      expect(service.listChunks(imported.id).some(chunk => chunk.text.includes('f(y)'))).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+      await closeStore(service)
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps live and staged raw files without loading staged vectors', async () => {
+    const dir = await tempDir()
+    const service = await mount(dir)
+    const store = storeOf(service)
+    try {
+      const base = await service.createBase({ name: 'snapshot pins' })
+      const doc = await service.addTextDocument({ baseId: base.id, title: 'Notes', content: 'snapshot content' })
+      const raw = store.raw!
+      const bytes = new TextEncoder().encode('saved source')
+      const live = await raw.write(base.id, doc.id, '.md', bytes)
+      const staged = await raw.write(base.id, 'candidate', '.md', bytes)
+      const orphan = await raw.write(base.id, 'unused', '.md', bytes)
+      await store.putDocument({ ...doc, rawFilePath: live })
+      await store.stageDocumentGeneration({ ...doc, rawFilePath: staged }, store.listChunksByDoc(doc.id))
+      const reads = vi.spyOn(store, 'getStagedDocumentGeneration')
+      expect(await store.reconcileOrphanRaws()).toBe(1)
+      expect(reads).not.toHaveBeenCalled()
+      expect(await raw.read(orphan)).toBeNull()
+      await expect(raw.deleteBase('')).rejects.toThrow(/base id/)
+      expect((await raw.listAll()).sort()).toEqual([live, staged].sort())
+    } finally {
+      await closeStore(service)
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['cancel', 'metadata'] as const)('preserves the previous generation when %s interrupts a rebuild before staging', async failure => {
+    const dir = await tempDir()
+    const service = await mount(dir)
+    try {
+      const base = await service.createBase({ name: 'interrupted rebuild' })
+      const source = join(dir, 'notes.txt')
+      await writeFile(source, 'original notes')
+      await service.importFromPath(base.id, source)
+      const store = storeOf(service)
+      const doc = store.listDocuments(base.id)[0]!
+      await store.stageDocumentGeneration(doc, store.listChunksByDoc(doc.id))
+      const staged = store.getStagedDocumentGeneration(doc.id)
+      expect(staged).toBeDefined()
+      await writeFile(source, 'updated notes')
+      const raw = store.raw!
+      if (failure === 'cancel') {
+        const write = raw.write.bind(raw)
+        vi.spyOn(raw, 'write').mockImplementationOnce(async (...args) => {
+          const path = await write(...args)
+          service.cancelProcessing(doc.id)
+          return path
+        })
+      } else {
+        vi.spyOn(store, 'putDocument').mockRejectedValueOnce(new MetadataWriteError(new Error('failed metadata write')))
+      }
+      await expect(service.reindexDocument(doc.id)).rejects.toThrow(failure === 'cancel' ? /abort/i : /failed metadata write/)
+      expect(store.getDocument(doc.id)).toEqual(doc)
+      expect(store.getStagedDocumentGeneration(doc.id)).toEqual(staged)
+      expect(await raw.listAll()).toEqual([doc.rawFilePath])
+    } finally {
+      await closeStore(service)
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 
   it.each(['source', 'base', 'bulk'] as const)('serializes %s deletion with an active directory scan', async target => {
     const dir = await tempDir()

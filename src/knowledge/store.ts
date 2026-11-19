@@ -11,7 +11,7 @@
 
 import type { Domain, DomainSpec } from '@deepseek-ai/dsh-storage-domain'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { dirname, extname, join, relative } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { knowledgeDomainSpec, TABLES } from './domain.js'
 import type { ConfigOverrides } from './domain.js'
 import { isMetadataWriteFailure, MetadataWriter } from './metadata-write.js'
@@ -72,11 +72,11 @@ export class RawFileStorage implements RawFileStore {
   constructor(private readonly root: string) {}
 
   private pathOf(relativePath: string): string {
-    const resolved = join(this.root, relativePath)
-    // The relative path is always built from uuid segments + a sanitized ext;
-    // assert it stays inside the root regardless.
     const rel = relativePath.replace(/\\/g, '/')
-    if (rel === '..' || rel.startsWith('../') || rel.includes('/../') || resolved.startsWith(this.root) === false) {
+    const resolved = resolve(this.root, rel)
+    const inside = relative(this.root, resolved)
+    if (!inside || isAbsolute(inside) || inside === '..' || inside.startsWith('..' + sep)
+        || isAbsolute(rel) || /^[A-Za-z]:/.test(rel) || rel.split('/').includes('..')) {
       throw new Error(`unsafe raw file path: ${relativePath}`)
     }
     return resolved
@@ -130,8 +130,9 @@ export class RawFileStorage implements RawFileStore {
   }
 
   async deleteBase(baseId: string): Promise<void> {
-    // Validate through the same boundary as every other path: a crafted baseId
-    // (e.g. a tampered domain record) must never let `rm -rf` escape the root.
+    // A base owns one direct child directory. Never delete the storage root
+    // or a nested path supplied as a base id, including Win32 dot/space aliases.
+    if (!baseId || /[\\/:]|[. ]$/.test(baseId)) throw new Error('invalid raw storage base id')
     await rm(this.pathOf(baseId), { recursive: true, force: true })
   }
 }
@@ -142,7 +143,8 @@ export interface Store {
   putBase(base: KnowledgeBase): Promise<void>
   deleteBase(id: string): Promise<void>
 
-  listDocuments(baseId: string): KnowledgeDocument[]
+  /** With no base filter, enumerate the metadata table once (including journal overlays). */
+  listDocuments(baseId?: string): KnowledgeDocument[]
   getDocument(id: string): KnowledgeDocument | undefined
   putDocument(doc: KnowledgeDocument): Promise<void>
   deleteDocument(id: string): Promise<void>
@@ -221,9 +223,8 @@ export interface Store {
   setGroups(groups: string[]): Promise<void>
 
   getEnabled(): boolean
-  setEnabled(enabled: boolean): Promise<void>
   getEnabledBaseIds(): string[]
-  setEnabledBaseIds(ids: string[]): Promise<void>
+  setInvocationSettings(patch: { enabled?: boolean; enabledBaseIds?: string[] }): Promise<void>
 
   close(): Promise<void>
 }
@@ -367,13 +368,16 @@ class DomainStore implements Store {
     })
   }
 
-  listDocuments(baseId: string): KnowledgeDocument[] {
+  listDocuments(baseId?: string): KnowledgeDocument[] {
     const pending = new Map(this.chunkDb.pendingDocumentGenerations().map(item => [item.document.id, item]))
-    return [...this.documents.entries()].map(([, value]) => {
+    const documents: KnowledgeDocument[] = []
+    for (const [, value] of this.documents.entries()) {
+      if (baseId !== undefined && value.baseId !== baseId) continue
       const next = pending.get(value.id)
-      return next !== undefined && next.previousCreatedAt === value.createdAt && next.document.baseId === value.baseId
-        ? next.document : value
-    }).filter(doc => doc.baseId === baseId)
+      documents.push(next !== undefined && next.previousCreatedAt === value.createdAt && next.document.baseId === value.baseId
+        ? next.document : value)
+    }
+    return documents
   }
 
   getDocument(id: string): KnowledgeDocument | undefined {
@@ -595,11 +599,16 @@ class DomainStore implements Store {
 
   async reconcileOrphanRaws(): Promise<number> {
     const referenced = new Set<string>()
-    for (const base of this.listBases()) {
-      for (const doc of this.listDocuments(base.id)) {
-        if (doc.rawFilePath !== undefined) referenced.add(doc.rawFilePath)
-        const staged = this.getStagedDocumentGeneration(doc.id)
-        if (staged?.document.rawFilePath !== undefined) referenced.add(staged.document.rawFilePath)
+    for (const doc of this.listDocuments()) {
+      if (doc.rawFilePath !== undefined && this.getBase(doc.baseId) !== undefined) referenced.add(doc.rawFilePath)
+    }
+    // Only pending revisions can hold another raw snapshot. Reading their
+    // headers avoids loading staged chunks and vectors for a path comparison.
+    for (const staged of this.chunkDb.stagedDocumentHeaders()) {
+      const live = this.documents.get(staged.id)
+      if (staged.rawFilePath !== undefined && live?.baseId === staged.baseId
+          && live.createdAt === staged.createdAt && this.getBase(staged.baseId) !== undefined) {
+        referenced.add(staged.rawFilePath)
       }
     }
     let removed = 0
@@ -618,9 +627,7 @@ class DomainStore implements Store {
 
   async reconcileOrphanChunks(): Promise<number> {
     const known = new Set<string>()
-    for (const base of this.listBases()) {
-      for (const doc of this.listDocuments(base.id)) known.add(doc.id)
-    }
+    for (const [id, doc] of this.documents.entries()) if (this.getBase(doc.baseId) !== undefined) known.add(id)
     let removed = 0
     for (const docId of this.chunkDb.docIdsWithChunks()) {
       if (known.has(docId)) continue
@@ -664,16 +671,12 @@ class DomainStore implements Store {
     return this.readGlobal().enabled
   }
 
-  async setEnabled(enabled: boolean): Promise<void> {
-    await this.writeGlobal({ enabled })
-  }
-
   getEnabledBaseIds(): string[] {
     return this.readGlobal().enabledBaseIds
   }
 
-  async setEnabledBaseIds(ids: string[]): Promise<void> {
-    await this.writeGlobal({ enabledBaseIds: ids })
+  setInvocationSettings(patch: { enabled?: boolean; enabledBaseIds?: string[] }): Promise<void> {
+    return this.writeGlobal(patch)
   }
 
   private readGlobal(): { overrides: ConfigOverrides; groups: string[]; enabled: boolean; enabledBaseIds: string[] } {
@@ -746,8 +749,9 @@ class MemoryStore implements Store {
     }
   }
 
-  listDocuments(baseId: string): KnowledgeDocument[] {
-    return [...this.documents.values()].filter(doc => doc.baseId === baseId)
+  listDocuments(baseId?: string): KnowledgeDocument[] {
+    const documents = [...this.documents.values()]
+    return baseId === undefined ? documents : documents.filter(doc => doc.baseId === baseId)
   }
 
   getDocument(id: string): KnowledgeDocument | undefined {
@@ -978,16 +982,13 @@ class MemoryStore implements Store {
     return this.enabled
   }
 
-  async setEnabled(enabled: boolean): Promise<void> {
-    this.enabled = enabled
-  }
-
   getEnabledBaseIds(): string[] {
     return [...this.enabledBaseIds]
   }
 
-  async setEnabledBaseIds(ids: string[]): Promise<void> {
-    this.enabledBaseIds = [...ids]
+  async setInvocationSettings(patch: { enabled?: boolean; enabledBaseIds?: string[] }): Promise<void> {
+    if (patch.enabled !== undefined) this.enabled = patch.enabled
+    if (patch.enabledBaseIds !== undefined) this.enabledBaseIds = [...patch.enabledBaseIds]
   }
 
   async close(): Promise<void> {}

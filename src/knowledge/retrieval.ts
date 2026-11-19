@@ -5,7 +5,12 @@
  * @module dsh-knowledge/knowledge/retrieval
  */
 
-import type { SearchMode } from './types.js'
+import type { KnowledgeChunk, SearchMode } from './types.js'
+
+/** The search/embedding text of a chunk: context (title/heading path) + body. */
+export function searchTextOf(chunk: KnowledgeChunk): string {
+  return chunk.context !== undefined && chunk.context.length > 0 ? `${chunk.context}\n${chunk.text}` : chunk.text
+}
 
 // ── primitives ──────────────────────────────────────────────────────────────
 

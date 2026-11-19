@@ -60,7 +60,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
     : undefined
   let lastError: unknown
   for (let attempt = 0; attempt <= retries; attempt += 1) {
-    throwIfExternallyAborted(signal)
+    throwIfAborted(signal)
     const remainingMs = deadlineAt !== undefined ? Math.ceil(deadlineAt - Date.now()) : timeoutMs
     if (remainingMs <= 0) {
       lastError = new DOMException('The operation timed out', 'TimeoutError')
@@ -80,7 +80,7 @@ export async function httpFetch(url: string, options: HttpFetchOptions = {}): Pr
     } catch (error) {
       // An owner-initiated cancellation is terminal. In particular, never
       // retry paid/provider requests after their caller has gone away.
-      throwIfExternallyAborted(signal)
+      throwIfAborted(signal)
       lastError = error
     }
   }
@@ -97,7 +97,7 @@ function nonNegativeInteger(value: number | undefined, fallback: number): number
   return Math.trunc(value)
 }
 
-function throwIfExternallyAborted(signal: AbortSignal | undefined): void {
+export function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted !== true) return
   if (signal.reason instanceof Error) throw signal.reason
   throw new DOMException('The operation was aborted', 'AbortError')

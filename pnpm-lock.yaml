@@ -63,12 +63,21 @@ importers:
       '@deepseek-ai/dsh-host-webserver':
         specifier: link:../dsh/packages/host/webserver
         version: link:../dsh/packages/host/webserver
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../dsh/packages/llm/llm
+        version: link:../dsh/packages/llm/llm
       '@deepseek-ai/dsh-storage':
         specifier: link:../dsh/packages/storage/storage
         version: link:../dsh/packages/storage/storage
       '@deepseek-ai/dsh-storage-domain':
         specifier: link:../dsh/packages/storage/storage-domain
         version: link:../dsh/packages/storage/storage-domain
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: link:../dsh/packages/core/system-prompt
+        version: link:../dsh/packages/core/system-prompt
+      '@deepseek-ai/dsh-tool-executor-native':
+        specifier: link:../dsh/packages/core/tool-executor-native
+        version: link:../dsh/packages/core/tool-executor-native
       '@deepseek-ai/dsh-tools':
         specifier: link:../dsh/packages/core/tools
         version: link:../dsh/packages/core/tools
@@ -94,8 +103,8 @@ importers:
         specifier: ^4.1.8
         version: 4.1.10(@types/node@24.13.3)(vite@8.2.1(@types/node@24.13.3)(esbuild@0.28.2))
       zod:
-        specifier: ^4.4.3
-        version: 4.4.3
+        specifier: link:../dsh/packages/storage/storage-domain/node_modules/zod
+        version: link:../dsh/packages/storage/storage-domain/node_modules/zod
     optionalDependencies:
       '@napi-rs/canvas-win32-x64-msvc':
         specifier: ^1.0.6
@@ -1397,9 +1406,6 @@ packages:
   zlibjs@0.3.1:
     resolution: {integrity: sha512-+J9RrgTKOmlxFSDHo0pI1xM6BLVUv+o0ZT9ANtCxGkjIVCCUdx9alUF8Gm+dGLKbkkkidWIHFDZHDMpfITt4+w==}
 
-  zod@4.4.3:
-    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
-
 snapshots:
 
   '@emnapi/runtime@1.11.3':
@@ -2390,5 +2396,3 @@ snapshots:
       fd-slicer: 1.1.0
 
   zlibjs@0.3.1: {}
-
-  zod@4.4.3: {}

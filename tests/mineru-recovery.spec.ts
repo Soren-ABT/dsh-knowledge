@@ -9,7 +9,8 @@
  * deterministic, and downloads no model weights.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
+import type { Domain } from '@deepseek-ai/dsh-storage-domain'
+import { FakeTable } from './helpers/memory-kv-table.js'
 import { Context } from '@deepseek-ai/cordis'
 import { createServer, type Server } from 'node:http'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -20,23 +21,6 @@ import { knowledgeDomainSpec } from '../src/knowledge/domain.js'
 import { KnowledgeService } from '../src/knowledge/index.js'
 import type { Config } from '../src/knowledge/config.js'
 import type { Store } from '../src/knowledge/store.js'
-
-class FakeTable<K extends string, V> implements KvTable<K, V> {
-  readonly map = new Map<K, V>()
-  get(key: K): V | undefined { return this.map.get(key) }
-  entries(): IterableIterator<[K, V]> { return this.map.entries() }
-  keys(): IterableIterator<K> { return this.map.keys() }
-  get size(): number { return this.map.size }
-  async put(key: K, value: V): Promise<void> { this.map.set(key, value) }
-  async delete(key: K): Promise<boolean> { return this.map.delete(key) }
-  async update(key: K, fn: (current: V) => V): Promise<V> {
-    const current = this.map.get(key)
-    if (current === undefined) throw new Error(`missing key ${key}`)
-    const next = fn(current)
-    this.map.set(key, next)
-    return next
-  }
-}
 
 function fakeDomain(): Domain<typeof knowledgeDomainSpec> {
   const tables = { bases: new FakeTable<string, unknown>(), documents: new FakeTable<string, unknown>() }

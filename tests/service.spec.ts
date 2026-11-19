@@ -13,6 +13,7 @@ import type { SearchHit, SearchResult } from '../src/knowledge/types.js'
 import type { Store } from '../src/knowledge/store.js'
 import { knowledgeRoute } from '../src/knowledge/http.js'
 import { KnowledgeApi } from '../src/ui/client/api.js'
+import { buildAutoRetrieveMessage } from '../src/tool-knowledge/index.js'
 
 const DEFAULT_CONFIG: Config = {
   embeddingProvider: 'none',
@@ -92,8 +93,7 @@ function makeTestPdf(text: string): Buffer {
   return Buffer.concat(chunks)
 }
 
-async function mountService(): Promise<KnowledgeServiceType> {
-  const ctx = new Context()
+async function mountService(ctx = new Context()): Promise<KnowledgeServiceType> {
   ctx.provide('webServer', fakeWebServer())
   await ctx.plugin(KnowledgeService, DEFAULT_CONFIG)
   return ctx.get('knowledge') as unknown as KnowledgeServiceType
@@ -931,7 +931,7 @@ describe('KnowledgeService', () => {
       name: 'embed-fail',
       config: { embeddingProvider: 'openai', embeddingBaseUrl: 'http://127.0.0.1:1', embeddingModel: 'x' },
     })
-    const doc = await service.addTextDocument({ baseId: base.id, title: 'd', content: 'hello world' })
+    await service.addTextDocument({ baseId: base.id, title: 'd', content: 'hello world' })
     const summary = service.listDocuments(base.id)[0]
     expect(summary.embedded).toBe(false)
     expect(summary.embeddingError).toBeTruthy()
@@ -1214,12 +1214,7 @@ describe('KnowledgeService', () => {
 
   it('snapshots a URL and refreshes it when the page changes (public host via mocked fetch)', async () => {
     let page = '<html><head><title>Live Page</title></head><body><p>first version text</p></body></html>'
-    const fetchMock = vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
-      text: async () => page,
-    }))
+    const fetchMock = vi.fn(async () => new Response(page, { headers: { 'content-type': 'text/html; charset=utf-8' } }))
     vi.stubGlobal('fetch', fetchMock)
     try {
       const service = await mountService()
@@ -1247,6 +1242,117 @@ describe('KnowledgeService', () => {
       expect(chunksAfter.some(text => text.includes('first version'))).toBe(false)
       const result = await service.search({ query: 'second version', baseId: base.id })
       expect(result.hits.length).toBeGreaterThan(0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('resolves model scope and named exclusions without reading document summaries', async () => {
+    const service = await mountService()
+    const wiki = await service.createBase({ name: 'team-wiki' })
+    const other = await service.createBase({ name: 'private-library' })
+    const docs = vi.spyOn((service as unknown as { store: Store }).store, 'listDocuments')
+    await service.setEnabledBaseIds([wiki.id, 'removed-base'])
+    expect(service.resolveInvocationScope([other.id]).baseIds).toEqual([])
+    expect(service.resolveInvocationScope([]).enabled).toEqual([])
+    expect(service.resolveInvocationScope([wiki.id, other.id]).enabled).toEqual([{ id: wiki.id, name: wiki.name }])
+    const search = vi.spyOn(service, 'search')
+    const agent = { id: 'scope-cost', inject: vi.fn() }
+    await expect(buildAutoRetrieveMessage(service, agent, 'Search private-library for the policy')).resolves.toBeUndefined()
+    expect(search).not.toHaveBeenCalled()
+    expect(docs).not.toHaveBeenCalled()
+    await service.setEnabledBaseIds([])
+    expect(service.resolveInvocationScope().baseIds).toBeUndefined()
+    expect(service.resolveInvocationScope([other.id, other.id]).baseIds).toEqual([other.id])
+  })
+
+  it('rejects malformed HTTP scope updates before changing either invocation setting', async () => {
+    const service = await mountService()
+    const route = knowledgeRoute(service)
+    if (route.kind !== 'prefix') throw new Error('expected prefix route')
+    const server = createServer(route.handler)
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing server address')
+    const request = (path: string, method: string, body: unknown) => fetch(`http://127.0.0.1:${address.port}/knowledge/${path}`, {
+      method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    try {
+      const selected = await service.createBase({ name: 'selected' })
+      await service.setInvocationSettings({ enabled: false, enabledBaseIds: [selected.id] })
+      const invalid = await request('knowledge-toggle', 'PUT', { enabled: true, enabledBaseIds: [null] })
+      expect(invalid.status).toBe(400)
+      expect(service.isEnabled()).toBe(false)
+      expect(service.getEnabledBaseIds()).toEqual([selected.id])
+      expect((await request('search', 'POST', { query: 'notes', baseIds: {} })).status).toBe(400)
+      const valid = await request('knowledge-toggle', 'PUT', { enabled: true, enabledBaseIds: [] })
+      expect(await valid.json()).toMatchObject({ ok: true, value: { enabled: true, enabledBaseIds: [] } })
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('checks the current per-base URL refresh settings and skips recently checked content', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn(async (url: string) => new Response(`<p>Content of ${url}</p>`, { headers: { 'content-type': 'text/html' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const ctx = new Context()
+    ctx.provide('webServer', fakeWebServer())
+    const fiber = await ctx.plugin(KnowledgeService, DEFAULT_CONFIG)
+    try {
+      const service = ctx.get('knowledge') as KnowledgeService
+      // Let the independent startup artifact sweep finish before measuring URL sweeps.
+      await vi.advanceTimersByTimeAsync(0)
+      const on = await service.createBase({ name: 'on' })
+      await service.createBase({ name: 'another scheduled base' })
+      const off = await service.createBase({ name: 'off', config: { urlRefreshHours: 0 } })
+      const first = await service.addUrlDocument({ baseId: on.id, url: 'https://example.com/on' })
+      await service.addUrlDocument({ baseId: off.id, url: 'https://example.com/off' })
+      await service.setConfig({ urlRefreshHours: 2 })
+      vi.setSystemTime(Date.now() + 3 * 3600_000)
+      fetchMock.mockClear()
+      const listings = vi.spyOn((service as unknown as { store: Store }).store, 'listDocuments')
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+      expect(listings.mock.calls).toEqual([[]])
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://example.com/on'])
+      expect(service.listDocuments(on.id)[0].updatedAt).toBe(first.updatedAt)
+      await vi.advanceTimersByTimeAsync(3600_000)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      await service.setConfig({ urlRefreshHours: 0 })
+      await service.renameBase(off.id, { config: { urlRefreshHours: 1 } })
+      await vi.advanceTimersByTimeAsync(3600_000)
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://example.com/on', 'https://example.com/off'])
+      await service.renameBase(off.id, { config: { urlRefreshHours: 0 } })
+      listings.mockClear()
+      await vi.advanceTimersByTimeAsync(3600_000)
+      expect(listings).not.toHaveBeenCalled()
+    } finally {
+      await fiber.dispose()
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('cancels a pending URL body on plugin disposal', async () => {
+    const ctx = new Context()
+    ctx.provide('webServer', fakeWebServer())
+    const fiber = await ctx.plugin(KnowledgeService, DEFAULT_CONFIG)
+    const service = ctx.get('knowledge') as KnowledgeService
+    const base = await service.createBase({ name: 'cancel-url' })
+    let reading!: () => void
+    const started = new Promise<void>(resolve => { reading = resolve })
+    const cancel = vi.fn()
+    vi.stubGlobal('fetch', async () => new Response(new ReadableStream({ pull: reading, cancel }, { highWaterMark: 0 }), {
+      headers: { 'content-type': 'text/markdown' },
+    }))
+    try {
+      const result = service.addUrlDocument({ baseId: base.id, url: 'https://example.com/wiki.md' })
+      const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' })
+      await started
+      await fiber.dispose()
+      await rejected
+      expect(cancel).toHaveBeenCalledTimes(1)
     } finally {
       vi.unstubAllGlobals()
     }
@@ -1302,18 +1408,19 @@ describe('KnowledgeService', () => {
   it('deduplicates and caps extra query variants at three', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'multi-query-cap' })
-    await service.addTextDocument({ baseId: base.id, title: 'doc', content: 'alpha beta gamma delta epsilon retrieval content' })
-    const runtime = service as unknown as { searchSingle: (...args: unknown[]) => Promise<SearchResult> }
-    const passes = vi.spyOn(runtime, 'searchSingle')
-    await service.search({
-      query: 'alpha',
-      baseId: base.id,
+    for (const term of ['alpha', 'beta', 'gamma', 'delta', 'epsilon']) {
+      await service.addTextDocument({ baseId: base.id, title: term, content: `Reference for ${term}` })
+    }
+    const request = { query: 'alpha', baseId: base.id, mode: 'lexical' as const, topK: 5 }
+    const single = await service.search(request)
+    const expected = await service.search({ ...request, queries: ['beta', 'gamma', 'delta'] })
+    const actual = await service.search({
+      ...request,
       queries: [' ALPHA ', 'beta', 'BETA', 'gamma', 'delta', 'epsilon'],
-      topK: 5,
     })
-    // primary + beta + gamma + delta; duplicate/case variants do not consume seats.
-    expect(passes).toHaveBeenCalledTimes(4)
-    passes.mockRestore()
+    expect(actual.hits).toEqual(expected.hits)
+    expect(single.retrieval!.lexical.returnedCount).toBeGreaterThan(0)
+    expect(actual.retrieval!.lexical.returnedCount).toBe(4 * single.retrieval!.lexical.returnedCount)
   })
 
   it('reranks a multi-query fusion only once', async () => {
@@ -1367,7 +1474,8 @@ describe('KnowledgeService', () => {
   })
 
   it('keeps retrieval order and reports structured degradation for an empty rerank response', async () => {
-    const service = await mountService()
+    const ctx = new Context()
+    const service = await mountService(ctx)
     const base = await service.createBase({ name: 'rerank-fallback' })
     await service.addTextDocument({ baseId: base.id, title: 'one', content: 'alpha reimbursement approval workflow' })
     await service.addTextDocument({ baseId: base.id, title: 'two', content: 'alpha invoice submission policy' })
@@ -1379,6 +1487,7 @@ describe('KnowledgeService', () => {
       status: 200,
       headers: { 'content-type': 'application/json' },
     }))
+    const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
     vi.stubGlobal('fetch', fetchMock)
     try {
       const skipped = await service.search(
@@ -1402,7 +1511,12 @@ describe('KnowledgeService', () => {
       })
       expect(fetchMock).toHaveBeenCalledTimes(1)
       for (const hit of result.hits) expectOrderedContextWindow(hit)
+      const repeated = await service.search({ query: 'alpha reimbursement', baseId: base.id, topK: 2 })
+      expect(repeated.rerank?.error?.code).toBe('invalid_response')
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^knowledge: rerank degraded model="remote-reranker" code=invalid_response /))
     } finally {
+      warn.mockRestore()
       vi.unstubAllGlobals()
     }
   })

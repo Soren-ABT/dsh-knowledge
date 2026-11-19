@@ -1,14 +1,12 @@
-import { beforeAll, beforeEach, describe, expect, it, onTestFinished } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import ToolRuntime, { type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
-// Load the sibling workspace's real built service. Importing its TS source
-// beside ToolRuntime's package declaration creates two nominal SystemPrompt
-// identities in module augmentation even though they are the same runtime.
-// @ts-expect-error the workspace build keeps declarations under lib/types/
-import SystemPrompt from '../../dsh/packages/core/system-prompt/lib/index.js'
 import { estimateContextTokens, KnowledgeService } from '../src/knowledge/index.js'
 import type { Config } from '../src/knowledge/config.js'
 import type { DirectorySyncResult, KnowledgeBase, KnowledgeDocument } from '../src/knowledge/types.js'
@@ -74,6 +72,7 @@ async function mountHarness(): Promise<Harness> {
   ctx.provide('webServer', fakeWebServer())
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(KnowledgeService, DEFAULT_CONFIG)
   await ctx.plugin(ToolKnowledge)
   const knowledge = ctx.get('knowledge') as unknown as KnowledgeService
@@ -107,14 +106,15 @@ async function mountHarness(): Promise<Harness> {
 let callSequence = 0
 const signal = new AbortController().signal
 
-function execute(ctx: Context, name: string, args: unknown): Promise<ToolExecutionResult> {
-  callSequence += 1
-  return ctx.tools.execute({
+async function execute(ctx: Context, name: string, args: unknown): Promise<ToolExecutionResult> {
+  const id = ToolCallId(`knowledge-contract-${++callSequence}`)
+  const batch = await ctx.tools.execute({
     signal,
-    callId: `knowledge-contract-${callSequence}` as never,
-    name,
-    arguments: args,
+    calls: [{ type: 'tool-call', id, name, arguments: JSON.stringify(args) }],
   })
+  const [outcome] = batch.results
+  if (outcome?.callId !== id) throw new Error(`DSH returned no matching result for ${name}`)
+  return outcome.result
 }
 
 function resultText(result: ToolExecutionResult): string {
@@ -141,6 +141,8 @@ describe('model-facing knowledge tool contracts', () => {
   beforeAll(async () => {
     harness = await mountHarness()
   })
+
+  afterAll(() => harness?.ctx.fiber.dispose())
 
   beforeEach(async () => {
     await harness.knowledge.setEnabled(true)
@@ -317,6 +319,21 @@ describe('model-facing knowledge tool contracts', () => {
     const value = valueOf<{ hits: Array<{ baseId: string }> }>(search)
     expect(value.hits.length).toBeGreaterThan(0)
     expect(value.hits.every(hit => hit.baseId === harness.primaryBase.id)).toBe(true)
+  })
+
+  it('intersects a requested base list with the saved invocation scope', async () => {
+    const { ctx, knowledge, primaryBase, foreignBase } = harness
+    const search = async (baseIds: string[]) => valueOf<{ hits: { baseId: string }[] }>(
+      await execute(ctx, 'knowledge_search', { query: 'needle', baseIds }),
+    ).hits
+    expect((await search([foreignBase.id])).map(hit => hit.baseId)).toContain(foreignBase.id)
+    await knowledge.setEnabledBaseIds([primaryBase.id])
+    const hits = await search([primaryBase.id, foreignBase.id])
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits.every(hit => hit.baseId === primaryBase.id)).toBe(true)
+    expect(await search([foreignBase.id, 'missing'])).toEqual([])
+    expect(await search([])).toEqual([])
+    expectToolError(await execute(ctx, 'knowledge_search', { query: 'needle', baseId: foreignBase.id, baseIds: [] }), /either/)
   })
 
   it('treats empty document and source-type filters as match-nothing', async () => {

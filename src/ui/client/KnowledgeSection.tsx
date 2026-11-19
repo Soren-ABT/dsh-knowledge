@@ -25,7 +25,6 @@ import type {
   KnowledgeConfig,
   LocalModelStatus,
   SearchHit,
-  SearchMode,
   RerankStatus,
 } from './api.js'
 import { C, PANEL_CSS, avatarColor, formatRelativeTime, formatSize, style } from './theme.js'
@@ -2711,12 +2710,6 @@ function DocumentDetailPanel(props: {
   )
 }
 
-function scoreColor(score: number, palette: typeof C): string {
-  if (score >= 0.7) return palette.success
-  if (score >= 0.4) return palette.warn
-  return palette.muted
-}
-
 /** Markdown citation block for one search hit: quote + source line. */
 function citationMarkdown(hit: SearchHit, t: Translate): string {
   const quote = hit.text.split('\n').map(line => `> ${line}`).join('\n')
@@ -2724,45 +2717,6 @@ function citationMarkdown(hit: SearchHit, t: Translate): string {
     ? `${hit.documentTitle} / ${hit.heading}`
     : hit.documentTitle
   return `${quote}\n>\n> — ${source}${t('citationSource').replace('{id}', hit.baseId)}`
-}
-
-function highlightMatches(text: string, query: string, markStyle: CSSProperties): JSX.Element {
-  const terms = query.split(/\s+/).filter(term => term.length > 0)
-  if (terms.length === 0) return <>{text}</>
-  const pattern = new RegExp(`(${terms.map(escapeRegExp).join('|')})`, 'gi')
-  const parts = text.split(pattern)
-  return (
-    <>
-      {parts.map((part, index) =>
-        terms.some(term => part.toLowerCase() === term.toLowerCase())
-          ? <mark key={index} style={markStyle}>{part}</mark>
-          : <span key={index}>{part}</span>)}
-    </>
-  )
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-/**
- * Extract a window around the first query-term match so recall hits show the
- * relevant passage instead of the whole (potentially long) chunk.
- */
-function snippetAroundMatch(text: string, query: string, radius = 90): string {
-  const terms = query.split(/\s+/).filter(term => term.length > 0)
-  if (terms.length === 0) return text
-  let firstIndex = -1
-  for (const term of terms) {
-    const index = text.toLowerCase().indexOf(term.toLowerCase())
-    if (index !== -1 && (firstIndex === -1 || index < firstIndex)) firstIndex = index
-  }
-  if (firstIndex === -1) {
-    return text.length > radius * 2 ? `${text.slice(0, radius * 2)}…` : text
-  }
-  const start = Math.max(0, firstIndex - radius)
-  const end = Math.min(text.length, firstIndex + radius * 2)
-  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`
 }
 
 /** Rough token estimate matching the host's heuristic (CJK ≈ 1.5 chars, latin ≈ 4). */

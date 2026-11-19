@@ -10,14 +10,14 @@ body:
     id: version
     attributes:
       label: dsh-knowledge version
-      placeholder: 0.5.4
+      placeholder: 0.6.0-beta.1
     validations:
       required: true
   - type: input
     id: dsh
     attributes:
       label: DSH version or commit
-      placeholder: 0.1.1-rc.2 or commit SHA
+      placeholder: 0.2.2-rc.5 or commit SHA
     validations:
       required: true
   - type: input

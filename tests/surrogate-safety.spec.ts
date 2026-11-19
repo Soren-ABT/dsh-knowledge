@@ -21,8 +21,7 @@ function stubKnowledge(search: () => Promise<SearchResult>): KnowledgeService {
   const bases = [{ id: 'b0', name: 'base0' }]
   return {
     isEnabled: () => true,
-    listBases: () => bases,
-    enabledBases: () => bases,
+    resolveInvocationScope: () => ({ all: bases, enabled: bases, baseIds: undefined }),
     getConfig: () => ({ autoRetrieve: true }),
     getConfigFor: () => ({ autoRetrieve: true, autoRetrieveWeight: 3, rerankModel: '', rerankBaseUrl: '', rerankApiKey: '' }),
     enabledScope: () => undefined,

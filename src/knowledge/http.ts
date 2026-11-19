@@ -193,10 +193,9 @@ async function route(
       return { enabled: service.isEnabled(), enabledBaseIds: service.getEnabledBaseIds() }
     }
     if (method === 'PUT') {
-      if (typeof body.enabled === 'boolean') await service.setEnabled(body.enabled)
-      if (Array.isArray(body.enabledBaseIds)) {
-        await service.setEnabledBaseIds(body.enabledBaseIds.filter((id): id is string => typeof id === 'string'))
-      }
+      if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new InvalidRequestError('enabled must be a boolean')
+      const enabledBaseIds = optionalStringList(body.enabledBaseIds, 'enabledBaseIds')
+      await service.setInvocationSettings({ enabled: body.enabled, enabledBaseIds })
       return { enabled: service.isEnabled(), enabledBaseIds: service.getEnabledBaseIds() }
     }
     return undefined
@@ -535,17 +534,14 @@ async function route(
     if (typeof body.query !== 'string' || body.query.trim() === '') {
       throw new InvalidRequestError('search requires a non-empty "query"')
     }
+    optionalStringList(body.baseIds, 'baseIds')
+    if (body.baseId !== undefined && typeof body.baseId !== 'string') throw new InvalidRequestError('baseId must be a string')
     if (body.filter !== undefined) {
       if (typeof body.filter !== 'object' || body.filter === null || Array.isArray(body.filter)) {
         throw new InvalidRequestError('filter must be an object')
       }
       const filter = body.filter as Record<string, unknown>
-      for (const key of ['excludeDocIds', 'titleExcludes'] as const) {
-        const value = filter[key]
-        if (value !== undefined && (!Array.isArray(value) || !value.every(item => typeof item === 'string'))) {
-          throw new InvalidRequestError(`filter.${key} must be an array of strings`)
-        }
-      }
+      for (const key of ['docIds', 'sourceTypes', 'excludeDocIds', 'titleExcludes']) optionalStringList(filter[key], `filter.${key}`)
     }
     return service.search(body as unknown as SearchRequest)
   }
@@ -562,6 +558,14 @@ export class InvalidRequestError extends Error {
     super(message)
     this.name = 'InvalidRequestError'
   }
+}
+
+function optionalStringList(value: unknown, name: string): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || !value.every(entry => typeof entry === 'string')) {
+    throw new InvalidRequestError(`${name} must be an array of strings`)
+  }
+  return value
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
