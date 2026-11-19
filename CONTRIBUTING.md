@@ -19,9 +19,9 @@ workspace/
 For this release, source builds use DSH `0.2.2-rc.5` at the commit below.
 When preparing a new plugin release, pin the three most recently published
 `@deepseek-ai/dsh` versions in the packed-install matrix and align the source
-commit with the newest one. Match the plugin's development version of Zod to
-the one used by the host's `storage-domain` package, so both compile the same
-document schemas. DSH provides the runtime peer. The `Packed DSH compatibility`
+commit with the newest one. Building the sibling DSH checkout first makes its
+`storage-domain` copy of Zod available to the plugin. Both compile the same
+document schemas, and installed plugins use the host's runtime peer. The `Packed DSH compatibility`
 check covers all three public CLIs on Windows and Ubuntu.
 
 ```bash

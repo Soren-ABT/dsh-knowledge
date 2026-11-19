@@ -143,6 +143,6 @@
     "esbuild": "^0.28.2",
     "typescript": "^5.9.0",
     "vitest": "^4.1.8",
-    "zod": "4.6.6"
+    "zod": "link:../dsh/packages/storage/storage-domain/node_modules/zod"
   }
 }
