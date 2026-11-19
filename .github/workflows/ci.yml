@@ -63,7 +63,9 @@ jobs:
         working-directory: ../dsh
         run: pnpm install --frozen-lockfile && pnpm run build:lib
       - name: Install plugin dependencies
-        run: pnpm install --frozen-lockfile --strict-peer-dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check installed peer dependencies
+        run: pnpm peers check
       - run: npm run verify:release
       - run: npm run audit:prod:self-test
       - run: npm run audit:prod
