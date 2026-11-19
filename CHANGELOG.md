@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Retry local embedding cache promotion through transient file locks after a completed download. Keep the staged files if retries run out and allow cancellation during the wait (#78, #79).
+- Use ONNX Runtime 1.30.0 for PaddleOCR and Transformers.js so the two engines share one native dependency and satisfy PaddleOCR's peer requirement (#80).
+
 ## 0.5.4 — 2026-11-15 — Cleaner chunks, background maintenance and desktop layout
 
 - Filter recognized markup-only fragments and merge short smart-chunk blocks within their heading section and size budget. Preserve literal code and authored content; keep explicitly completed empty indexes out of startup recovery. Reindex existing documents to apply the updated chunking rules (#67, #68).

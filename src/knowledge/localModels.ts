@@ -12,7 +12,6 @@ import {
   isLocalModelDownloaded,
   loadLocalModel,
   localModelCacheDir,
-  markLocalModelError,
   removeLocalModel,
 } from './embed.js'
 import {
@@ -296,7 +295,7 @@ export async function selfTestLocalModel(id: string): Promise<LocalModelSummary>
 export async function downloadLocalModel(id: string): Promise<LocalModelSummary> {
   const descriptor = await findModel(id)
   if (descriptor.kind === 'embedding') {
-    void loadLocalModel(id, 'feature-extraction').catch((error: unknown) => markLocalModelError(descriptor.id, error instanceof Error ? error.message : String(error)))
+    void loadLocalModel(id, 'feature-extraction').catch(() => {})
     return summarize(descriptor)
   }
   // Report `downloading` only when a transfer will actually happen. Writing it

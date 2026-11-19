@@ -33,8 +33,7 @@ concurrency:
 env:
   DSH_COMMIT: b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
   DSH_TELEMETRY_DISABLED: '1'
-  # These runners use CPU inference; CPU binaries are already bundled. This
-  # flag is supported by both the OCR (1.21) and embedding (1.30) runtimes.
+  # These runners use CPU inference; ONNX Runtime ships the CPU binaries.
   ONNXRUNTIME_NODE_INSTALL_CUDA: skip
 
 jobs:
@@ -47,9 +46,9 @@ jobs:
       matrix:
         node: [22.19.0, 24.x, 26.x]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
@@ -65,6 +64,8 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm run build:lib
       - name: Install plugin dependencies
         run: pnpm install --frozen-lockfile
+      - name: Check installed peer dependencies
+        run: pnpm peers check
       - run: npm run verify:release
       - run: npm run audit:prod:self-test
       - run: npm run audit:prod
@@ -87,9 +88,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24.x
           cache: pnpm
@@ -120,11 +121,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        dsh: [0.1.1-rc.2, 0.2.0-rc.2]
+        # The first two versions retain the existing required check names.
+        dsh: [0.1.1-rc.2, 0.2.0-rc.2, 0.2.2-rc.5]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24.x
           cache: pnpm
@@ -174,14 +176,14 @@ jobs:
       matrix:
         node: [22.19.0, 24.x, 26.x]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
       - name: Cache local rerank model
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.dsh/cache/dsh-knowledge/local-models/Xenova/bge-reranker-base
           key: local-rerank-${{ runner.os }}-${{ matrix.node }}-bge-base-v1
@@ -211,13 +213,13 @@ jobs:
           - os: windows-latest
             python: '3.13'
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: pnpm/action-setup@v6.1.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24.x
           cache: pnpm
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7.1.0
         id: setup-python
         with:
           python-version: ${{ matrix.python }}
@@ -248,7 +250,7 @@ jobs:
           MINERU_PACKAGE_ROOT: ${{ runner.temp }}/managed-package/package
           MINERU_SMOKE_REPORT_PATH: ${{ runner.temp }}/managed-mineru-smoke-report.json
         run: npm run smoke:mineru-managed
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: managed-mineru-${{ matrix.os }}-python-${{ matrix.python }}

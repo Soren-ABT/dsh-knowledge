@@ -14,6 +14,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/p
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fork, type ChildProcess } from 'node:child_process'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { applyGlobalProxy, httpFetch, NETWORK_HINT } from './net.js'
 import {
@@ -197,27 +198,7 @@ export function markLocalModelError(modelId: string, message: string): void {
 
 /** Whether a model's cached weights are already on disk (a real `.onnx` weight file). */
 export async function isLocalModelDownloaded(modelId: string): Promise<boolean> {
-  try {
-    const modelRoot = join(localModelCacheDir(), modelId)
-    const [config, onnxEntries, tokenizer] = await Promise.all([
-      stat(join(modelRoot, 'config.json')),
-      readdir(join(modelRoot, 'onnx')),
-      Promise.any([
-        stat(join(modelRoot, 'tokenizer.json')),
-        stat(join(modelRoot, 'tokenizer_config.json')),
-        stat(join(modelRoot, 'vocab.txt')),
-        stat(join(modelRoot, 'spiece.model')),
-      ]),
-    ])
-    if (config.size <= 0 || tokenizer.size <= 0) return false
-    for (const name of onnxEntries) {
-      if (!name.endsWith('.onnx')) continue
-      if ((await stat(join(modelRoot, 'onnx', name))).size > 0) return true
-    }
-    return false
-  } catch {
-    return false
-  }
+  return isDownloadedAt(join(localModelCacheDir(), modelId))
 }
 
 function embeddingReadinessPath(modelId: string): string {
@@ -289,6 +270,12 @@ let localWorkerIdleTimeoutMs = 60_000
 const LOCAL_WORKER_REQUEST_TIMEOUT_MS = 30 * 60_000
 const LOCAL_RELEASE_ACK_TIMEOUT_MS = 3000
 const LOCAL_PROCESS_MAX_PENDING = 16
+const localEmbeddingLoads = new Map<string, {
+  controller: AbortController
+  cacheDir: string
+  promise: Promise<void>
+  cancellation?: Promise<void>
+}>()
 
 /** Configure the local-model process idle release timeout (0 = never release). */
 export function setLocalWorkerIdleTimeoutMs(ms: number): void {
@@ -316,14 +303,6 @@ function localWorkerPath(): string {
   return fileURLToPath(new URL('./embed-process.mjs', import.meta.url))
 }
 
-function stagingCacheDir(): string {
-  return join(localModelCacheDir(), '.staging')
-}
-
-function stagingModelPath(modelId: string): string {
-  return join(stagingCacheDir(), modelId)
-}
-
 function clearIdleTimer(): void {
   if (localWorkerIdleTimer !== null) {
     clearTimeout(localWorkerIdleTimer)
@@ -348,11 +327,16 @@ function ensureLocalWorker(): ChildProcess {
   worker.on('message', (message: unknown): void => {
     if (localWorker !== worker) return
     if (isLocalEmbedProgress(message)) {
+      const current = getLocalModelStatus(message.modelId)
+      // The child can report a loaded pipeline while it still points at staging.
+      const staging = message.status !== 'error' && [...localPending.values()].some(
+        request => request.modelId === message.modelId && request.operation === 'download',
+      )
       localModelStatus.set(message.modelId, {
-        ...getLocalModelStatus(message.modelId),
+        ...current,
         model: message.modelId,
-        status: message.status,
-        progress: message.progress,
+        status: staging ? 'downloading' : message.status,
+        progress: staging && message.status === 'idle' ? current.progress : message.progress,
         message: message.message,
         ...(message.runtimeState !== undefined ? { runtimeState: message.runtimeState } : {}),
         ...(message.loadStartedAt !== undefined ? { loadStartedAt: message.loadStartedAt } : {}),
@@ -562,6 +546,8 @@ function callWorker(
 }
 
 async function embedLocal(modelId: string, texts: readonly string[]): Promise<number[][]> {
+  const load = localEmbeddingLoads.get(modelId)
+  if (load !== undefined) await load.promise
   try {
     const vectors = await callWorker('embed', { modelId, texts: [...texts], pooling: poolingFor(modelId) }) as number[][]
     void writeLocalEmbeddingReadiness(modelId, vectors[0]?.length ?? 0).catch(() => {})
@@ -592,37 +578,57 @@ export async function rerankLocal(modelId: string, query: string, texts: readonl
   )
 }
 
-/** Download + load a local model in an isolated process (no inference). */
+/** Prepare a local model in an isolated process and verify it with a probe. */
 export async function loadLocalModel(modelId: string, task: 'feature-extraction' | 'reranking' = 'feature-extraction'): Promise<void> {
   if (task === 'reranking') {
     await loadLocalReranker(modelId, localModelCacheDir(), hfEndpointOverride ?? process.env.HF_ENDPOINT)
     return
   }
-  // A previous completed model is loaded and probed in the child on first
-  // use. New downloads are isolated in `.staging`, so cancellation or a
-  // network fault can never turn a formerly usable model into a partial one.
-  if (await isLocalModelDownloaded(modelId)) {
-    await callWorker('load', { modelId })
-    const probe = await callWorker('embed', { modelId, texts: ['dsh local embedding readiness probe'], pooling: poolingFor(modelId) }) as number[][]
-    await writeLocalEmbeddingReadiness(modelId, probe[0]?.length ?? 0)
-    return
+  const active = localEmbeddingLoads.get(modelId)
+  if (active !== undefined) return active.promise
+  const cacheDir = localModelCacheDir()
+  const controller = new AbortController()
+  const promise = prepareLocalEmbedding(modelId, cacheDir, controller.signal)
+    .catch((error: unknown) => {
+      if (!controller.signal.aborted) markLocalModelError(modelId, error instanceof Error ? error.message : String(error))
+      throw error
+    })
+    .finally(() => {
+      if (localEmbeddingLoads.get(modelId)?.cancellation !== undefined) return
+      localEmbeddingLoads.delete(modelId)
+      if (controller.signal.aborted && localModelStatus.get(modelId)?.status === 'downloading') {
+        localModelStatus.delete(modelId)
+      }
+    })
+  localEmbeddingLoads.set(modelId, { controller, cacheDir, promise })
+  return promise
+}
+
+async function prepareLocalEmbedding(modelId: string, cacheDir: string, signal: AbortSignal): Promise<void> {
+  const finalPath = join(cacheDir, modelId)
+  const downloaded = await isDownloadedAt(finalPath)
+  signal.throwIfAborted()
+  if (!downloaded) {
+    const staging = join(cacheDir, '.staging')
+    const stagingPath = join(staging, modelId)
+    localModelStatus.set(modelId, { model: modelId, status: 'downloading', progress: 0, message: '' })
+    await callWorker('download', { modelId, cacheDir: staging })
+    signal.throwIfAborted()
+    if (!(await isDownloadedAt(stagingPath))) {
+      throw new Error('local embedding process completed without a valid model cache')
+    }
+    signal.throwIfAborted()
+    // Close the staging pipeline before moving the validated weights.
+    await callWorker('release', { modelId, cacheDir: staging })
+    signal.throwIfAborted()
+    await mkdir(dirname(finalPath), { recursive: true })
+    await promoteDownload(stagingPath, finalPath, signal)
   }
-  const staging = stagingCacheDir()
-  localModelStatus.set(modelId, { model: modelId, status: 'downloading', progress: 0, message: '' })
-  await callWorker('download', { modelId, cacheDir: staging })
-  if (!(await isDownloadedAt(stagingModelPath(modelId)))) {
-    throw new Error('local embedding process completed without a valid model cache')
-  }
-  // The process holds its staging pipeline open. Release it before the atomic
-  // promotion, which avoids a Windows file lock and guarantees the final
-  // cache is either the old complete model or the new complete model.
-  await callWorker('release', { modelId, cacheDir: staging })
-  const finalPath = join(localModelCacheDir(), modelId)
-  await mkdir(dirname(finalPath), { recursive: true })
-  await rm(finalPath, { recursive: true, force: true })
-  await rename(stagingModelPath(modelId), finalPath)
-  await callWorker('load', { modelId })
-  const probe = await callWorker('embed', { modelId, texts: ['dsh local embedding readiness probe'], pooling: poolingFor(modelId) }) as number[][]
+  signal.throwIfAborted()
+  await callWorker('load', { modelId, cacheDir })
+  signal.throwIfAborted()
+  const probe = await callWorker('embed', { modelId, cacheDir, texts: ['dsh local embedding readiness probe'], pooling: poolingFor(modelId) }) as number[][]
+  signal.throwIfAborted()
   await writeLocalEmbeddingReadiness(modelId, probe[0]?.length ?? 0)
 }
 
@@ -648,12 +654,63 @@ async function isDownloadedAt(modelRoot: string): Promise<boolean> {
   }
 }
 
+/** Promotion retry budget for a staged download. The delays sum to ~10s:
+ * long enough for a Windows antivirus or search-indexer scan of freshly
+ * written weights to finish, short enough that a genuinely stuck lock still
+ * surfaces promptly. */
+const PROMOTION_RETRY_DELAYS_MS = [100, 250, 500, 1000, 1000, 2000, 2000, 3000] as const
+
+/** Locks that a scanner race produces on the promotion path; anything else
+ * (a missing staging directory, a disk error) must not be retried. */
+function isTransientPromotionLock(code: string | undefined): boolean {
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY' || code === 'ENOTEMPTY'
+}
+
+/** Move a fully downloaded staging directory into its final cache location.
+ * Windows can fail the rename with EPERM for a moment after every process
+ * handle is closed, because antivirus or the search indexer is still holding
+ * the fresh weights; retry those codes briefly instead of surfacing the scan
+ * as a failed download. The staging directory is left intact on failure, so
+ * a later retry starts from the same complete download. */
+async function promoteDownload(stagingPath: string, finalPath: string, signal: AbortSignal): Promise<void> {
+  let removedIncompleteCache = false
+  for (let attempt = 0; ; attempt += 1) {
+    signal.throwIfAborted()
+    try {
+      if (!removedIncompleteCache) {
+        if (await isDownloadedAt(finalPath)) return
+        signal.throwIfAborted()
+        await rm(finalPath, { recursive: true, force: true })
+        removedIncompleteCache = true
+        signal.throwIfAborted()
+      }
+      await rename(stagingPath, finalPath)
+      return
+    } catch (error) {
+      const wait = PROMOTION_RETRY_DELAYS_MS[attempt]
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      if (wait === undefined || !isTransientPromotionLock(code)) throw error
+      await delay(wait, undefined, { signal })
+    }
+  }
+}
+
 /** Cancel only an active download. A previously ready model is never removed. */
 export async function cancelLocalModel(modelId: string): Promise<void> {
-  if (localModelStatus.get(modelId)?.status !== 'downloading') return
-  await terminateLocalWorker(new Error('local embedding download cancelled'))
-  localModelStatus.set(modelId, { model: modelId, status: 'idle', progress: 0, message: '' })
-  await rm(join(localModelCacheDir(), '.staging', modelId), { recursive: true, force: true }).catch(() => {})
+  const load = localEmbeddingLoads.get(modelId)
+  if (load === undefined || localModelStatus.get(modelId)?.status !== 'downloading') return
+  if (load.cancellation === undefined) {
+    const reason = new Error('local embedding download cancelled')
+    load.controller.abort(reason)
+    load.cancellation = (async () => {
+      await terminateLocalWorker(reason)
+      await load.promise.catch(() => {})
+      await rm(join(load.cacheDir, '.staging', modelId), { recursive: true, force: true }).catch(() => {})
+      localModelStatus.set(modelId, { model: modelId, status: 'idle', progress: 0, message: '' })
+      localEmbeddingLoads.delete(modelId)
+    })()
+  }
+  await load.cancellation
 }
 
 /** Drop a loaded extractor (frees its native sessions) and delete its cached weights. */
@@ -705,10 +762,15 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 /** Gracefully terminate the isolated embedding process during plugin teardown. */
 export async function disposeLocalModelWorker(): Promise<void> {
   clearIdleTimer()
+  const reason = new Error('local embedding process disposed')
+  const loads = [...localEmbeddingLoads.values()]
+  for (const load of loads) load.controller.abort(reason)
   const worker = localWorker
-  if (worker === null) { resetRuntimeStates(); return }
-  await withTimeout(callWorker('shutdown', { modelId: localActiveModelId ?? '' }), LOCAL_RELEASE_ACK_TIMEOUT_MS).catch(() => {})
-  if (localWorker === worker) await terminateLocalWorker(new Error('local embedding process disposed'))
+  if (worker !== null) {
+    await withTimeout(callWorker('shutdown', { modelId: localActiveModelId ?? '' }), LOCAL_RELEASE_ACK_TIMEOUT_MS).catch(() => {})
+    if (localWorker === worker) await terminateLocalWorker(reason)
+  }
+  await Promise.allSettled(loads.map(load => load.cancellation ?? load.promise))
   resetRuntimeStates()
 }
 
