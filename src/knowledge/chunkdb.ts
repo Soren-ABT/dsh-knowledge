@@ -25,6 +25,9 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { KnowledgeChunk, KnowledgeDocument } from './types.js'
 import { validSourceSpan } from './source-spans.js'
+import { searchTextOf } from './retrieval.js'
+
+export { searchTextOf } from './retrieval.js'
 
 /** Resolve the chunk database path: explicit config, else `<DSH_HOME>/storages/`. */
 export function resolveChunkStorePath(explicit: string | undefined): string {
@@ -1165,11 +1168,6 @@ function decodeSourceSpans(json: string | null, length: number, revision: string
   if (!Array.isArray(value) || !value.every(span => validSourceSpan(span) && span.chunkEnd <= length
     && (revision == null || span.revision === revision))) throw new Error('invalid persisted source spans')
   return value
-}
-
-/** The search/embedding text of a chunk: context (title/heading path) + body. */
-export function searchTextOf(chunk: KnowledgeChunk): string {
-  return chunk.context !== undefined && chunk.context.length > 0 ? `${chunk.context}\n${chunk.text}` : chunk.text
 }
 
 /** Map an unbounded BM25 score into [0, 1). */

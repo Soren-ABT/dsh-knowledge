@@ -93,8 +93,7 @@ function makeTestPdf(text: string): Buffer {
   return Buffer.concat(chunks)
 }
 
-async function mountService(): Promise<KnowledgeServiceType> {
-  const ctx = new Context()
+async function mountService(ctx = new Context()): Promise<KnowledgeServiceType> {
   ctx.provide('webServer', fakeWebServer())
   await ctx.plugin(KnowledgeService, DEFAULT_CONFIG)
   return ctx.get('knowledge') as unknown as KnowledgeServiceType
@@ -932,7 +931,7 @@ describe('KnowledgeService', () => {
       name: 'embed-fail',
       config: { embeddingProvider: 'openai', embeddingBaseUrl: 'http://127.0.0.1:1', embeddingModel: 'x' },
     })
-    const doc = await service.addTextDocument({ baseId: base.id, title: 'd', content: 'hello world' })
+    await service.addTextDocument({ baseId: base.id, title: 'd', content: 'hello world' })
     const summary = service.listDocuments(base.id)[0]
     expect(summary.embedded).toBe(false)
     expect(summary.embeddingError).toBeTruthy()
@@ -1409,18 +1408,19 @@ describe('KnowledgeService', () => {
   it('deduplicates and caps extra query variants at three', async () => {
     const service = await mountService()
     const base = await service.createBase({ name: 'multi-query-cap' })
-    await service.addTextDocument({ baseId: base.id, title: 'doc', content: 'alpha beta gamma delta epsilon retrieval content' })
-    const runtime = service as unknown as { searchSingle: (...args: unknown[]) => Promise<SearchResult> }
-    const passes = vi.spyOn(runtime, 'searchSingle')
-    await service.search({
-      query: 'alpha',
-      baseId: base.id,
+    for (const term of ['alpha', 'beta', 'gamma', 'delta', 'epsilon']) {
+      await service.addTextDocument({ baseId: base.id, title: term, content: `Reference for ${term}` })
+    }
+    const request = { query: 'alpha', baseId: base.id, mode: 'lexical' as const, topK: 5 }
+    const single = await service.search(request)
+    const expected = await service.search({ ...request, queries: ['beta', 'gamma', 'delta'] })
+    const actual = await service.search({
+      ...request,
       queries: [' ALPHA ', 'beta', 'BETA', 'gamma', 'delta', 'epsilon'],
-      topK: 5,
     })
-    // primary + beta + gamma + delta; duplicate/case variants do not consume seats.
-    expect(passes).toHaveBeenCalledTimes(4)
-    passes.mockRestore()
+    expect(actual.hits).toEqual(expected.hits)
+    expect(single.retrieval!.lexical.returnedCount).toBeGreaterThan(0)
+    expect(actual.retrieval!.lexical.returnedCount).toBe(4 * single.retrieval!.lexical.returnedCount)
   })
 
   it('reranks a multi-query fusion only once', async () => {
@@ -1474,7 +1474,8 @@ describe('KnowledgeService', () => {
   })
 
   it('keeps retrieval order and reports structured degradation for an empty rerank response', async () => {
-    const service = await mountService()
+    const ctx = new Context()
+    const service = await mountService(ctx)
     const base = await service.createBase({ name: 'rerank-fallback' })
     await service.addTextDocument({ baseId: base.id, title: 'one', content: 'alpha reimbursement approval workflow' })
     await service.addTextDocument({ baseId: base.id, title: 'two', content: 'alpha invoice submission policy' })
@@ -1486,6 +1487,7 @@ describe('KnowledgeService', () => {
       status: 200,
       headers: { 'content-type': 'application/json' },
     }))
+    const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
     vi.stubGlobal('fetch', fetchMock)
     try {
       const skipped = await service.search(
@@ -1509,7 +1511,12 @@ describe('KnowledgeService', () => {
       })
       expect(fetchMock).toHaveBeenCalledTimes(1)
       for (const hit of result.hits) expectOrderedContextWindow(hit)
+      const repeated = await service.search({ query: 'alpha reimbursement', baseId: base.id, topK: 2 })
+      expect(repeated.rerank?.error?.code).toBe('invalid_response')
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^knowledge: rerank degraded model="remote-reranker" code=invalid_response /))
     } finally {
+      warn.mockRestore()
       vi.unstubAllGlobals()
     }
   })

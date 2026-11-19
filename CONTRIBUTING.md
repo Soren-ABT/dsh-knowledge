@@ -29,6 +29,20 @@ cd ../dsh-knowledge
 pnpm install --frozen-lockfile
 ```
 
+## Where to change retrieval
+
+| When you change | Start here |
+| --- | --- |
+| Search filters, candidate retrieval, or fusion across queries | [Search engine](src/knowledge/search.ts). Both the tool and the HTTP API call `KnowledgeService.search()`. |
+| Reranker behavior or the context attached to a hit | [Search reranking](src/knowledge/search-rerank.ts) and [context assembly](src/knowledge/search-context.ts). The service owns reranker state for its lifetime. |
+| Automatic retrieval on a new message or follow-up | [Query planning](src/tool-knowledge/auto-retrieve-query.ts) handles intent and identifiers. [Evidence selection](src/tool-knowledge/auto-retrieve-selection.ts) applies score thresholds and per-base limits. [The pre-step hook](src/tool-knowledge/auto-retrieve.ts) owns cancellation and per-agent history. |
+| Source labels, clipping, or the text shown to the model | [Evidence rendering](src/tool-knowledge/render.ts) applies the explicit-search and automatic-injection budgets. |
+| Tool parameters, execution, or access | Use the matching [search](src/tool-knowledge/search-tool.ts), [library](src/tool-knowledge/library-tools.ts), or [document](src/tool-knowledge/document-tools.ts) registration. [Tool access](src/tool-knowledge/tool-access.ts) owns shared scope and approval checks. |
+
+The [tool plugin entry](src/tool-knowledge/index.ts) wires these registrations
+and exposes the public helpers. When changing behavior, exercise the normal
+tool, pre-step, or service entry in the relevant tests.
+
 ## Required checks
 
 Run the checks relevant to your change before opening a pull request:

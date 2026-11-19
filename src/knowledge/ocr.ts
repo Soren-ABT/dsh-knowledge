@@ -43,10 +43,6 @@ export interface OcrModelStatus {
   message: string
 }
 
-/** Languages shipped by the OCR card (Cherry's tesseract default: zh + zh-Traditional + en). */
-const OCR_LANGUAGES = ['chi_sim', 'chi_tra', 'eng'] as const
-type OcrLanguage = (typeof OCR_LANGUAGES)[number]
-
 /**
  * PaddleOCR engine (Cherry's local OCR) — PP-OCRv5 mobile: full Chinese
  * dictionary (18383 entries incl. 15k+ CJK). PP-OCRv6's ONNX repos ship a

@@ -11,7 +11,7 @@
 
 import type { Domain, DomainSpec } from '@deepseek-ai/dsh-storage-domain'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { knowledgeDomainSpec, TABLES } from './domain.js'
 import type { ConfigOverrides } from './domain.js'
 import { isMetadataWriteFailure, MetadataWriter } from './metadata-write.js'
