@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface ProcessDouble {
@@ -13,16 +13,24 @@ type ProcessMode = 'success' | 'crash_once' | 'mismatch' | 'invalid_vectors' | '
 const processState = vi.hoisted(() => ({ instances: [] as ProcessDouble[], mode: 'success' as ProcessMode }))
 
 /** Simulated Windows scanner lock on the staging promotion rename. */
-const renameState = vi.hoisted(() => ({ failCount: 0, code: 'EPERM' as string }))
+const renameState = vi.hoisted(() => ({ attempts: 0, failCount: 0, code: 'EPERM' }))
+const promotionDelay = vi.hoisted(() => vi.fn<(ms: number, value: undefined, options: { signal: AbortSignal }) => Promise<void>>())
+
+vi.mock('node:timers/promises', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:timers/promises')>(),
+  setTimeout: promotionDelay,
+}))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
   return {
     ...actual,
     rename: async (from: string, to: string) => {
-      if (renameState.failCount > 0) {
-        renameState.failCount -= 1
-        throw Object.assign(new Error(`${renameState.code}: simulated lock, rename '${from}' -> '${to}'`), { code: renameState.code })
+      if (from.includes(`${sep}.staging${sep}`)) {
+        renameState.attempts += 1
+        if (renameState.attempts <= renameState.failCount) {
+          throw Object.assign(new Error(`${renameState.code}: simulated promotion failure`), { code: renameState.code })
+        }
       }
       return await actual.rename(from, to)
     },
@@ -76,6 +84,9 @@ vi.mock('node:child_process', async () => {
             await writeFile(join(root, 'config.json'), '{}')
             await writeFile(join(root, 'tokenizer.json'), '{}')
             await writeFile(join(root, 'onnx', 'model.onnx'), 'weights')
+            this.emit('message', {
+              type: 'progress', modelId: request.modelId, status: 'ready', progress: 100, message: '', runtimeState: 'loaded',
+            })
             this.emit('message', { protocolVersion: request.protocolVersion, id: request.id, operation: request.operation, ok: true })
           })
           return true
@@ -115,7 +126,9 @@ import {
   cancelLocalModel,
   embedTexts,
   getLocalModelStatus,
+  hasActiveLocalModelDownload,
   loadLocalModel,
+  removeLocalModel,
   setLocalModelCacheDir,
   setLocalWorkerIdleTimeoutMs,
 } from '../src/knowledge/embed.js'
@@ -127,8 +140,10 @@ describe('local embedding process lifecycle', () => {
     vi.useFakeTimers()
     processState.instances.length = 0
     processState.mode = 'success'
+    renameState.attempts = 0
     renameState.failCount = 0
     renameState.code = 'EPERM'
+    promotionDelay.mockReset().mockResolvedValue(undefined)
     root = await mkdtemp(join(tmpdir(), 'dsh-local-embed-'))
     const model = join(root, 'test', 'model')
     await mkdir(join(model, 'onnx'), { recursive: true })
@@ -233,14 +248,14 @@ describe('local embedding process lifecycle', () => {
   })
 
   it('retries the staging promotion through a transient Windows scanner lock', async () => {
-    // Two EPERM renames stand in for an antivirus or search-indexer scan of
-    // the freshly written weights; the third attempt must promote the model.
     renameState.failCount = 2
-    // The retry sleeps are real-time short (100ms + 250ms), and the download
-    // and release acks ride the real event loop: fake timers add nothing
-    // here, they only starve the fs callbacks behind the acks.
-    vi.useRealTimers()
-    await loadLocalModel('lock/model')
+    await Promise.all([loadLocalModel('lock/model'), loadLocalModel('lock/model')])
+    expect(renameState.attempts).toBe(3)
+    expect(promotionDelay.mock.calls.map(([ms]) => ms)).toEqual([100, 250])
+    const stagingRequests = processState.instances[0].messages.filter(message =>
+      (message as { operation?: string }).operation === 'download',
+    )
+    expect(stagingRequests).toHaveLength(1)
     expect(getLocalModelStatus('lock/model').status).toBe('ready')
     await expect(stat(join(root, 'lock', 'model', 'onnx', 'model.onnx'))).resolves.toBeDefined()
     await expect(stat(join(root, '.staging', 'lock', 'model'))).rejects.toMatchObject({ code: 'ENOENT' })
@@ -250,9 +265,42 @@ describe('local embedding process lifecycle', () => {
     renameState.failCount = 100
     renameState.code = 'ENOENT'
     await expect(loadLocalModel('gone/model')).rejects.toThrow('ENOENT')
+    expect(renameState.attempts).toBe(1)
+    expect(promotionDelay).not.toHaveBeenCalled()
     // The staging directory is left intact for a clean manual retry.
     await expect(stat(join(root, '.staging', 'gone', 'model', 'onnx', 'model.onnx'))).resolves.toBeDefined()
     await expect(stat(join(root, 'gone', 'model'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('keeps the validated staging files when the lock outlasts the retry budget', async () => {
+    renameState.failCount = 100
+    await expect(loadLocalModel('locked/model')).rejects.toMatchObject({ code: 'EPERM' })
+    expect(renameState.attempts).toBe(9)
+    expect(promotionDelay.mock.calls.reduce((total, [ms]) => total + ms, 0)).toBe(9850)
+    expect(getLocalModelStatus('locked/model').status).toBe('error')
+    await expect(stat(join(root, '.staging', 'locked', 'model', 'onnx', 'model.onnx'))).resolves.toBeDefined()
+    await expect(stat(join(root, 'locked', 'model'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('can cancel during promotion backoff even after the staging pipeline reports ready', async () => {
+    vi.useRealTimers()
+    renameState.failCount = 1
+    promotionDelay.mockImplementationOnce((_ms, _value, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    }))
+    const loading = loadLocalModel('retry-cancel/model').catch(error => error)
+    await vi.waitFor(() => expect(promotionDelay).toHaveBeenCalledOnce())
+    expect(getLocalModelStatus('retry-cancel/model')).toMatchObject({ status: 'downloading', progress: 100 })
+    expect(hasActiveLocalModelDownload()).toBe(true)
+    await expect(removeLocalModel('retry-cancel/model')).rejects.toThrow('模型正在下载')
+
+    await cancelLocalModel('retry-cancel/model')
+    expect(await loading).toBeInstanceOf(Error)
+    expect(renameState.attempts).toBe(1)
+    expect(getLocalModelStatus('retry-cancel/model').status).toBe('idle')
+    expect(hasActiveLocalModelDownload()).toBe(false)
+    await expect(stat(join(root, '.staging', 'retry-cancel', 'model'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(join(root, 'retry-cancel', 'model'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('cancels only the staging download and leaves a ready final model untouched', async () => {
