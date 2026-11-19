@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Import raw Markdown URLs from the panel, HTTP API or agent tool. Bound downloads to 8 MiB and 30 seconds. Concurrent refreshes share one request and publish through the existing generation journal. A failed candidate preserves the previous snapshot and index. Scheduled refreshes use the current settings for each base (#57).
+- `knowledge_search` accepts a `baseIds` subset of the enabled bases. Model scope and names can be resolved without reading documents. Invalid scope updates return HTTP 400 and leave the saved selection intact. Retrieval history belongs to the service and session that produced it (#57).
+- Enumerate document metadata once for base summaries and read staged headers during raw snapshot reconciliation. Startup model validation examines only configured local rerankers. Plugin disposal waits for URL work and local worker shutdown.
+
 - Retry local embedding cache promotion through transient file locks after a completed download. Keep the staged files if retries run out and allow cancellation during the wait (#78, #79).
 - Use ONNX Runtime 1.30.0 for PaddleOCR and Transformers.js so the two engines share one native dependency and satisfy PaddleOCR's peer requirement (#80).
 

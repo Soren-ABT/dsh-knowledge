@@ -397,6 +397,9 @@ interface Envelope<T> {
   error?: { code: string; message: string }
 }
 
+// URL imports, refreshes and file rebuilds wait for indexing on the server.
+const DOCUMENT_INDEX_TIMEOUT_MS = 2 * 60 * 60_000 + 30_000
+
 export class KnowledgeApi {
   private async call<T>(method: string, path: string, body?: unknown, timeoutMs = 60_000): Promise<T> {
     const response = await fetch(`/knowledge${path}`, {
@@ -650,7 +653,7 @@ export class KnowledgeApi {
     return this.call('POST', `/bases/${encodeURIComponent(baseId)}/documents`, {
       baseId, url,
       ...(parentDirectoryId !== undefined ? { parentDirectoryId } : {}),
-    })
+    }, DOCUMENT_INDEX_TIMEOUT_MS)
   }
 
   startDirectoryImport(baseId: string, path: string): Promise<{ jobId: string; total: number }> {
@@ -719,7 +722,7 @@ export class KnowledgeApi {
   }
 
   reindexDocument(documentId: string, mode?: 'reparse' | 'rechunk'): Promise<{ id: string; chunkCount: number; sync?: DirectorySyncResult }> {
-    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/reindex`, mode === undefined ? undefined : { mode }, 2 * 60 * 60_000 + 30_000)
+    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/reindex`, mode === undefined ? undefined : { mode }, DOCUMENT_INDEX_TIMEOUT_MS)
   }
 
   setDirectorySyncInterval(sourceId: string, intervalMinutes: number): Promise<{ intervalMinutes: number }> {
@@ -737,7 +740,7 @@ export class KnowledgeApi {
   }
 
   refreshUrlDocument(documentId: string): Promise<{ changed: boolean; title: string; chunkCount: number }> {
-    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/refresh`)
+    return this.call('POST', `/documents/${encodeURIComponent(documentId)}/refresh`, undefined, DOCUMENT_INDEX_TIMEOUT_MS)
   }
 
   reindexDocuments(ids: string[]): Promise<{ reindexed: number; skipped: number; failed: number; items: DirectorySyncItem[] }> {
@@ -772,6 +775,7 @@ export class KnowledgeApi {
   search(request: {
     query: string
     baseId?: string
+    baseIds?: string[]
     topK?: number
     mode?: SearchMode
     threshold?: number

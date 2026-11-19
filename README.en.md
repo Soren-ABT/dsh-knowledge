@@ -126,6 +126,7 @@ Then rerun the same `dsh plugin --profile <profile> add ...` command. If YAML re
 - Create, rename, group, and delete bases; collapse groups in the sidebar and move bases between them.
 - Deleting a base also removes its document records. Startup recovery cleans up records left by previously deleted bases instead of repeatedly resuming their imports; no manual rebuild is needed.
 - Import documents from uploads, absolute file paths, directories, URLs, or plain text. Directory sources retain a stable ID, kind, and original path for later rescans.
+- URL import accepts HTML pages and raw UTF-8 Markdown. A raw link ending in `.md` or `.markdown` also works when the server sends `text/plain`, sends `application/octet-stream`, or omits the media type. Each download has an 8 MiB limit and a 30-second budget including retries and redirects. Refresh preserves the document ID, folder and custom title.
 - Upload up to 20 files per selection, with a 22 MB per-file limit and a five-way background import pool.
 - Resolve same-name conflicts through server-authoritative rename, replace, or cancel choices; content hashes prevent duplicate imports.
 - Track queued, parsing, embedding, ready, and failed states, with inline PDF, source-text, and complete chunk previews.
@@ -231,6 +232,8 @@ The plugin exposes 14 tools. Reads, writes, and proactive retrieval all obey the
 - `knowledge_reindex_base`
 
 `knowledge_search` returns citations, `chunkIndex`, and an ordered `ContextWindow`. `knowledge_read_document` supports character-range reads and regex location, while `knowledge_get_document` supports pagination and continuation around a retrieval anchor.
+
+Pass `baseId` to search one base or `baseIds` to search a subset of the enabled bases. Omitting both uses the panel's enabled scope. An explicit `baseIds: []` returns zero hits.
 
 </details>
 
@@ -548,7 +551,7 @@ Global embedding model changes first check every base that inherits the changed 
 | `semanticChunkThreshold` | `0.75` | Cosine threshold for semantic chunking |
 | `chunkTokenLimit` | `0` | Hard per-chunk token ceiling; `0` disables it |
 | `conflictStrategy` | `rename` | Same-name import behavior: `keep`, `replace`, or `rename` |
-| `urlRefreshHours` | `0` | URL refresh interval; `0` disables it |
+| `urlRefreshHours` | `0` | Hours since the last successful URL check. Checks start about five minutes after startup and repeat an hour after each sweep finishes. Saved per-base overrides apply at the next sweep. Set to `0` to disable. |
 | `imageCaptionProvider` | `off` | `off`, `openai`, or `ollama` |
 | `imageCaptionModel` | `''` | Vision model ID used for figure descriptions |
 | `imageCaptionBaseUrl` | `''` | Figure-captioning API root |

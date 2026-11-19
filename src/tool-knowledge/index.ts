@@ -321,7 +321,7 @@ export function apply(ctx: Context): void {
     order: 110,
     text: () => {
       if (!knowledge.isEnabled()) return ''
-      const bases = scopedBases().filter(base => knowledge.getConfigFor(base.id).injectUsagePrompt !== false)
+      const bases = knowledge.resolveInvocationScope().enabled.filter(base => knowledge.getConfigFor(base.id).injectUsagePrompt !== false)
       if (bases.length === 0) return ''
       const names = bases.map(base => base.name).join(', ')
       return ensureWellFormed('Available knowledge bases: ' + names + '.')
@@ -350,7 +350,7 @@ export function apply(ctx: Context): void {
     name: 'knowledge_search',
     description: 'Search a knowledge base for chunks relevant to a query. '
       + 'Returns ranked excerpts with scores (hybrid BM25+vector when embeddings exist, lexical otherwise) '
-      + 'that the caller should quote when answering. Omit baseId to search every base. '
+      + 'that the caller should quote when answering. By default, searches all enabled bases. '
       + 'USE THIS PROACTIVELY: whenever the user asks about facts, internal documents, specific numbers, '
       + 'or anything that may exist in their imported material — even if they never said "knowledge base" — '
       + 'search BEFORE answering so the reply cites the sources. Explicit requests to 查看/查询/运用 your '
@@ -360,6 +360,7 @@ export function apply(ctx: Context): void {
     parameters: {
       query: { type: 'string', required: true, description: 'The search query.' },
       baseId: { type: 'string', description: 'Optional knowledge base id to restrict the search to.' },
+      baseIds: { type: 'array', items: { type: 'string' }, description: 'Search a subset of enabled bases. Use either baseId or baseIds. An empty list matches nothing.' },
       topK: { type: 'number', description: 'Optional number of results (default from config).' },
       mode: { type: 'string', enum: ['auto', 'hybrid', 'vector', 'lexical'], description: 'Optional search mode.' },
       docIds: { type: 'array', items: { type: 'string' }, description: 'Optional document ids to restrict the search to.' },
@@ -460,7 +461,7 @@ export function apply(ctx: Context): void {
         },
       },
       render: (_args, value: SearchResult & { citations?: string[] }) => {
-        const baseNames = new Map(knowledge.listBases().map(base => [base.id, base.name]))
+        const baseNames = new Map(knowledge.resolveInvocationScope().enabled.map(base => [base.id, base.name]))
         return [{ type: 'text', text: renderKnowledgeSearchResult(value, baseId => baseNames.get(baseId)) }]
       },
     },
@@ -470,8 +471,11 @@ export function apply(ctx: Context): void {
       if (args.updatedAfter !== undefined && args.updatedBefore !== undefined && args.updatedAfter > args.updatedBefore) {
         throw new Error('updatedAfter must be less than or equal to updatedBefore')
       }
-      const scope = knowledge.enabledScope()
-      if (args.baseId !== undefined) requireBaseEnabled(args.baseId)
+      if (args.baseId !== undefined && args.baseIds !== undefined) throw new Error('use either baseId or baseIds')
+      const scope = knowledge.resolveInvocationScope(args.baseIds).baseIds
+      if (args.baseId !== undefined && scope !== undefined && !scope.includes(args.baseId)) {
+        throw new Error(`knowledge base "${args.baseId}" is not enabled`)
+      }
       const filter: Record<string, unknown> = {}
       if (args.docIds !== undefined) filter.docIds = args.docIds
       if (args.excludeDocIds !== undefined) filter.excludeDocIds = args.excludeDocIds
@@ -712,8 +716,7 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(defineTool({
     name: 'knowledge_import_url',
-    description: 'Import a document into a knowledge base from a URL. '
-      + 'The page is fetched, its text extracted, then chunked and embedded automatically.',
+    description: 'Import an HTML page or a raw Markdown URL into a knowledge base for search.',
     parameters: {
       baseId: { type: 'string', required: true, description: 'Target knowledge base id.' },
       url: { type: 'string', required: true, description: 'The URL to fetch and import.' },
@@ -731,9 +734,9 @@ export function apply(ctx: Context): void {
       },
       render: (_args, value: { title: string; chunkCount: number }) => modelText(`imported "${value.title}" (${value.chunkCount} chunks)`),
     },
-    async execute(args) {
+    async execute(args, exec) {
       requireBaseEnabled(args.baseId)
-      const doc = await knowledge.addUrlDocument({ baseId: args.baseId, url: args.url, title: args.title })
+      const doc = await knowledge.addUrlDocument({ baseId: args.baseId, url: args.url, title: args.title }, exec.signal)
       return { id: doc.id, title: doc.title, chunkCount: doc.chunkCount }
     },
   }))
@@ -796,7 +799,7 @@ export function apply(ctx: Context): void {
       if (args.baseId !== undefined) requireBaseEnabled(args.baseId)
       const stats = args.baseId !== undefined
         ? knowledge.stats(args.baseId)
-        : aggregateStats(scopedBases().map(base => knowledge.stats(base.id)))
+        : aggregateStats(knowledge.resolveInvocationScope().enabled.map(base => knowledge.stats(base.id)))
       return {
         documentCount: stats.documentCount,
         chunkCount: stats.chunkCount,
@@ -1135,13 +1138,14 @@ export function apply(ctx: Context): void {
     // Follow-up context stores only bounded, cleaned retrieval queries, never
     // arbitrary full user messages. A deictic follow-up ("那第二步呢？") can
     // still resolve its topic without growing agent memory with long prompts.
-    const prior = recentUserTexts.get(agent.id) ?? []
+    const prior = retrievalHistories.get(knowledge)?.get(agent.id)?.recent ?? []
     const remembered = cleanRetrieveQuery(text)
     const nextRecent = [...prior, remembered].filter(query => query.length > 0).slice(-AUTO_RETRIEVE_CONTEXT_TURNS)
     const background = await buildAutoRetrieveMessage(knowledge, agent, text, signal, prior)
-    if (signal.aborted) return decision
+    const history = retrievalHistories.get(knowledge)?.get(agent.id)
+    if (!history || signal.aborted) return decision
     if (background === undefined) {
-      recentUserTexts.set(agent.id, nextRecent)
+      history.recent = nextRecent
       return decision
     }
     // DSH brands UserMessage#id as MessageId; our literal cannot name the
@@ -1149,17 +1153,13 @@ export function apply(ctx: Context): void {
     // used the same literal shape since the feature shipped).
     const folded = foldBackground(decision.messages, messages, background.message as never)
     if (signal.aborted) return decision
-    recentUserTexts.set(agent.id, nextRecent)
+    history.recent = nextRecent
     background.commit()
     return { kind: 'enter', messages: folded }
   })
   // Forget this agent's throttle + context when it goes away.
-  ctx.on('agent/disposed', ({ agent }) => {
-    autoRetrieveInjectedAt.delete(agent.id)
-    lastInjectedKeywords.delete(agent.id)
-    recentUserTexts.delete(agent.id)
-    injectedChunkIds.delete(agent.id)
-  })
+  ctx.on('agent/disposed', ({ agent }) => { retrievalHistories.get(knowledge)?.delete(agent.id) })
+  ctx.effect(() => () => { retrievalHistories.delete(knowledge) }, 'knowledge: forget retrieval history')
 }
 
 /** The loop's pre-step decision: enter a step with messages, or reject it.
@@ -1257,14 +1257,28 @@ const AUTO_RETRIEVE_CANDIDATE_POOL = 12
 /** Chunk-id memory cap for injection dedup; over it the memory resets. */
 const AUTO_RETRIEVE_MAX_MEMORY = 50
 
-/** Last injection time per agent id (throttle). */
-const autoRetrieveInjectedAt = new Map<string, number>()
-/** Keywords of the last injected query per agent id (topic-aware throttle). */
-const lastInjectedKeywords = new Map<string, string[]>()
-/** Recent user-message texts per agent id (follow-up retrieval context). */
-const recentUserTexts = new Map<string, string[]>()
-/** Chunk ids already injected per agent id (dedup across turns). */
-const injectedChunkIds = new Map<string, Set<string>>()
+interface RetrievalHistory {
+  recent: string[]
+  lastInjection: number
+  keywords: string[]
+  chunks: Set<string>
+}
+
+const retrievalHistories = new WeakMap<KnowledgeService, Map<string, RetrievalHistory>>()
+
+function retrievalHistory(knowledge: KnowledgeService, agentId: string): RetrievalHistory {
+  let agents = retrievalHistories.get(knowledge)
+  if (!agents) {
+    agents = new Map()
+    retrievalHistories.set(knowledge, agents)
+  }
+  let history = agents.get(agentId)
+  if (!history) {
+    history = { recent: [], lastInjection: 0, keywords: [], chunks: new Set() }
+    agents.set(agentId, history)
+  }
+  return history
+}
 /** Last logged failure signature by stage, per service instance. Agents share
  * one provider/runtime, so provider outages must not emit one warning per
  * concurrent agent. Weak keys also avoid retaining disposed services. */
@@ -1295,14 +1309,17 @@ export async function buildAutoRetrieveMessage(
 ): Promise<AutoRetrieveBackground | undefined> {
   try {
     if (signal?.aborted) return undefined
-    if (!knowledge.isEnabled()) return undefined
-    if (!knowledge.getConfig().autoRetrieve) return undefined
+    if (!knowledge.isEnabled() || !knowledge.getConfig().autoRetrieve) {
+      retrievalHistories.get(knowledge)?.delete(agent.id)
+      return undefined
+    }
 
     // Resolve an explicit base against the complete registry BEFORE enabled
     // scope and auto-retrieve switches/weights. Naming an inaccessible or
     // opted-out base must fail closed instead of searching other bases.
-    const namedBase = findNamedBase(knowledge.listBases(), text)
-    const scopedBases = knowledge.enabledBases()
+    const scope = knowledge.resolveInvocationScope()
+    const namedBase = findNamedBase(scope.all, text)
+    const scopedBases = scope.enabled
     if (scopedBases.length === 0) return undefined
     if (namedBase !== undefined) {
       if (!scopedBases.some(base => base.id === namedBase.id)) return undefined
@@ -1320,8 +1337,9 @@ export async function buildAutoRetrieveMessage(
     const currentQuery = queryPlan.primary
     if (currentQuery.length === 0) return undefined
     const keywords = retrieveKeywords(currentQuery)
-    const throttled = now - (autoRetrieveInjectedAt.get(agent.id) ?? 0) < AUTO_RETRIEVE_MIN_INTERVAL_MS
-    const prevKeywords = lastInjectedKeywords.get(agent.id) ?? []
+    const history = retrievalHistory(knowledge, agent.id)
+    const throttled = now - history.lastInjection < AUTO_RETRIEVE_MIN_INTERVAL_MS
+    const prevKeywords = history.keywords
     // Topic signal excludes generic bigrams ('什么' shared by every question
     // tail would otherwise make unrelated topics look like follow-ups).
     const currentTopicSignal = topicKeywords(keywords)
@@ -1396,7 +1414,7 @@ export async function buildAutoRetrieveMessage(
     // Remove previously delivered evidence before relevance gates, rerank, and
     // seat allocation. An old top hit can no longer consume the winner slot or
     // prevent a genuinely fresh lower-ranked delta from being injected.
-    const injected = injectedChunkIds.get(agent.id) ?? new Set<string>()
+    const injected = history.chunks
     const relevanceQuery = queryPlan.enhanced ?? currentQuery
     const nameOf = (baseId: string): string => bases.find(base => base.id === baseId)?.name ?? baseId
     const scored = searchResult.hits
@@ -1417,7 +1435,7 @@ export async function buildAutoRetrieveMessage(
     // cross-encoder is skipped (loading ~280MB per user message is too heavy).
     const rerank = namedBase !== undefined
       ? rerankSettingsForBase(knowledge, namedBase.id)
-      : knowledge.rerankSettings()
+      : knowledge.rerankSettings(bases)
     let ranked = scored
     let relevanceFloor = AUTO_RETRIEVE_ABS_MIN_SCORE
     let adaptive = true
@@ -1561,9 +1579,9 @@ export async function buildAutoRetrieveMessage(
       commit() {
         if (committed) return
         committed = true
-        autoRetrieveInjectedAt.set(agent.id, Date.now())
-        lastInjectedKeywords.set(agent.id, topicSignal)
-        const nextInjected = new Set(injectedChunkIds.get(agent.id) ?? [])
+        history.lastInjection = Date.now()
+        history.keywords = topicSignal
+        const nextInjected = history.chunks
         for (const hit of delivered) {
           for (const chunkId of evidenceChunkIds(hit)) nextInjected.add(chunkId)
         }
@@ -1572,7 +1590,6 @@ export async function buildAutoRetrieveMessage(
           if (oldest === undefined) break
           nextInjected.delete(oldest)
         }
-        injectedChunkIds.set(agent.id, nextInjected)
       },
     }
   } catch (error) {

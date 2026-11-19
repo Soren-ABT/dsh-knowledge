@@ -13,6 +13,7 @@ import type { SearchHit, SearchResult } from '../src/knowledge/types.js'
 import type { Store } from '../src/knowledge/store.js'
 import { knowledgeRoute } from '../src/knowledge/http.js'
 import { KnowledgeApi } from '../src/ui/client/api.js'
+import { buildAutoRetrieveMessage } from '../src/tool-knowledge/index.js'
 
 const DEFAULT_CONFIG: Config = {
   embeddingProvider: 'none',
@@ -1214,12 +1215,7 @@ describe('KnowledgeService', () => {
 
   it('snapshots a URL and refreshes it when the page changes (public host via mocked fetch)', async () => {
     let page = '<html><head><title>Live Page</title></head><body><p>first version text</p></body></html>'
-    const fetchMock = vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
-      text: async () => page,
-    }))
+    const fetchMock = vi.fn(async () => new Response(page, { headers: { 'content-type': 'text/html; charset=utf-8' } }))
     vi.stubGlobal('fetch', fetchMock)
     try {
       const service = await mountService()
@@ -1247,6 +1243,117 @@ describe('KnowledgeService', () => {
       expect(chunksAfter.some(text => text.includes('first version'))).toBe(false)
       const result = await service.search({ query: 'second version', baseId: base.id })
       expect(result.hits.length).toBeGreaterThan(0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('resolves model scope and named exclusions without reading document summaries', async () => {
+    const service = await mountService()
+    const wiki = await service.createBase({ name: 'team-wiki' })
+    const other = await service.createBase({ name: 'private-library' })
+    const docs = vi.spyOn((service as unknown as { store: Store }).store, 'listDocuments')
+    await service.setEnabledBaseIds([wiki.id, 'removed-base'])
+    expect(service.resolveInvocationScope([other.id]).baseIds).toEqual([])
+    expect(service.resolveInvocationScope([]).enabled).toEqual([])
+    expect(service.resolveInvocationScope([wiki.id, other.id]).enabled).toEqual([{ id: wiki.id, name: wiki.name }])
+    const search = vi.spyOn(service, 'search')
+    const agent = { id: 'scope-cost', inject: vi.fn() }
+    await expect(buildAutoRetrieveMessage(service, agent, 'Search private-library for the policy')).resolves.toBeUndefined()
+    expect(search).not.toHaveBeenCalled()
+    expect(docs).not.toHaveBeenCalled()
+    await service.setEnabledBaseIds([])
+    expect(service.resolveInvocationScope().baseIds).toBeUndefined()
+    expect(service.resolveInvocationScope([other.id, other.id]).baseIds).toEqual([other.id])
+  })
+
+  it('rejects malformed HTTP scope updates before changing either invocation setting', async () => {
+    const service = await mountService()
+    const route = knowledgeRoute(service)
+    if (route.kind !== 'prefix') throw new Error('expected prefix route')
+    const server = createServer(route.handler)
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing server address')
+    const request = (path: string, method: string, body: unknown) => fetch(`http://127.0.0.1:${address.port}/knowledge/${path}`, {
+      method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    try {
+      const selected = await service.createBase({ name: 'selected' })
+      await service.setInvocationSettings({ enabled: false, enabledBaseIds: [selected.id] })
+      const invalid = await request('knowledge-toggle', 'PUT', { enabled: true, enabledBaseIds: [null] })
+      expect(invalid.status).toBe(400)
+      expect(service.isEnabled()).toBe(false)
+      expect(service.getEnabledBaseIds()).toEqual([selected.id])
+      expect((await request('search', 'POST', { query: 'notes', baseIds: {} })).status).toBe(400)
+      const valid = await request('knowledge-toggle', 'PUT', { enabled: true, enabledBaseIds: [] })
+      expect(await valid.json()).toMatchObject({ ok: true, value: { enabled: true, enabledBaseIds: [] } })
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('checks the current per-base URL refresh settings and skips recently checked content', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn(async (url: string) => new Response(`<p>Content of ${url}</p>`, { headers: { 'content-type': 'text/html' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const ctx = new Context()
+    ctx.provide('webServer', fakeWebServer())
+    const fiber = await ctx.plugin(KnowledgeService, DEFAULT_CONFIG)
+    try {
+      const service = ctx.get('knowledge') as KnowledgeService
+      // Let the independent startup artifact sweep finish before measuring URL sweeps.
+      await vi.advanceTimersByTimeAsync(0)
+      const on = await service.createBase({ name: 'on' })
+      await service.createBase({ name: 'another scheduled base' })
+      const off = await service.createBase({ name: 'off', config: { urlRefreshHours: 0 } })
+      const first = await service.addUrlDocument({ baseId: on.id, url: 'https://example.com/on' })
+      await service.addUrlDocument({ baseId: off.id, url: 'https://example.com/off' })
+      await service.setConfig({ urlRefreshHours: 2 })
+      vi.setSystemTime(Date.now() + 3 * 3600_000)
+      fetchMock.mockClear()
+      const listings = vi.spyOn((service as unknown as { store: Store }).store, 'listDocuments')
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+      expect(listings.mock.calls).toEqual([[]])
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://example.com/on'])
+      expect(service.listDocuments(on.id)[0].updatedAt).toBe(first.updatedAt)
+      await vi.advanceTimersByTimeAsync(3600_000)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      await service.setConfig({ urlRefreshHours: 0 })
+      await service.renameBase(off.id, { config: { urlRefreshHours: 1 } })
+      await vi.advanceTimersByTimeAsync(3600_000)
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://example.com/on', 'https://example.com/off'])
+      await service.renameBase(off.id, { config: { urlRefreshHours: 0 } })
+      listings.mockClear()
+      await vi.advanceTimersByTimeAsync(3600_000)
+      expect(listings).not.toHaveBeenCalled()
+    } finally {
+      await fiber.dispose()
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('cancels a pending URL body on plugin disposal', async () => {
+    const ctx = new Context()
+    ctx.provide('webServer', fakeWebServer())
+    const fiber = await ctx.plugin(KnowledgeService, DEFAULT_CONFIG)
+    const service = ctx.get('knowledge') as KnowledgeService
+    const base = await service.createBase({ name: 'cancel-url' })
+    let reading!: () => void
+    const started = new Promise<void>(resolve => { reading = resolve })
+    const cancel = vi.fn()
+    vi.stubGlobal('fetch', async () => new Response(new ReadableStream({ pull: reading, cancel }, { highWaterMark: 0 }), {
+      headers: { 'content-type': 'text/markdown' },
+    }))
+    try {
+      const result = service.addUrlDocument({ baseId: base.id, url: 'https://example.com/wiki.md' })
+      const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' })
+      await started
+      await fiber.dispose()
+      await rejected
+      expect(cancel).toHaveBeenCalledTimes(1)
     } finally {
       vi.unstubAllGlobals()
     }

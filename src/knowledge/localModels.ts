@@ -267,7 +267,10 @@ async function summarize(descriptor: LocalModelDescriptor): Promise<LocalModelSu
   return { ...descriptor, status: 'ready', health: 'healthy', progress: 100, message: '', lastCheckedAt: ready.validatedAt, latencyMs: ready.latencyMs }
 }
 
-export async function listLocalModels(): Promise<LocalModelSummary[]> { return Promise.all((await descriptors()).map(summarize)) }
+export async function listLocalModels(ids?: ReadonlySet<string>): Promise<LocalModelSummary[]> {
+  const models = await descriptors()
+  return Promise.all(models.filter(model => ids === undefined || ids.has(model.id)).map(summarize))
+}
 
 export function hasActiveLocalRerankDownload(): boolean {
   for (const status of liveRerankStatus.values()) if (status.status === 'downloading' || status.status === 'validating') return true
@@ -286,8 +289,9 @@ async function validateReranker(descriptor: LocalModelDescriptor): Promise<Local
   return summarize(descriptor)
 }
 
-export async function selfTestLocalModel(id: string): Promise<LocalModelSummary> {
+export async function selfTestLocalModel(id: string, signal?: AbortSignal): Promise<LocalModelSummary> {
   const descriptor = await findModel(id)
+  signal?.throwIfAborted()
   if (descriptor.kind !== 'reranking') throw new Error('self-test is available only for local rerankers')
   return validateReranker(descriptor)
 }

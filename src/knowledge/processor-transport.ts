@@ -1,4 +1,6 @@
 /** Bounded transport for optional document processors. Never retries mutations. */
+import { readResponseBytes } from './response-body.js'
+
 export class ProcessorError extends Error {
   constructor(readonly code: string, message: string) {
     super(message)
@@ -38,38 +40,9 @@ export async function processingDelay(ms: number, signal: AbortSignal): Promise<
   })
 }
 
-export async function readProcessorBytes(response: Response, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
-  checkProcessingAbort(signal)
-  const declared = response.headers.get('content-length')
-  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maximum)) {
-    await response.body?.cancel()
-    throw new ProcessorError('output_too_large', 'MinerU response exceeds the configured safety limit.')
-  }
-  if (!response.body) return new Uint8Array()
-  const reader = response.body.getReader()
-  const pieces: Uint8Array[] = []
-  let size = 0
-  const cancel = () => { void reader.cancel().catch(() => undefined) }
-  signal.addEventListener('abort', cancel, { once: true })
-  try {
-    while (true) {
-      checkProcessingAbort(signal)
-      const { done, value } = await reader.read()
-      checkProcessingAbort(signal)
-      if (done) break
-      size += value.byteLength
-      if (size > maximum) throw new ProcessorError('output_too_large', 'MinerU response exceeds the configured safety limit.')
-      pieces.push(value)
-    }
-  } finally {
-    signal.removeEventListener('abort', cancel)
-    await reader.cancel().catch(() => undefined)
-    reader.releaseLock()
-  }
-  const bytes = new Uint8Array(size)
-  let offset = 0
-  for (const piece of pieces) { bytes.set(piece, offset); offset += piece.byteLength }
-  return bytes
+export function readProcessorBytes(response: Response, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
+  return readResponseBytes(response, maximum, signal,
+    () => new ProcessorError('output_too_large', 'MinerU response exceeds the configured safety limit.'))
 }
 
 export interface ProcessorRequest {

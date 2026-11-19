@@ -128,6 +128,7 @@ allowBuilds:
 - 创建、重命名、分组和删除知识库；侧边栏支持分组折叠和库间移动。
 - 删除知识库时同时清理其文档记录。启动恢复会清理旧版本删除知识库后遗留的记录，避免反复恢复无主文档；无需手动重建索引。
 - 从文件、绝对路径、目录、URL 或纯文本导入文档。目录来源保留稳定 ID、类型和原始路径，可重新扫描磁盘变化。
+- URL 导入支持 HTML 网页和 UTF-8 Markdown 原文。服务器返回 `text/plain`、`application/octet-stream` 或省略类型时，可用以 `.md` 或 `.markdown` 结尾的原文链接。每次抓取最多 8 MiB，下载限时 30 秒（含重试和重定向）。刷新沿用文档 ID、所属目录及自定义标题。
 - 批量上传单次最多 20 个文件、单文件最大 22 MB，并使用 5 路后台导入池。
 - 同名冲突由服务端统一检测，可选择重命名、替换或取消；内容哈希用于避免重复导入。
 - 文档列表展示等待、解析、embedding、完成和失败状态；支持 PDF 原文、文本和完整分块预览。
@@ -233,6 +234,8 @@ v0.5.2 已修复 #51：证据和读取片段裁剪不会拆开 emoji 等字符�
 - `knowledge_reindex_base`
 
 `knowledge_search` 返回 citations、`chunkIndex` 和有序 `ContextWindow`。`knowledge_read_document` 支持字符区间读取和正则定位，`knowledge_get_document` 支持分页及围绕检索锚点续读。
+
+检索一个库可传 `baseId`。检索几个库可传 `baseIds` 数组，工具只会搜索其中已启用的库。两者都省略时使用面板已启用的范围，传 `baseIds: []` 时返回零条结果。
 
 </details>
 
@@ -550,7 +553,7 @@ dsh-knowledge 的定位是“一体化文档知识库”。下面的对照用于
 | `semanticChunkThreshold` | `0.75` | 语义分块余弦阈值 |
 | `chunkTokenLimit` | `0` | 分块 Token 硬上限；`0` 表示不限制 |
 | `conflictStrategy` | `rename` | 同名导入使用 `keep`、`replace` 或 `rename` |
-| `urlRefreshHours` | `0` | URL 自动刷新间隔；`0` 表示关闭 |
+| `urlRefreshHours` | `0` | 按上次成功检查时间计算。启动约 5 分钟后首次检查，此后每轮结束约 1 小时再检查。单库可覆盖全局值，保存后下一轮生效，`0` 关闭 |
 | `imageCaptionProvider` | `off` | `off`、`openai` 或 `ollama` |
 | `imageCaptionModel` | `''` | 图表描述使用的视觉模型 ID |
 | `imageCaptionBaseUrl` | `''` | 图表描述 API 基址 |

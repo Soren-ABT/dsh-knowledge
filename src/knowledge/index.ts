@@ -10,7 +10,6 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
 import { cp, mkdir, readdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
-import { isIP } from 'node:net'
 import { chunkText, mergeSemanticSegments, refineChunksByTokenLimit, splitSemanticSegments } from './chunk.js'
 import type { ChunkPiece } from './chunk.js'
 import { chunkParsedDocument } from './structured-chunk.js'
@@ -47,9 +46,9 @@ import { cancelLocalModelDownload, deleteLocalModel, downloadLocalModel, hasActi
 import type { LocalModelSummary } from './localModels.js'
 import { disposeLocalRerankProcess, localRerankChildIsWarm, setLocalRerankIdleTimeoutMs } from './local-rerank.js'
 import { downloadOcrModels, disposeOcrWorker, getOcrModelStatus, removeOcrModels, type OcrModelStatus } from './ocr.js'
-import { httpFetch } from './net.js'
+import { fetchUrlDocument } from './url-document.js'
 import { knowledgeRoute } from './http.js'
-import { SUPPORTED_DOCUMENT_EXTENSIONS, extractHtmlDocument, extractFromHtml, extensionOf } from './parse.js'
+import { SUPPORTED_DOCUMENT_EXTENSIONS, extractFromHtml, extensionOf } from './parse.js'
 import { rank } from './retrieval.js'
 import { maximalMarginalRelevance, reciprocalRankFusion, RRF_K } from './retrieval.js'
 import type { RankedHit } from './retrieval.js'
@@ -90,6 +89,7 @@ import type {
   EmbeddingProvider,
   ImportDirectoryRequest,
   ImportUrlRequest,
+  InvocationScope,
   KnowledgeBase,
   KnowledgeChunk,
   KnowledgeConfig,
@@ -234,6 +234,21 @@ const EMBED_RETRY_MAX_DELAY_MS = 30_000
  *  letting a huge library monopolize the disk while the app becomes usable. */
 const ARTIFACT_CLEANUP_CONCURRENCY = 4
 
+interface RebuiltSource {
+  text: string
+  processed?: ProcessedFile
+  title?: string
+  urlCheckedAt?: number
+  rawFilePath?: string
+  candidateRawFilePath?: string
+  previousRawFilePath?: string
+}
+
+interface UrlTaskResult {
+  document: KnowledgeDocument
+  changed: boolean
+}
+
 interface BackgroundJob {
   readonly baseId: string
   /** Human label for the unit of work (file name or document title). */
@@ -312,7 +327,9 @@ export class KnowledgeService extends Service {
   private readonly localEmbeddingBatchLimits = new Map<string, number>()
   private readonly directorySyncChains = new Map<string, Promise<unknown>>()
   private readonly directoryScans = new Map<string, Promise<ReindexDocumentResult>>()
-  private directorySyncDisposed = false
+  private readonly shutdown = new AbortController()
+  /** Manual and scheduled refreshes of the same snapshot share one writer. */
+  private readonly urlTasks = new Map<string, Promise<UrlTaskResult>>()
   private readonly directorySyncScheduler = new DirectorySyncScheduler(
     id => this.reindexDocument(id),
     (id, error) => this.ctx.logger.warn(`knowledge: scheduled directory sync ${id} failed: ${error instanceof Error ? error.message : String(error)}`),
@@ -323,8 +340,6 @@ export class KnowledgeService extends Service {
   private readonly processingQueue = new ProcessingQueue()
   private readonly processingProgress = new Map<string, ProcessingProgress>()
   private readonly processingControllers = new Map<string, AbortController>()
-  /** Aborts the detached startup artifact scan when the plugin unloads. */
-  private readonly artifactCleanupController = new AbortController()
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'knowledge')
@@ -351,12 +366,16 @@ export class KnowledgeService extends Service {
     // Teardown is registered unconditionally: without a store the plugin still
     // answers status/model calls, so a local model worker it started must not
     // outlive it.
-    this.ctx.effect(() => async () => { await store?.close() }, 'knowledge: close store')
+    this.ctx.effect(() => async () => {
+      this.shutdown.abort()
+      await Promise.allSettled(this.urlTasks.values())
+      await store?.close()
+    }, 'knowledge: close store')
     // Terminate the local-model inference worker on teardown so a loaded
     // ~600MB model can never outlive the plugin (Cherry: lifecycle-managed worker).
-    this.ctx.effect(() => () => { void disposeLocalModelWorker() }, 'knowledge: dispose local model worker')
-    this.ctx.effect(() => () => { void disposeLocalRerankProcess() }, 'knowledge: dispose local rerank process')
-    this.ctx.effect(() => () => { void disposeOcrWorker() }, 'knowledge: dispose OCR worker')
+    this.ctx.effect(() => () => disposeLocalModelWorker(), 'knowledge: dispose local model worker')
+    this.ctx.effect(() => () => disposeLocalRerankProcess(), 'knowledge: dispose local rerank process')
+    this.ctx.effect(() => () => disposeOcrWorker(), 'knowledge: dispose OCR worker')
     this.ctx.effect(() => () => this.mineruDeployment.dispose(), 'knowledge: dispose MinerU deployment')
     if (store === undefined) { this.resolveStore(); return }
     this.artifacts = new ArtifactRepository(store.raw !== undefined
@@ -364,9 +383,8 @@ export class KnowledgeService extends Service {
       : undefined)
     this.resolveStore()
     this.ctx.effect(() => () => {
-      this.directorySyncDisposed = true
+      this.shutdown.abort()
       this.directorySyncScheduler.dispose()
-      this.artifactCleanupController.abort()
       for (const controller of this.processingControllers.values()) controller.abort()
       for (const active of this.indexing.values()) active.controller?.abort()
     }, 'knowledge: cancel document processors')
@@ -385,11 +403,10 @@ export class KnowledgeService extends Service {
     setLocalModelCacheDir(resolved.localModelCacheDir)
     setLocalWorkerIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
     setLocalRerankIdleTimeoutMs(resolved.localWorkerIdleTimeoutMs)
-    for (const base of store.listBases()) {
-      for (const source of store.listDocuments(base.id)) {
-        if (source.sourceType === 'directory' && source.sourcePath !== undefined && source.parentDirectoryId === undefined) {
-          this.directorySyncScheduler.configure(source.id, source.syncIntervalMinutes ?? 0)
-        }
+    for (const source of store.listDocuments()) {
+      if (source.sourceType === 'directory' && source.sourcePath !== undefined && source.parentDirectoryId === undefined
+          && store.getBase(source.baseId) !== undefined) {
+        this.directorySyncScheduler.configure(source.id, source.syncIntervalMinutes ?? 0)
       }
     }
     // One-time compatibility path for caches created before readiness markers:
@@ -401,12 +418,16 @@ export class KnowledgeService extends Service {
         if (modelId !== '') configuredLocalRerankers.add(modelId)
       }
     }
-    void listLocalModels().then(models => {
-      for (const modelId of configuredLocalRerankers) {
-        const model = models.find(entry => entry.id === modelId)
-        if (model?.status === 'unhealthy' && model.health === 'unchecked') void selfTestLocalModel(modelId)
-      }
-    }).catch(() => {})
+    if (configuredLocalRerankers.size > 0) {
+      void listLocalModels(configuredLocalRerankers).then(models => {
+        for (const model of models) {
+          if (this.shutdown.signal.aborted) return
+          if (model.status === 'unhealthy' && model.health === 'unchecked') {
+            this.runBackground('local reranker validation', selfTestLocalModel(model.id, this.shutdown.signal))
+          }
+        }
+      }).catch(() => {})
+    }
     // Resume documents a previous process left mid-embedding: their chunks are
     // partially persisted, so re-running the embed with hash reuse completes
     // them without re-embedding the batches that already landed. (openStore
@@ -446,46 +467,41 @@ export class KnowledgeService extends Service {
 
   // ── scheduled URL refresh (Cherry's snapshot + manual refresh, automated) ──
 
-  private urlRefreshTimer: ReturnType<typeof setInterval> | null = null
-  private urlRefreshing = false
-
-  /** Arm the hourly sweep that refreshes URL documents older than `urlRefreshHours`. */
+  /** Read settings at sweep time so changes in the panel apply to a running service. */
   private armUrlRefreshTimer(): void {
-    const hours = this.getConfigFor(undefined).urlRefreshHours
-    if (hours <= 0) return
-    const run = (): void => {
-      if (this.urlRefreshing) return
-      this.urlRefreshing = true
-      void this.refreshStaleUrls(hours).catch(error => {
-        this.ctx.logger.warn(`knowledge: URL refresh sweep failed: ${error instanceof Error ? error.message : String(error)}`)
-      }).finally(() => { this.urlRefreshing = false })
+    let timer: ReturnType<typeof setTimeout>
+    const arm = (delay: number): void => {
+      if (this.shutdown.signal.aborted) return
+      timer = setTimeout(() => {
+        this.runBackground('URL refresh sweep', this.refreshStaleUrls().finally(() => arm(60 * 60_000)))
+      }, delay)
+      timer.unref?.()
     }
-    // First sweep shortly after startup (imports settle first), then hourly.
-    const first = setTimeout(run, 5 * 60_000)
-    first.unref?.()
-    this.urlRefreshTimer = setInterval(run, 60 * 60_000)
-    this.urlRefreshTimer.unref?.()
-    this.ctx.effect(() => () => {
-      clearTimeout(first)
-      if (this.urlRefreshTimer !== null) clearInterval(this.urlRefreshTimer)
-    }, 'knowledge: URL refresh timer')
+    arm(5 * 60_000)
+    this.ctx.effect(() => () => clearTimeout(timer), 'knowledge: URL refresh timer')
   }
 
-  /** Re-fetch every URL document whose last update predates `hours`; failures are logged, never thrown. */
-  private async refreshStaleUrls(hours: number): Promise<void> {
+  private async refreshStaleUrls(): Promise<void> {
     const store = this.requireStore()
-    const cutoff = Date.now() - hours * 3600_000
-    const stale: string[] = []
+    const cutoffs = new Map<string, number>()
+    const now = Date.now()
     for (const base of store.listBases()) {
-      for (const doc of store.listDocuments(base.id)) {
-        if (doc.sourceType === 'url' && doc.url !== undefined && (doc.updatedAt ?? 0) < cutoff) stale.push(doc.id)
-      }
+      const hours = this.getConfigFor(base.id).urlRefreshHours
+      if (hours > 0) cutoffs.set(base.id, now - hours * 3600_000)
+    }
+    if (cutoffs.size === 0) return
+    const stale: string[] = []
+    for (const doc of store.listDocuments()) {
+      const cutoff = cutoffs.get(doc.baseId)
+      if (doc.sourceType === 'url' && doc.url && cutoff !== undefined && (doc.urlCheckedAt ?? doc.updatedAt ?? 0) < cutoff) stale.push(doc.id)
     }
     for (const id of stale) {
+      if (this.shutdown.signal.aborted) return
       try {
         const result = await this.refreshUrlDocument(id)
         if (result.changed) this.ctx.logger.info(`knowledge: URL auto-refreshed: ${result.title}`)
       } catch (error) {
+        if (this.shutdown.signal.aborted) return
         this.ctx.logger.warn(`knowledge: URL auto-refresh failed for ${id}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
@@ -650,17 +666,11 @@ export class KnowledgeService extends Service {
     // Defer even the in-memory target enumeration until init has returned.
     await new Promise<void>(resolve => setImmediate(resolve))
     const store = this.store
-    const signal = this.artifactCleanupController.signal
+    const signal = this.shutdown.signal
     if (store === undefined || signal.aborted) return
-    const targets: Array<{ baseId: string; documentId: string }> = []
-    for (const base of store.listBases()) {
-      for (const doc of store.listDocuments(base.id)) {
-        targets.push({
-          baseId: base.id,
-          documentId: doc.id,
-        })
-      }
-    }
+    const targets = store.listDocuments()
+      .filter(doc => store.getBase(doc.baseId) !== undefined)
+      .map(doc => ({ baseId: doc.baseId, documentId: doc.id }))
     if (targets.length === 0 || signal.aborted) return
     let cursor = 0
     let removed = 0
@@ -704,12 +714,12 @@ export class KnowledgeService extends Service {
    * base config: the global rerank model wins; otherwise the first enabled
    * base that configured one. Returns undefined when none is set.
    */
-  rerankSettings(): { model: string; baseUrl: string; apiKey: string } | undefined {
+  rerankSettings(bases?: ReadonlyArray<Pick<KnowledgeBase, 'id'>>): { model: string; baseUrl: string; apiKey: string } | undefined {
     const global = this.getConfig()
     if (global.rerankModel.trim() !== '') {
       return { model: global.rerankModel, baseUrl: global.rerankBaseUrl, apiKey: global.rerankApiKey }
     }
-    for (const base of this.enabledBases()) {
+    for (const base of bases ?? this.resolveInvocationScope().enabled) {
       const config = this.getConfigFor(base.id)
       if (!config.autoRetrieve || config.autoRetrieveWeight === 0) continue
       if (config.rerankModel.trim() !== '') {
@@ -766,7 +776,7 @@ export class KnowledgeService extends Service {
   }
 
   async setEnabled(enabled: boolean): Promise<void> {
-    await this.requireStore().setEnabled(enabled)
+    await this.setInvocationSettings({ enabled })
   }
 
   getEnabledBaseIds(): string[] {
@@ -774,30 +784,42 @@ export class KnowledgeService extends Service {
   }
 
   async setEnabledBaseIds(ids: readonly string[]): Promise<void> {
-    await this.requireStore().setEnabledBaseIds([...new Set(ids)])
+    await this.setInvocationSettings({ enabledBaseIds: ids })
+  }
+
+  async setInvocationSettings(patch: { enabled?: boolean; enabledBaseIds?: readonly string[] }): Promise<void> {
+    if (patch.enabled === undefined && patch.enabledBaseIds === undefined) return
+    await this.requireStore().setInvocationSettings({
+      ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+      ...(patch.enabledBaseIds !== undefined ? { enabledBaseIds: [...new Set(patch.enabledBaseIds)] } : {}),
+    })
   }
 
   /**
-   * Resolve the effective search scope for a model call. `undefined` means no
-   * ids were configured (every base); an empty array means a non-empty saved
-   * selection has gone entirely stale and must fail closed.
+   * Intersect a caller's requested ids with the saved selection and live bases.
+   * An absent request inherits the selection. An explicit empty request or an
+   * entirely stale selection matches nothing.
    */
-  enabledScope(): string[] | undefined {
+  resolveInvocationScope(requestedBaseIds?: readonly string[]): InvocationScope {
     const store = this.requireStore()
-    const ids = store.getEnabledBaseIds()
-    if (ids.length === 0) return undefined
-    const existing = new Set(store.listBases().map(base => base.id))
-    const valid = ids.filter(id => existing.has(id))
-    return valid
+    const all = store.listBases().map(({ id, name }) => ({ id, name }))
+    const saved = store.getEnabledBaseIds()
+    if (saved.length === 0 && requestedBaseIds === undefined) return { all, enabled: all, baseIds: undefined }
+    const existing = new Set(all.map(base => base.id))
+    const requested = requestedBaseIds === undefined ? undefined : new Set(requestedBaseIds)
+    const baseIds = (saved.length > 0 ? saved : Array.from(requested ?? []))
+      .filter(id => existing.has(id) && (requested === undefined || requested.has(id)))
+    const allowed = new Set(baseIds)
+    return { all, enabled: all.filter(base => allowed.has(base.id)), baseIds }
+  }
+
+  enabledScope(): string[] | undefined {
+    return this.resolveInvocationScope().baseIds
   }
 
   /** Existing bases inside the strict model-invocation scope. */
   enabledBases(): BaseSummary[] {
-    const bases = this.listBases()
-    const scope = this.enabledScope()
-    if (scope === undefined) return bases
-    const allowed = new Set(scope)
-    return bases.filter(base => allowed.has(base.id))
+    return this.listBases(this.enabledScope())
   }
 
   // ── bases ─────────────────────────────────────────────────────────────────
@@ -861,6 +883,7 @@ export class KnowledgeService extends Service {
         ...(doc.fileName !== undefined ? { fileName: doc.fileName } : {}),
         ...(doc.mimeType !== undefined ? { mimeType: doc.mimeType } : {}),
         ...(doc.url !== undefined ? { url: doc.url } : {}),
+        ...(doc.urlTitleOverride ? { urlTitleOverride: true } : {}),
         ...(rawFilePath !== undefined ? { rawFilePath } : {}),
         text,
       })
@@ -943,10 +966,15 @@ export class KnowledgeService extends Service {
     return next
   }
 
-  listBases(): BaseSummary[] {
+  listBases(baseIds?: readonly string[]): BaseSummary[] {
     const store = this.requireStore()
-    return store.listBases().map(base => {
-      const documents = store.listDocuments(base.id)
+    const allowed = baseIds === undefined ? undefined : new Set(baseIds)
+    const bases = store.listBases().filter(base => allowed === undefined || allowed.has(base.id))
+    if (bases.length === 0) return []
+    const byBase = new Map(bases.map(base => [base.id, [] as KnowledgeDocument[]]))
+    for (const doc of store.listDocuments()) byBase.get(doc.baseId)?.push(doc)
+    return bases.map(base => {
+      const documents = byBase.get(base.id)!
       const chunkCount = documents.reduce((sum, doc) => sum + doc.chunkCount, 0)
       const charCount = documents.reduce((sum, doc) => sum + doc.charCount, 0)
       const tokenCount = documents.reduce((sum, doc) => sum + (doc.tokenCount ?? 0), 0)
@@ -1595,37 +1623,25 @@ export class KnowledgeService extends Service {
     return { set: 1 }
   }
 
-  async addUrlDocument(request: ImportUrlRequest): Promise<KnowledgeDocument> {
+  async addUrlDocument(request: ImportUrlRequest, signal?: AbortSignal): Promise<KnowledgeDocument> {
     const store = this.requireStore()
     if (store.getBase(request.baseId) === undefined) throw new Error(`knowledge base not found: ${request.baseId}`)
-    const html = await fetchHtml(request.url)
-    const extracted = await extractHtmlDocument(html)
-    if (extracted.text.trim().length === 0) throw new Error('URL returned no extractable text')
-    // Persist the fetched text as the URL's snapshot (Cherry's snapshot model:
-    // the base owns a stable copy; refresh re-fetches and overwrites it).
     const docId = crypto.randomUUID()
-    const title = request.title?.trim() || extracted.title || request.url
-    let rawFilePath: string | undefined
-    if (store.raw !== undefined) {
-      rawFilePath = await store.raw.write(request.baseId, docId, '.md', encodeUtf8(extracted.text))
-    }
-    return this.ingestDocument({
-      baseId: request.baseId,
-      title,
-      sourceType: 'url',
-      url: request.url,
-      ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
-      rawFilePath,
-      text: extracted.text,
+    const result = await this.runUrlTask(docId, request.baseId, request.title ?? request.url, async taskSignal => {
+      const active = signal ? AbortSignal.any([taskSignal, signal]) : taskSignal
+      const extracted = await fetchUrlDocument(request.url, active)
+      const document = await this.ingestDocument({
+        documentId: docId, baseId: request.baseId, sourceType: 'url', url: request.url,
+        title: request.title?.trim() || extracted.title || request.url,
+        urlTitleOverride: Boolean(request.title?.trim()),
+        parentDirectoryId: request.parentDirectoryId, text: extracted.text,
+      }, active)
+      return { document, changed: true }
     })
+    return result.document
   }
 
-  /**
-   * Cherry-style URL refresh: re-fetch the page, and when its text changed,
-   * overwrite the snapshot and re-index the document (hash reuse re-embeds
-   * only the chunks that changed). A failed fetch or an unchanged page leaves
-   * the current snapshot and index untouched — refresh never degrades.
-   */
+  /** Publish changed URL content through the same generation journal as file rebuilds. */
   async refreshUrlDocument(id: string): Promise<{ changed: boolean; title: string; chunkCount: number }> {
     const store = this.requireStore()
     const document = store.getDocument(id)
@@ -1633,29 +1649,41 @@ export class KnowledgeService extends Service {
     if (document.sourceType !== 'url' || document.url === undefined) {
       throw new Error(`document "${document.title}" is not a URL document`)
     }
-    const html = await fetchHtml(document.url)
-    const extracted = await extractHtmlDocument(html)
-    if (extracted.text.trim().length === 0) throw new Error('URL returned no extractable text')
-    const title = extracted.title.trim().length > 0 ? extracted.title.trim() : document.title
-    if (extracted.text === document.rawText && title === document.title) {
-      return { changed: false, title: document.title, chunkCount: document.chunkCount }
-    }
-    // Overwrite the snapshot (or persist a new one for pre-snapshot docs).
-    let rawFilePath = document.rawFilePath
-    if (store.raw !== undefined) {
-      const ext = rawFilePath !== undefined ? rawExtensionOf(rawFilePath) : '.md'
-      rawFilePath = await store.raw.write(document.baseId, document.id, ext, encodeUtf8(extracted.text))
-    }
-    const refreshed = await this.ingestDocument({
-      baseId: document.baseId,
-      title,
-      sourceType: 'url',
-      url: document.url,
-      rawFilePath,
-      text: extracted.text,
-      placeholderId: document.id,
+    const url = document.url
+    const result = await this.runUrlTask(id, document.baseId, document.title, async signal => {
+      const extracted = await fetchUrlDocument(url, signal)
+      signal.throwIfAborted()
+      const current = store.getDocument(id)
+      if (!current) throw new Error(`document not found: ${id}`)
+      const title = current.urlTitleOverride ? current.title : extracted.title.trim() || current.title
+      const urlCheckedAt = Date.now()
+      if (extracted.text === current.rawText && title === current.title) {
+        if (this.getConfigFor(current.baseId).urlRefreshHours > 0) await store.putDocument({ ...current, urlCheckedAt })
+        return { document: current, changed: false }
+      }
+      const rawFilePath = await store.raw?.write(current.baseId, crypto.randomUUID(), '.md', encodeUtf8(extracted.text))
+      const refreshed = await this.commitRebuiltDocument(current, {
+        text: extracted.text, title, urlCheckedAt, rawFilePath,
+        candidateRawFilePath: rawFilePath, previousRawFilePath: current.rawFilePath,
+      }, signal)
+      return { document: refreshed, changed: true }
     })
-    return { changed: true, title: refreshed.title, chunkCount: refreshed.chunkCount }
+    return { changed: result.changed, title: result.document.title, chunkCount: result.document.chunkCount }
+  }
+
+  private runUrlTask(id: string, baseId: string, title: string, work: (signal: AbortSignal) => Promise<UrlTaskResult>): Promise<UrlTaskResult> {
+    this.shutdown.signal.throwIfAborted()
+    const existing = this.urlTasks.get(id)
+    if (existing) return existing
+    if (this.indexing.has(id)) throw new Error(`"${title}" is still being indexed — try again when it finishes`)
+    const controller = new AbortController()
+    this.indexing.set(id, { baseId, title, phase: 'parsing', total: 0, progress: 0, controller })
+    const task = work(AbortSignal.any([this.shutdown.signal, controller.signal])).finally(() => {
+      this.indexing.delete(id)
+      this.urlTasks.delete(id)
+    })
+    this.urlTasks.set(id, task)
+    return task
   }
 
   /** Preview the exact tree and durable raw snapshots affected by a delete.
@@ -1783,10 +1811,16 @@ export class KnowledgeService extends Service {
   }
 
   async renameDocument(id: string, title: string): Promise<KnowledgeDocument> {
+    // A refresh publishes the title together with its chunks. Apply a user's
+    // rename after that write, including when the refresh rolled back.
+    const refreshing = this.urlTasks.get(id)
+    if (refreshing) await refreshing.catch(() => {})
     const store = this.requireStore()
     const existing = store.getDocument(id)
     if (existing === undefined) throw new Error(`document not found: ${id}`)
-    const next = { ...existing, title: title.trim() || existing.title, updatedAt: Date.now() }
+    const next = { ...existing, title: title.trim() || existing.title, updatedAt: Date.now(),
+      ...(existing.sourceType === 'url' && title.trim() ? { urlTitleOverride: true } : {}),
+    }
     await store.putDocument(next)
     return next
   }
@@ -1843,7 +1877,7 @@ export class KnowledgeService extends Service {
     // source that cannot be rebuilt.
     const controller = new AbortController()
     this.indexing.set(id, { baseId: document.baseId, title: document.title, phase: 'parsing', total: 0, progress: 0, controller })
-    let rebuilt: Awaited<ReturnType<KnowledgeService['sourceTextOf']>>
+    let rebuilt: RebuiltSource
     try {
       if (options.mode === 'rechunk') {
         const parsed = document.processing !== undefined
@@ -1854,12 +1888,17 @@ export class KnowledgeService extends Service {
       } else {
         rebuilt = await this.sourceTextOf(document, controller.signal, options.strictSource)
       }
-      controller.signal.throwIfAborted()
-      if (!rebuilt.text.trim()) throw new Error('parsed document is empty')
-    } catch (error) {
+      return await this.commitRebuiltDocument(document, rebuilt, controller.signal)
+    } finally {
       this.indexing.delete(id)
-      throw error
+      this.processingProgress.delete(id)
     }
+  }
+
+  /** File rebuilds and URL refreshes publish through the same generation journal. */
+  private async commitRebuiltDocument(document: KnowledgeDocument, rebuilt: RebuiltSource, signal: AbortSignal): Promise<KnowledgeDocument> {
+    const store = this.requireStore()
+    const id = document.id
     const discardCandidate = async (): Promise<void> => {
       if (rebuilt.candidateRawFilePath === undefined) return
       try {
@@ -1868,29 +1907,34 @@ export class KnowledgeService extends Service {
         this.ctx.logger.warn(`knowledge: failed to discard uncommitted raw source ${rebuilt.candidateRawFilePath}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
+    let generationStarted = false
     let candidateCommitted = false
     try {
+      signal.throwIfAborted()
+      if (!rebuilt.text.trim()) throw new Error('parsed document is empty')
       const config = this.getConfigFor(document.baseId)
       // Mark the document incomplete so a crash mid-reindex is resumed on the
       // next start (buildChunks persists each embedded batch; hash reuse makes
       // the resume re-embed only what never landed). The document continues to
       // reference the previous raw copy until the complete replacement commits.
       await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
+      generationStarted = true
       const candidate: KnowledgeDocument = { ...document, rawText: rebuilt.text,
+        ...(rebuilt.title !== undefined ? { title: rebuilt.title } : {}),
+        ...(rebuilt.urlCheckedAt !== undefined ? { urlCheckedAt: rebuilt.urlCheckedAt } : {}),
         ...(rebuilt.rawFilePath !== undefined ? { rawFilePath: rebuilt.rawFilePath } : {}),
         processing: rebuilt.processed?.processing,
       }
       const pieces = this.processingChunks(rebuilt.processed, config)
       await store.stageDocumentGeneration(candidate, [])
-      const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, document.id, document.title, rebuilt.text, config, pieces, batch => store.stageDocumentGeneration(candidate, batch), controller.signal, candidate.processing?.revision)
-      controller.signal.throwIfAborted()
+      const { chunks, embeddingError, embeddingErrorCode } = await this.buildChunks(document.baseId, id, candidate.title, rebuilt.text, config, pieces, batch => store.stageDocumentGeneration(candidate, batch), signal, candidate.processing?.revision)
+      signal.throwIfAborted()
       if (embeddingError !== undefined && document.chunkCount > 0) throw Object.assign(new Error('embedding failed; the previous document generation was preserved'), { code: embeddingErrorCode })
       const { embeddingError: _staleError, errorCode: _staleCode, incomplete: _staleIncomplete, contentHash: _staleHash, ...rest } = candidate
+      const contentHash = sha256(rebuilt.text)
       const next: KnowledgeDocument = {
         ...rest,
-        ...(rebuilt.rawFilePath !== undefined ? { rawFilePath: rebuilt.rawFilePath } : {}),
-        rawText: rebuilt.text,
-        contentHash: sha256(rebuilt.text),
+        contentHash,
         charCount: rebuilt.text.length,
         tokenCount: estimateTokens(rebuilt.text),
         ...completedChunkState(chunks.length),
@@ -1907,7 +1951,15 @@ export class KnowledgeService extends Service {
         await discardCandidate()
         return document
       }
-      await store.commitDocumentGeneration(next, chunks)
+      if (rebuilt.urlCheckedAt !== undefined) {
+        await this.withBaseWriteLock(document.baseId, async () => {
+          signal.throwIfAborted()
+          this.assertUniqueContent(document.baseId, contentHash, id)
+          await store.commitDocumentGeneration(next, chunks)
+        })
+      } else {
+        await store.commitDocumentGeneration(next, chunks)
+      }
       candidateCommitted = true
 
       if (rebuilt.previousRawFilePath !== undefined && rebuilt.previousRawFilePath !== rebuilt.rawFilePath) {
@@ -1922,16 +1974,14 @@ export class KnowledgeService extends Service {
       await this.touchBase(document.baseId)
       return next
     } catch (error) {
-      if (isMetadataWriteFailure(error)) throw error
-      if (!candidateCommitted && (error as { published?: boolean }).published !== true) {
+      if (!generationStarted) {
+        await discardCandidate()
+      } else if (!candidateCommitted && !isMetadataWriteFailure(error) && (error as { published?: boolean } | null)?.published !== true) {
         await store.discardStagedDocumentGeneration(id)
         await discardCandidate()
         if (store.getDocument(id) !== undefined) await store.putDocument(document)
       }
       throw error
-    } finally {
-      this.indexing.delete(id)
-      this.processingProgress.delete(id)
     }
   }
 
@@ -1984,13 +2034,7 @@ export class KnowledgeService extends Service {
    *  (parsed through the base's configured processor: MinerU first when set),
    *  then persisted text, then reconstructed chunks are used. Returns the rebuilt
    *  text and, when the raw copy was refreshed, its new base-relative path. */
-  private async sourceTextOf(document: KnowledgeDocument, signal?: AbortSignal, strictSource = false): Promise<{
-    text: string
-    processed?: ProcessedFile
-    rawFilePath?: string
-    candidateRawFilePath?: string
-    previousRawFilePath?: string
-  }> {
+  private async sourceTextOf(document: KnowledgeDocument, signal?: AbortSignal, strictSource = false): Promise<RebuiltSource> {
     const store = this.requireStore()
     const sourceFailures: string[] = []
     let failedLiveSourceBytes: Uint8Array | undefined
@@ -2122,7 +2166,7 @@ export class KnowledgeService extends Service {
   private withDirectorySyncLock<T>(baseId: string, task: () => Promise<T>): Promise<T> {
     const previous = this.directorySyncChains.get(baseId) ?? Promise.resolve()
     const execute = (): Promise<T> => {
-      if (this.directorySyncDisposed) throw new Error('knowledge service is stopping')
+      if (this.shutdown.signal.aborted) throw new Error('knowledge service is stopping')
       return task()
     }
     const run = previous.then(execute, execute)
@@ -2286,7 +2330,7 @@ export class KnowledgeService extends Service {
     items: DirectorySyncItem[]
   }): Promise<void> {
     const { rootPath, diskPath, directory, depth, childrenByParent, items } = args
-    if (this.directorySyncDisposed) throw new Error('knowledge service is stopping')
+    if (this.shutdown.signal.aborted) throw new Error('knowledge service is stopping')
     this.assertIndexTargetAlive(directory.id, directory.baseId)
     if (depth > DIRECTORY_MAX_DEPTH) {
       items.push({
@@ -2340,7 +2384,7 @@ export class KnowledgeService extends Service {
     }
 
     for (const entry of entries) {
-      if (this.directorySyncDisposed) throw new Error('knowledge service is stopping')
+      if (this.shutdown.signal.aborted) throw new Error('knowledge service is stopping')
       this.assertIndexTargetAlive(directory.id, directory.baseId)
       const fullPath = join(diskPath, entry.name)
       const relativePath = this.relativeSourcePath(rootPath, fullPath)
@@ -3958,8 +4002,15 @@ export class KnowledgeService extends Service {
   private withBaseWriteLock<T>(baseId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.baseWriteChains.get(baseId) ?? Promise.resolve()
     const run = prev.then(fn, fn)
-    this.baseWriteChains.set(baseId, run.then(() => undefined, () => undefined))
+    this.baseWriteChains.set(baseId, run)
+    const cleanup = () => { if (this.baseWriteChains.get(baseId) === run) this.baseWriteChains.delete(baseId) }
+    void run.then(cleanup, cleanup)
     return run
+  }
+
+  private assertUniqueContent(baseId: string, hash: string, exceptId?: string): void {
+    const duplicate = this.requireStore().listDocuments(baseId).find(doc => doc.id !== exceptId && doc.contentHash === hash)
+    if (duplicate) throw new Error(`duplicate document: "${duplicate.title}" already contains identical content`)
   }
 
   /**
@@ -3989,6 +4040,7 @@ export class KnowledgeService extends Service {
     fileName?: string
     mimeType?: string
     url?: string
+    urlTitleOverride?: boolean
     parentDirectoryId?: string
     text: string
     documentId?: string
@@ -4007,6 +4059,7 @@ export class KnowledgeService extends Service {
     // imports of identical content must not both pass the check (Cherry guards
     // the same read-then-write with its per-base mutation lock).
     const half = await this.withBaseWriteLock(input.baseId, async () => {
+      signal?.throwIfAborted()
       // Cherry's deleting-guard: a base deleted while a queued import waited
       // must not accept new rows; a placeholder row deleted by the user before
       // its queued task ran must not be recreated.
@@ -4016,15 +4069,13 @@ export class KnowledgeService extends Service {
       if (input.placeholderId !== undefined && store.getDocument(input.placeholderId) === undefined) {
         throw new Error('document no longer exists (deleted while indexing)')
       }
-      for (const doc of store.listDocuments(input.baseId)) {
-        if (doc.id === input.placeholderId) continue
-        if (doc.contentHash === contentHash) {
-          throw new Error(`duplicate document: "${doc.title}" already contains identical content`)
-        }
-      }
+      this.assertUniqueContent(input.baseId, contentHash, input.placeholderId)
       const docId = input.placeholderId ?? input.documentId ?? crypto.randomUUID()
       const prior = input.placeholderId !== undefined ? store.getDocument(docId) : undefined
       const createdAt = prior?.createdAt ?? Date.now()
+      const snapshot = input.sourceType === 'url' && input.rawFilePath === undefined && input.placeholderId === undefined
+        ? await store.raw?.write(input.baseId, docId, '.md', encodeUtf8(input.text)) : undefined
+      const rawFilePath = snapshot ?? input.rawFilePath
       // Persist the document (with its source text) BEFORE embedding starts and
       // mark it incomplete: a crash mid-embedding then leaves a recoverable
       // record — startup recovery re-runs the embed with hash reuse, which only
@@ -4040,8 +4091,9 @@ export class KnowledgeService extends Service {
         ...(input.fileName !== undefined ? { fileName: input.fileName } : {}),
         ...(input.mimeType !== undefined ? { mimeType: input.mimeType } : {}),
         ...(input.url !== undefined ? { url: input.url } : {}),
+        ...(input.urlTitleOverride ? { urlTitleOverride: true } : {}),
         ...(input.parentDirectoryId !== undefined ? { parentDirectoryId: input.parentDirectoryId } : {}),
-        ...(input.rawFilePath !== undefined ? { rawFilePath: input.rawFilePath } : {}),
+        ...(rawFilePath !== undefined ? { rawFilePath } : {}),
         ...(input.sourcePath !== undefined ? { sourcePath: input.sourcePath } : {}),
         contentHash,
         rawText: input.text,
@@ -4052,7 +4104,13 @@ export class KnowledgeService extends Service {
         createdAt,
         updatedAt: Date.now(),
       }
-      await store.putDocument(halfDoc)
+      try {
+        signal?.throwIfAborted()
+        await store.putDocument(halfDoc)
+      } catch (error) {
+        if (snapshot !== undefined && store.getDocument(docId)?.rawFilePath !== snapshot) await store.raw?.delete(snapshot)
+        throw error
+      }
       return halfDoc
     })
     this.indexingFailures.delete(half.id)
@@ -4806,112 +4864,6 @@ function safeRawExtension(fileName: string): string {
 function rawExtensionOf(relativePath: string): string {
   const ext = extname(relativePath).toLowerCase()
   return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : '.bin'
-}
-
-/** Hosts that must never be fetched by URL import — loopback, link-local,
- *  and RFC1918 private ranges. Blocks the classic SSRF targets (metadata
- *  endpoints, internal services); DNS-rebinding is outside this check (the
- *  plugin trusts the host's resolver for public names).
- *
- *  Entries are the forms `URL.hostname` actually returns: it keeps the brackets
- *  on an IPv6 literal, and the lookup below strips them before comparing, so the
- *  previous bracketed entries could never match and EVERY IPv6 host bypassed the
- *  guard (`http://[::1]/`, `http://[::ffff:127.0.0.1]:11434/`). Literal
- *  addresses are now classified with `isIP` instead of a string table. */
-const BLOCKED_URL_HOSTS = new Set([
-  'localhost',
-  '0.0.0.0',
-  'metadata.google.internal',
-])
-
-/** Private, loopback, link-local, CGNAT, benchmarking, multicast and reserved
- *  IPv4 space: none of it is a legitimate target for a document-supplied URL. */
-function isBlockedIpv4(host: string): boolean {
-  const parts = host.split('.').map(part => Number(part))
-  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return true
-  const a = parts[0]!
-  const b = parts[1]!
-  if (a === 0 || a === 10 || a === 127) return true
-  if (a === 169 && b === 254) return true
-  if (a === 172 && b >= 16 && b <= 31) return true
-  if (a === 192 && b === 168) return true
-  if (a === 100 && b >= 64 && b <= 127) return true
-  if (a === 192 && b === 0) return true
-  if (a === 198 && (b === 18 || b === 19)) return true
-  if (a >= 224) return true
-  return false
-}
-
-/** Loopback, unspecified, unique-local, link-local and multicast IPv6, plus the
- *  forms that reach the IPv4 stack (IPv4-mapped, in both notations). */
-function isBlockedIpv6(host: string): boolean {
-  if (host === '::' || host === '::1') return true
-  const mappedDotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(host)
-  if (mappedDotted !== null) return isBlockedIpv4(mappedDotted[1]!)
-  const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host)
-  if (mappedHex !== null) {
-    const high = Number.parseInt(mappedHex[1]!, 16)
-    const low = Number.parseInt(mappedHex[2]!, 16)
-    return isBlockedIpv4(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`)
-  }
-  const firstGroup = host.split(':').find(part => part.length > 0)
-  const first = firstGroup === undefined ? 0 : Number.parseInt(firstGroup, 16)
-  if (Number.isNaN(first)) return true
-  if ((first & 0xfe00) === 0xfc00) return true // fc00::/7 unique local
-  if ((first & 0xffc0) === 0xfe80) return true // fe80::/10 link local
-  if ((first & 0xff00) === 0xff00) return true // ff00::/8 multicast
-  return false
-}
-
-function isBlockedUrlHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  if (BLOCKED_URL_HOSTS.has(host)) return true
-  const family = isIP(host)
-  if (family === 4) return isBlockedIpv4(host)
-  if (family === 6) return isBlockedIpv6(host)
-  // Named hosts keep the documented posture: the resolver is trusted, so only
-  // the explicit deny-list above applies.
-  return false
-}
-
-async function fetchHtml(url: string): Promise<string> {
-  // Manual redirect handling: `fetch` follows redirects by default, which
-  // would let a public page 302 to a loopback/private address and bypass the
-  // SSRF check below — every hop is validated here instead.
-  let current = url
-  for (let hop = 0; hop <= 5; hop += 1) {
-    let parsed: URL
-    try {
-      parsed = new URL(current)
-    } catch {
-      throw new Error(`invalid URL: ${current}`)
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new Error(`URL protocol not allowed: ${parsed.protocol}`)
-    }
-    if (isBlockedUrlHost(parsed.hostname)) {
-      throw new Error(`URL host not allowed: ${parsed.hostname}`)
-    }
-    const response = await httpFetch(parsed.toString(), {
-      method: 'GET',
-      headers: { 'user-agent': 'dsh-knowledge/0.1 (+knowledge-base-import)' },
-      timeoutMs: 30000,
-      redirect: 'manual',
-    })
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      if (location === null) throw new Error(`URL redirect without Location (HTTP ${response.status})`)
-      current = new URL(location, parsed).toString()
-      continue
-    }
-    if (!response.ok) throw new Error(`URL fetch failed: HTTP ${response.status}`)
-    const contentType = (response.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase()
-    if (contentType !== '' && contentType !== 'text/html' && contentType !== 'application/xhtml+xml') {
-      throw new Error(`URL did not return HTML (content-type: ${contentType || 'unknown'})`)
-    }
-    return response.text()
-  }
-  throw new Error('URL redirect limit exceeded')
 }
 
 /** Lowercased extensions accepted by addFileDocument (defensive gate; the UI filters first). */

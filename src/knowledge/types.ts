@@ -104,6 +104,15 @@ export interface KnowledgeBase {
   readonly updatedAt: number
 }
 
+/** Model-call catalogue. Names can be resolved even when the named base is
+ * disabled. Only enabled bases may supply evidence or reranker settings. */
+export interface InvocationScope {
+  readonly all: ReadonlyArray<Pick<KnowledgeBase, 'id' | 'name'>>
+  readonly enabled: ReadonlyArray<Pick<KnowledgeBase, 'id' | 'name'>>
+  /** Undefined allows every base. An empty selection allows none. */
+  readonly baseIds: string[] | undefined
+}
+
 /** Where a document's text came from. `directory` is a container of child items. */
 export type DocumentSourceType = 'text' | 'file' | 'url' | 'directory'
 
@@ -207,6 +216,10 @@ export interface KnowledgeDocument {
   readonly mimeType?: string
   /** Origin URL for sourceType 'url'. */
   readonly url?: string
+  /** Last successful refresh, including an unchanged response. */
+  readonly urlCheckedAt?: number
+  /** A user-supplied title takes precedence over the page title on refresh. */
+  readonly urlTitleOverride?: boolean
   /** Parent directory id, when this item lives inside a `directory` container. */
   readonly parentDirectoryId?: string
   /** Absolute path of the source directory this container was imported from

@@ -97,6 +97,8 @@ const documentSchema = z.object({
   fileName: z.string().optional(),
   mimeType: z.string().optional(),
   url: z.string().optional(),
+  urlCheckedAt: z.number().optional(),
+  urlTitleOverride: z.boolean().optional(),
   parentDirectoryId: z.string().optional(),
   /** Absolute path of the source directory this container was imported from
    *  (Cherry's pathStorage): reindexing the container rescans the path and

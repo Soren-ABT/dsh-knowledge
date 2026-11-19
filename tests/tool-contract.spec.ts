@@ -319,6 +319,21 @@ describe('model-facing knowledge tool contracts', () => {
     expect(value.hits.every(hit => hit.baseId === harness.primaryBase.id)).toBe(true)
   })
 
+  it('intersects a requested base list with the saved invocation scope', async () => {
+    const { ctx, knowledge, primaryBase, foreignBase } = harness
+    const search = async (baseIds: string[]) => valueOf<{ hits: { baseId: string }[] }>(
+      await execute(ctx, 'knowledge_search', { query: 'needle', baseIds }),
+    ).hits
+    expect((await search([foreignBase.id])).map(hit => hit.baseId)).toContain(foreignBase.id)
+    await knowledge.setEnabledBaseIds([primaryBase.id])
+    const hits = await search([primaryBase.id, foreignBase.id])
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits.every(hit => hit.baseId === primaryBase.id)).toBe(true)
+    expect(await search([foreignBase.id, 'missing'])).toEqual([])
+    expect(await search([])).toEqual([])
+    expectToolError(await execute(ctx, 'knowledge_search', { query: 'needle', baseId: foreignBase.id, baseIds: [] }), /either/)
+  })
+
   it('treats empty document and source-type filters as match-nothing', async () => {
     const emptyDocuments = valueOf<{ hits: unknown[] }>(await execute(harness.ctx, 'knowledge_search', {
       query: 'needle',
