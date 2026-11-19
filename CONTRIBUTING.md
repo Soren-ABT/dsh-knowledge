@@ -6,7 +6,8 @@ environment rather than an optional extra.
 
 ## Development setup
 
-Use Node.js 22.19.0 or Node.js 24 and pnpm 11.7.0. Check out the repositories
+Use Node.js 24.9.0 or newer and the pnpm version declared by each repository.
+Check out the repositories
 as siblings because the development dependencies use `link:../dsh/...`:
 
 ```text
@@ -15,12 +16,15 @@ workspace/
 └── dsh-knowledge/
 ```
 
-The compatibility anchor for 0.3.6 is DSH commit
-`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.
+For this release, source builds use DSH `0.2.2-rc.5` at the commit below.
+When preparing a new plugin release, pin the three most recently published
+`@deepseek-ai/dsh` versions in the packed-install matrix and align the source
+commit with the newest one. The `Packed DSH compatibility` check covers all
+three public CLIs on Windows and Ubuntu.
 
 ```bash
 git clone https://github.com/deepseek-ai/deepseek-harness.git dsh
-git -C dsh checkout b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
+git -C dsh checkout 9c2670d3bce5275e0d1610272958121af87787bb
 git clone https://github.com/Soren-ABT/dsh-knowledge.git dsh-knowledge
 cd dsh
 pnpm install --frozen-lockfile

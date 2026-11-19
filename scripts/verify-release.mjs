@@ -6,19 +6,16 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const VERSION = String.raw`\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?`
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'))
 }
 
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 export function validateReleaseMetadata({ pkg, manifest, changelog, releaseNotes, readme, readmeEn, issueTemplate, tag, expectedVersion }) {
   const errors = []
   const version = typeof pkg.version === 'string' ? pkg.version.trim() : ''
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+  if (!new RegExp(`^${VERSION}$`).test(version)) {
     errors.push(`package.json has invalid version ${JSON.stringify(pkg.version)}`)
     return errors
   }
@@ -32,16 +29,18 @@ export function validateReleaseMetadata({ pkg, manifest, changelog, releaseNotes
   }
   if (pkg.packageManager !== 'pnpm@11.7.0') errors.push('packageManager must be pnpm@11.7.0')
 
-  const escapedVersion = escapeRegExp(version)
-  const changelogRelease = changelog.match(/^##[ \t]+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?=[ \t]*(?:—|-|$))/m)?.[1]
+  if (version.includes('-beta.') && pkg.publishConfig?.tag !== 'beta') errors.push('beta releases must use the npm beta tag')
+  if (!version.includes('-') && pkg.publishConfig?.tag === 'beta') errors.push('stable releases must clear the npm beta tag')
+
+  const changelogRelease = changelog.match(new RegExp(`^##[ \\t]+v?(${VERSION})(?=[ \\t—:]|$)`, 'm'))?.[1]
   if (changelogRelease === undefined) {
     errors.push('CHANGELOG has no release heading')
   } else if (changelogRelease !== version) {
     errors.push(`CHANGELOG first release is ${changelogRelease}, expected ${version}`)
   }
 
-  const releaseHeading = new RegExp(`^#{1,6}[ \\t]+.*\\bv${escapedVersion}(?=[ \\t]*(?:—|-|:|$))`, 'mi')
-  if (!releaseHeading.test(releaseNotes)) errors.push(`release notes heading does not name v${version}`)
+  const notesVersion = releaseNotes.match(new RegExp(`^#{1,6}[ \\t]+.*?\\bv(${VERSION})(?=[ \\t—:]|$)`, 'mi'))?.[1]
+  if (notesVersion !== version) errors.push(`release notes heading does not name v${version}`)
 
   if (tag !== undefined && tag !== `v${version}`) errors.push(`release tag is ${tag}, expected v${version}`)
 
@@ -51,18 +50,21 @@ export function validateReleaseMetadata({ pkg, manifest, changelog, releaseNotes
   // user-facing, so they are checked here rather than left to whoever notices.
   for (const [label, text] of [['README.md', readme], ['README.en.md', readmeEn]]) {
     if (typeof text !== 'string') continue
-    const installLines = [...text.matchAll(/dsh-knowledge-(\d+\.\d+\.\d+)\.tgz/g)].map(match => match[1])
+    const installLines = [...text.matchAll(new RegExp(`dsh-knowledge-(${VERSION})\\.tgz\\b`, 'g'))].map(match => match[1])
     for (const found of installLines) {
       if (found !== version) errors.push(`${label} install example names dsh-knowledge-${found}.tgz, expected ${version}`)
     }
     if (installLines.length === 0) errors.push(`${label} has no dsh-knowledge-<version>.tgz install example`)
-    const highlight = text.match(/^##[ \t]+v(\d+\.\d+\.\d+)[ \t]+(?:更新重点|highlights)/m)?.[1]
+    for (const [, pinned] of text.matchAll(new RegExp(`\\badd[ \\t]+dsh-knowledge@(${VERSION})`, 'g'))) {
+      if (pinned !== version) errors.push(`${label} npm install example names ${pinned}, expected ${version}`)
+    }
+    const highlight = text.match(new RegExp(`^##[ \\t]+v(${VERSION})[ \\t]+(?:更新重点|highlights)`, 'm'))?.[1]
     if (highlight !== undefined && highlight !== version) {
       errors.push(`${label} highlights section is v${highlight}, expected v${version}`)
     }
   }
   if (typeof issueTemplate === 'string') {
-    const placeholder = issueTemplate.match(/placeholder:[ \t]*["']?(\d+\.\d+\.\d+)/)?.[1]
+    const placeholder = issueTemplate.match(new RegExp(`placeholder:[ \\t]*["']?(${VERSION})`))?.[1]
     if (placeholder !== undefined && placeholder !== version) {
       errors.push(`bug report template placeholder is ${placeholder}, expected ${version}`)
     }
@@ -138,6 +140,20 @@ function selfTest() {
     validateReleaseMetadata({ ...fixture, readme, readmeEn: readme, issueTemplate: 'placeholder: 0.3.6' }).join('\n'),
     /bug report template placeholder is 0\.3\.6, expected 1\.2\.3/,
   )
+  const version = '1.2.3-beta.1'
+  const betaReadme = `dsh plugin add dsh-knowledge@${version}\ndsh plugin add ./dsh-knowledge-${version}.tgz`
+  const beta = {
+    pkg: { ...fixture.pkg, version, publishConfig: { tag: 'beta' } }, manifest: { version },
+    changelog: `## ${version} — Prerelease`, releaseNotes: `# dsh-knowledge v${version}`,
+    readme: betaReadme, readmeEn: betaReadme, issueTemplate: `placeholder: ${version}`, tag: `v${version}`,
+  }
+  assert.deepEqual(validateReleaseMetadata(beta), [])
+  assert.match(validateReleaseMetadata({ ...beta, readmeEn: betaReadme.replace('-beta.1.tgz', '-beta.2.tgz') }).join('\n'), /README\.en\.md install example/)
+  assert.match(validateReleaseMetadata({ ...beta, readme: betaReadme.replace('@1.2.3-beta.1', '@1.2.3') }).join('\n'), /README\.md npm install example/)
+  assert.match(validateReleaseMetadata({ ...beta, issueTemplate: 'placeholder: 1.2.3' }).join('\n'), /bug report template placeholder/)
+  assert.match(validateReleaseMetadata({ ...fixture, releaseNotes: beta.releaseNotes }).join('\n'), /release notes heading/)
+  assert.match(validateReleaseMetadata({ ...beta, pkg: { ...beta.pkg, publishConfig: {} } }).join('\n'), /npm beta tag/)
+  assert.match(validateReleaseMetadata({ ...fixture, pkg: { ...fixture.pkg, publishConfig: { tag: 'beta' } } }).join('\n'), /clear the npm beta tag/)
   console.log('verify-release self-test passed')
 }
 

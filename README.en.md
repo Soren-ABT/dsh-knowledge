@@ -22,28 +22,20 @@ A **knowledge base system** as a standalone, open-source bundle plugin for [Deep
 
 ## Why dsh-knowledge
 
-dsh-knowledge brings document ingestion, parsing, chunking, retrieval, evidence composition, and anchored follow-up reading into DSH. It works without vector configuration and can also run with fully local models, without a separate knowledge-base service.
+Bring project manuals, papers, and team wikis into DSH. In chat, you can search for a passage, cite it, and read what comes next. Start with keyword search and add an embedding model to the libraries that need semantic search.
 
-| Capability | What it provides |
-|---|---|
-| Document sources | Files, directories, web pages, and text notes, with durable local-path rescans and reindexing |
-| Hybrid retrieval | FTS5 BM25, vector recall, RRF fusion, MMR diversity, and optional reranking |
-| Evidence context | Ordered `ContextWindow` composition and continuation around a specific search hit |
-| Local operation | Local embeddings, reranking, and OCR, plus OpenAI-compatible APIs and Ollama |
-| Document processing | Common office formats, scanned PDFs, PaddleOCR, Tesseract fallback, and optional MinerU |
-| Management UI | Base groups, batch import, previews, recall testing, model management, and index rebuilds |
+| What you want to do | How it works |
+| --- | --- |
+| Keep sources together | Import files, directories, text notes, HTML pages, or raw Markdown URLs. Group bases by project and preview the original document, its chunks, and processing progress in the panel. |
+| Keep a library current | Bind a directory to a path DSH can access and sync additions, edits, and deletions manually or on a schedule. Refresh a web page or Markdown URL in place while retaining its document ID, folder, and custom title. |
+| Read scans and complex PDFs | Use local OCR for scanned PDFs. For tables, equations, or multi-column layouts, choose cloud or self-hosted MinerU. Results with structured source information can point back to a page and region. [MinerU setup](./docs/mineru-self-hosted.md) |
+| Find an exact term or a related idea | Use keywords for identifiers and terminology, vectors for paraphrases, or hybrid search to combine both. Filter by document, title, source, or update time and optionally rerank the results. |
+| Check a citation | Each hit includes the document title and chunk position. Read the surrounding passage or follow a citation to its source block when structured parsing is available. Recall Test shows scores and timing and lets you copy a citation. |
+| Choose what reaches the model | Enable the bases available to chat. Automatic retrieval can supply evidence before an answer and carry the topic into a follow-up. An explicit search can target one base or a subset of the enabled bases. |
 
----
+## Install and try it
 
-## Quick start
-
-### 1. Prepare the environment
-
-- Node.js: `^22.19.0 || >=24.0.0`
-- pnpm: `>=10`
-- An installed and initialized DeepSeek Harness profile
-
-Before installing the plugin, **merge** the following build permissions into the target profile's existing `allowBuilds` mapping in `pnpm-workspace.yaml`. Do not add a second `allowBuilds:` key: duplicate YAML keys make the file invalid. These dependencies require installation-time builds; when pnpm 10 blocks them, `dsh plugin add` exits before it can register the bundle.
+Use Node.js 24.9.0 or newer for the DSH releases listed here and choose a working profile. Merge these entries into `allowBuilds` in the profile’s `pnpm-workspace.yaml`.
 
 ```yaml
 allowBuilds:
@@ -54,585 +46,52 @@ allowBuilds:
   tesseract.js: false
 ```
 
-### 2. Install the plugin
+Choose one command and replace `<profile>` with your profile name. The first installs the npm stable release. The second installs this exact beta once it is published.
 
-```bash
-dsh plugin --profile <name> add dsh-knowledge
+```sh
+dsh plugin --profile <profile> add dsh-knowledge
+dsh plugin --profile <profile> add dsh-knowledge@0.6.0-beta.1
 ```
 
-The plugin is installed at the profile level, so the same command works whether DSH came from npm or a source checkout. Restart the web service after installation and refresh the page to load the management panel.
+To try a locally packed release candidate, run `dsh plugin --profile <profile> add ./dsh-knowledge-0.6.0-beta.1.tgz`. Restart the DSH web service and refresh the page.
 
-### 3. Complete the first setup
+1. Open **Knowledge** at the bottom of the sidebar. Create a base and import a document you know. Supported formats include PDF, Word, PowerPoint, Excel, EPUB, Markdown, HTML, CSV, JSON, and plain text.
+2. Enter a phrase from the document in **Recall Test**. Inspect the matching passage and its neighbors. Keyword search works immediately.
+3. Enable the base and ask a question that calls for a source, such as “What is the return period in the manual? Cite the clause and check the exceptions that follow.”
 
-1. Open Knowledge from the bottom of the sidebar, beside Settings.
-   Shared footer actions divide the available width; collapsed sidebars stack the icon buttons. In desktop shells the panel reserves a draggable titlebar band above its actions. Hosts can set `--host-titlebar-inset` (or `--dsh-windows-titlebar-height`) on the document root; otherwise Electron/Tauri use 38px on macOS and 40px on Windows. DOM fullscreen and `data-fullscreen="true"` on the root remove the band.
-2. Create a base and import files, a directory, a web page, or text.
-3. For local vector retrieval, download an embedding model from Settings > Local Models. You can instead configure an OpenAI-compatible endpoint or Ollama.
-4. Download the approximately 21 MB OCR model if you need scanned-document recognition.
-5. Check results in Recall Test, then let the model use the base through `knowledge_search`.
+## Retrieval and model settings
 
-Lexical retrieval works without downloading a model. Scanned-document OCR, local embeddings, and local reranking activate only after their respective models are downloaded and pass readiness checks.
+| Setup | Configuration |
+| --- | --- |
+| Work offline | Use the default keyword search. For semantic search, reranking, or OCR, download the corresponding models in **Local Models** once and run them on your machine. |
+| Use an inference service | Embeddings support OpenAI-compatible endpoints and Ollama. Reranking can use a compatible remote rerank endpoint. An optional vision model can caption images or tables. The processing steps you enable determine what is sent to a remote service. |
+| Tune individual projects | Set global defaults, then override chunking, retrieval mode, models, or automatic retrieval weight per base. Rebuild a base’s index after switching embedding models. |
 
-<details>
-<summary>Other installation methods</summary>
+## What agents can do
 
-```bash
-# Tarball from GitHub Releases or npm pack
-dsh plugin --profile <name> add ./dsh-knowledge-0.5.4.tgz
-
-# Local source directory; build it first
-dsh plugin --profile <name> add file:/path/to/dsh-knowledge
-```
-
-If the first installation fails because pnpm blocked build scripts, add the `allowBuilds` entries and run the add command again. The package is normally already present in `node_modules`, and the second run completes bundle registration.
-
-</details>
-
-<details>
-<summary>Recover from <code>ERR_PNPM_WORKSPACE_MANIFEST_WRITER_PARSE</code></summary>
-
-This means pnpm could not parse the DSH profile's own `pnpm-workspace.yaml`; it happens before this plugin is downloaded or built. Back up the file first, then repair the YAML line named in the error:
-
-- Windows: `%USERPROFILE%\.dsh\profiles\<profile>\pnpm-workspace.yaml`
-- macOS / Linux: `~/.dsh/profiles/<profile>/pnpm-workspace.yaml`
-
-Do not overwrite the file if you do not know what its existing settings do. If the profile has no other intentional pnpm settings, it can be restored to this minimal valid configuration:
-
-```yaml
-packages:
-  - .
-
-nodeLinker: hoisted
-autoInstallPeers: false
-
-allowBuilds:
-  esbuild: true
-  onnxruntime-node: true
-  protobufjs: true
-  sharp: true
-  tesseract.js: false
-```
-
-Then rerun the same `dsh plugin --profile <profile> add ...` command. If YAML repair reveals `ERR_PNPM_IGNORED_BUILDS`, that is a separate build-approval error: add only the exact package key printed by pnpm, rather than broadly allowing scripts.
-
-</details>
-
----
-
-## Core capabilities
-
-### Documents and source tracking
-
-- Create, rename, group, and delete bases; collapse groups in the sidebar and move bases between them.
-- Deleting a base also removes its document records. Startup recovery cleans up records left by previously deleted bases instead of repeatedly resuming their imports; no manual rebuild is needed.
-- Import documents from uploads, absolute file paths, directories, URLs, or plain text. Directory sources retain a stable ID, kind, and original path for later rescans.
-- URL import accepts HTML pages and raw UTF-8 Markdown. A raw link ending in `.md` or `.markdown` also works when the server sends `text/plain`, sends `application/octet-stream`, or omits the media type. Each download has an 8 MiB limit and a 30-second budget including retries and redirects. Refresh preserves the document ID, folder and custom title.
-- Upload up to 20 files per selection, with a 22 MB per-file limit and a five-way background import pool.
-- Resolve same-name conflicts through server-authoritative rename, replace, or cancel choices; content hashes prevent duplicate imports.
-- Track queued, parsing, embedding, ready, and failed states, with inline PDF, source-text, and complete chunk previews.
-- Store recoverable raw sources. Identical relative paths under different directory roots do not collide, and a failed replacement rebuild keeps the previously committed source.
-
-<details>
-<summary>Supported formats and directory behavior</summary>
-
-Directory imports recursively scan `txt`, `md`, `csv`, `html`, `json`, `pdf`, `docx`, `doc`, `pptx`, `ppt`, `xlsx`, `xls`, `epub`, and other supported formats while retaining a drillable folder tree in the panel.
-
-A directory rescan imports new files, rebuilds changed files, and removes files that disappeared from disk. One failed item does not obscure successful imports; the service and UI retain per-file errors.
-
-Browser directory uploads are file copies. Use **Bind disk directory** to attach an absolute path visible to the DSH server, then **Rescan directory**. The original directory ID is retained and uniquely matching uploaded files are adopted in place. WSL deployments must use paths visible inside WSL.
-
-Bound top-level directories support manual sync (the default) or 5, 15, and 60 minute intervals. Settings and the latest result summary persist; the panel reports created, updated, deleted, unchanged, and failed items. Each interval starts after the previous run completes, and a restart waits a full interval. Deleting the source or base stops its timer. Manual, scheduled, and agent operations share the same sync queue. After publishing a Wiki, an agent can call `knowledge_reindex_document` with the directory ID and omit `mode`; inspect `sync.status`, `sync.failed`, and `sync.items` for partial failures. The management API is `PUT /knowledge/documents/<sourceId>/sync-settings`, for example `{"intervalMinutes": 5}`; supported values are 5, 15, 60, and 0 to disable scheduled sync.
-
-**How to update an already-imported directory**: import the same path again, or rescan the directory container in the panel. Both now take the same synchronization path and update the original tree in place. A directory source is identified by its knowledge base plus its resolved real path, so a repeat import never builds a second tree. Files inside it are identified by that source plus their relative path; a legacy file is adopted only when its name and kind are unique, and two candidates are reported as `ambiguous_source` rather than guessed, merged, or deleted. Administrative document details return the container's `sourcePath`, so a client can tell which container to rescan.
-
-</details>
-
-### Retrieval and evidence flow
-
-- Without embeddings, retrieval uses CJK bigrams and Latin-token BM25. With vectors available, bases can use auto, hybrid, vector, or lexical mode.
-- Hybrid retrieval combines BM25 and vector rankings through Reciprocal Rank Fusion, with optional similarity thresholds, MMR diversity, and multi-query fusion.
-- Remote and local cross-encoder rerankers are optional. A timeout, process failure, or invalid score response preserves the original recall order.
-- Every hit receives a dynamically composed `ContextWindow` ordered as `before → anchor → after`; bridge text is never duplicated into the index or embeddings.
-- Proactive retrieval is enabled by default and injects strongly relevant evidence before the answer while bounding latency, duplicate context, and each base's share.
-- Recall Test shows sources, relevance, lexical/vector scores, latency, and rerank state, and supports citation copying and query-history replay.
-
-<details>
-<summary>ContextWindow and proactive-retrieval details</summary>
-
-`SearchHit.text` remains the complete canonical anchor. `contextWindow` stays within the same heading path by default, crops oversized anchors around the query at sentence boundaries, and removes repeated suffix/prefix text between adjacent chunks. The legacy `siblingContext` field remains compatible throughout 0.3.x, but new consumers should prefer `contextWindow`.
-
-`knowledge_get_document` supports normal `chunkOffset` / `chunkLimit` pagination and an anchored mode selected with `anchorChunkId` or `anchorIndex`. Anchored reads accept `before`, `after`, `maxTokens`, `focus`, and `crossHeading` controls.
-
-The first-token proactive path never launches a local reranker. A remote reranker may run at most once within the shared four-second deadline. Cancellation, timeouts, and provider failures do not mutate retrieval memory or widen the search into unrelated bases.
-
-v0.5.2 fixes #51: evidence and document-read trimming preserve UTF-16 surrogate pairs in emoji and other astral characters. Existing lone surrogates in model-facing text are replaced with `U+FFFD` to avoid upstream JSON parsing failures. Stored text and character offsets are retained; previously poisoned session history is not repaired automatically.
-
-</details>
-
-### Chunking, parsing, and OCR
-
-- Heading-aware chunking preserves Markdown heading paths and fenced code, and includes the document title and heading path as retrieval context.
-- `chunkSize` and `chunkOverlap` are token budgets. Long text looks for boundaries in headings, code, paragraphs, sentence punctuation, lists, and line breaks.
-- Optional semantic chunking merges similar adjacent paragraphs; an optional token ceiling further divides oversized chunks near sentence, comma, or whitespace boundaries.
-- Scanned PDFs, vector-only PDFs without a text layer, corrupt text layers, and per-glyph layouts can switch automatically to full-page OCR.
-- PaddleOCR PP-OCRv5 is the primary local recognizer, with Tesseract fallback. The pipeline also handles 1-bit JBIG2/CCITT-style scans.
-- OCR inference runs in a separate process: a native crash or timeout fails the document without killing DSH. Page scaling is chosen before allocation under a 64 MiB raster budget, and each pixmap is explicitly released. Missing pages and work-budget limits fail visibly instead of completing with truncated text. Reparse scans that older versions already indexed with missing pages.
-- Optional remote MinerU processing can recover formulas, tables, and complex layouts as Markdown. Without it, documents continue through the local parser and OCR path.
-- Settings offer an experimental managed MinerU Basic/ONNX setup. It uses an isolated Python environment and pinned model revision/checksums, with separate Hugging Face mirror and Python package-index settings. Managed inference still requires per-platform qualification; setup does not modify global Python packages or silently switch to cloud parsing. See the [MinerU self-hosting and verification guide](docs/mineru-self-hosted.md).
-
-### Models and management UI
-
-- Each base can override embedding, reranking, chunking, topK, proactive retrieval, conflict handling, and document-processing settings; empty fields inherit global values.
-- Embeddings can come from an OpenAI-compatible `/embeddings` endpoint, Ollama, or a local transformers.js model.
-- The Local Models page manages embedding, rerank, and OCR downloads, retries, deletion, progress, readiness, and health state.
-- The cache directory supports native folder selection, opening, and safe migration so large local weights can live outside the system drive.
-- Ollama management supports listing, pulling, cancelling, and deleting models. Browsing or pulling never changes the active embedding configuration implicitly.
-- The management panel provides base navigation, document tables, batch rebuild/delete actions, source and chunk previews, recall testing, global/per-base settings, and toast feedback.
-- Startup artifact maintenance runs in the background so its document scan does not delay service readiness. Live, staged, and recoverable-job revisions stay protected; unused revisions are retained for seven days. No reindex is required after upgrading.
-
-**v0.5.1 fix (issue #42):** Cache-directory Browse/Open and the MinerU installation-directory picker support DSH 0.2's new interfaces and the older interfaces. Cancelling preserves the existing input. If the Host lacks a capability, cache-directory actions display a notice and MinerU hides the picker button; paths remain editable manually.
-
-Open uses the effective cache directory when the input is empty. The backend expands `~` and can create a missing target directory. Opening does not save configuration, move models, or start a download.
-
-**v0.5.2 fixes (#47 / #49):** Directory actions query the optional `remote.session` service when needed, preventing an inject-gate crash and following later service registration or replacement. Local text models use Transformers.js 4.3.1 / ONNX Runtime 1.30.0; the lockfile resolves sharp 0.35.5, fixing three high-severity advisories. Cached weights are retained, but health records from the old runtime require revalidation in Settings. See the [security policy](SECURITY.md).
-
-<details>
-<summary>How local models run</summary>
-
-The default local embedding model is `onnx-community/Qwen3-Embedding-0.6B-ONNX`, approximately 585 MB with 1024 output dimensions. It runs in a dedicated child process with versioned IPC. The process can release idle sessions, and a crash or hard timeout is recovered by starting a clean child without restarting DSH. Downloads use model-specific staging storage; only a successful isolated load and vector probe are promoted and recorded in a fingerprinted readiness marker.
-
-`rerankModel: local:Xenova/bge-reranker-base` runs in its own child process, independent from the embedding process. Search never downloads a reranker implicitly; the model must be downloaded and pass its health check first. Custom Hugging Face ONNX rerankers are experimental and must pass single-logit capability validation plus a positive/negative self-test.
-
-Models are cached under `<DSH_HOME>/cache/dsh-knowledge/local-models` by default. Set `hfEndpoint` in the panel or use the `HF_ENDPOINT` environment variable to choose a mirror. OCR defaults to `hf-mirror.com`; users outside China can use `https://huggingface.co`.
-
-A download is **not tied to the HTTP request that started it**: it keeps running in the background after that request returns, so closing the browser or letting a client time out never cancels it — progress stays visible through the local model status. Stopping a download requires an explicit cancel, and cancelling stops only an in-flight transfer: a complete, validated model is never deleted (that is what delete is for). The request budget is re-armed by progress, so a slow link is never killed for taking long; only a long stretch with no progress is treated as stuck.
-
-</details>
-
-### Model-facing tools
-
-The plugin exposes 14 tools. Reads, writes, and proactive retrieval all obey the enabled-base boundary; an empty or stale selection matches zero bases instead of silently expanding to the entire library. Permanent deletion requires host approval.
-
-<details>
-<summary>View all tools</summary>
-
-- `knowledge_search`
-- `knowledge_list_bases`
-- `knowledge_create_base`
-- `knowledge_delete_base`
-- `knowledge_add_document`
-- `knowledge_list_documents`
-- `knowledge_delete_document`
-- `knowledge_import_url`
-- `knowledge_refresh_url`
-- `knowledge_stats`
-- `knowledge_get_document`
-- `knowledge_read_document`
-- `knowledge_reindex_document`
-- `knowledge_reindex_base`
-
-`knowledge_search` returns citations, `chunkIndex`, and an ordered `ContextWindow`. `knowledge_read_document` supports character-range reads and regex location, while `knowledge_get_document` supports pagination and continuation around a retrieval anchor.
-
-Pass `baseId` to search one base or `baseIds` to search a subset of the enabled bases. Omitting both uses the panel's enabled scope. An explicit `baseIds: []` returns zero hits.
-
-</details>
-
-#### Exclude documents per request (issue #39, pending release)
-
-HTTP `POST /knowledge/search` accepts `excludeDocIds` and `titleExcludes` inside `filter`. The `knowledge_search` tool accepts the same names as top-level arguments. For example, exclude bibliography, table-of-contents, and processing-log documents by title:
+`knowledge_search` accepts `baseId` or `baseIds`. For example, get the IDs from `knowledge_list_bases` and search just the manuals and policies, excluding documents with “contents” in the title.
 
 ```json
-{
-  "query": "formula usage",
-  "topK": 5,
-  "filter": {
-    "titleExcludes": ["bibliography", "table of contents", "processing log"]
-  }
-}
+{"query":"return period","baseIds":["<manuals ID>","<policies ID>"],"titleExcludes":["contents"]}
 ```
 
-The example above is an HTTP request body. Tool arguments are:
-
-```json
-{
-  "query": "formula usage",
-  "topK": 5,
-  "titleExcludes": ["bibliography", "table of contents", "processing log"]
-}
-```
-
-- `excludeDocIds` excludes exact document IDs. Obtain IDs with `GET /knowledge/bases/<baseId>/documents` or `knowledge_list_documents`. The canonical field is `excludeDocIds`; `notDocIds` is not a supported alias.
-- `titleExcludes` is an array of strings. Terms are trimmed and matched as case-insensitive literal substrings; any nonblank match excludes the document. Terms are not regular expressions.
-- Both fields combine with `docIds`, `titleIncludes`, `sourceTypes`, `updatedAfter`, and `updatedBefore`. Exclusion wins over inclusion. Empty exclusion arrays, blank title terms, and unknown IDs have no effect; `docIds: []` still matches zero documents.
-- Exclusions apply before candidate limits in lexical, vector, and memory retrieval, including short-query fallback, multiple queries, fusion, MMR, and reranking. Excluded documents cannot consume TopK slots. ID filter sets can exceed 500 entries.
-- Both new HTTP fields must be arrays of strings; malformed values return `400 invalid_request`. The tool validates its parameter schema. HTTP requests without `baseId` search all bases; the tool still obeys enabled-base scope. To target one base, pass its actual ID rather than an empty string.
-
-Filters apply only to the current request. No database migration, reindex, or document move is required, and requests without exclusions retain their existing behavior.
-
-### Storage and indexes
-
-- Bases, documents, and runtime configuration are persisted through DSH `storageDomain`.
-- Chunks live in a dedicated SQLite file at `<DSH_HOME>/storages/knowledge-chunks.sqlite`, configurable through `chunkStorePath`.
-- Lexical retrieval uses a SQLite FTS5 trigram index; vectors use a resident Float32Array cache with precise invalidation.
-- Legacy JSON chunk data is migrated idempotently on first start. The service falls back to memory storage when no persistent backend is available.
-- After changing chunk or embedding settings, rebuild one document or the entire base from the panel or model tools.
-- Metadata writes for bases, documents, and global configuration share one queue. `EPERM`, `EBUSY`, and `EACCES` receive bounded retries after 20/50/100/200/400 ms, for at most six write attempts. Persistent I/O errors are reported and retain the previous metadata.
-- After a successful startup load, a failed self-healing write warns and skips remaining cleanup, keeping the durable library readable. Background recovery handles each document independently; failure to persist recovery state does not cause an unhandled rejection or terminate the host (#55). No format migration or disabling `resumeInterruptedOnStartup` is required; the host's general `rename` issue still needs an upstream fix.
-- `knowledge.json` contains base names, document records, and configuration; do not delete it as disposable cache. A SQLite-only backup is incomplete: retain storage-domain metadata, SQLite, and `knowledge-raw` together.
-
----
-
-## v0.5.4 highlights
-
-- **Chunk quality (#67 / #68):** filter recognized markup-only fragments and merge short smart chunks within their heading section and size budget. Preserve literal code and authored content; completed empty indexes no longer restart recovery on every boot.
-- **Startup and deletion (#70 / #73 / #74):** collect artifacts in the background with at most four workers, resolve current revision pins before deletion, and cancel on unload. Deleting a base also collects its document records; startup recovery removes historical base-less records.
-- **Desktop layout (#69 / #72 / #75):** keep panel actions below native window controls, share footer width between plugin actions, and stack icons in collapsed sidebars.
-- **Host dependency (#71):** declare the runtime `zod` peer dependency and verify it when checking the package.
-- **Upgrade:** no database-format migration or model redownload is required from 0.5.3. Existing indexes remain usable; manually rebuild documents to apply the new chunking rules. The first cleanup of a large historical orphan set can still take time.
-
-[Read the v0.5.4 release notes](./docs/releases/v0.5.4.md) · [Read the changelog](./CHANGELOG.md)
-
----
-
-## v0.5.3 highlights
-
-- **Adaptive embedding batches (#62 / #57):** ordinary and semantic chunking halve the actual rejected batch when a remote endpoint caps input count. Local inference retains its eight-input cap and allocation-error fallback. Settings expose batch sizes and CPU presets; runtime status distinguishes downloaded readiness from memory residency.
-- **Directory sync (#57):** explicitly rescan or rebind a source path, or opt into per-source 5/15/60-minute automatic sync. Existing sources remain manual, and failed files can be retried even when their contents are unchanged.
-- **Global settings and retrieval (#59):** edit global defaults or per-base settings, inspect saved effective configuration, and validate affected bases before global embedding-model changes. Multi-query retrieval applies vector similarity thresholds before RRF fusion to avoid discarding valid results.
-- **Write recovery and dependency security (#55):** serialize metadata writes, retry Windows file-lock errors within a fixed budget, and isolate background recovery failures. Upgrade undici to 7.30.1 while retaining strict production auditing.
-- **Upgrade:** no database migration or library-wide rebuild is required from 0.5.2. After upgrading, rebuild documents whose embeddings previously failed. Back up storage-domain metadata, SQLite and `knowledge-raw` together.
-
-[Read the v0.5.3 release notes](./docs/releases/v0.5.3.md) · [Read the changelog](./CHANGELOG.md)
-
----
-
-## v0.5.2 highlights
-
-- **Unicode text safety (#51):** preserve UTF-16 surrogate pairs when trimming evidence, document reads and source labels. Replace lone surrogates with `U+FFFD` in retrieval injection, tool output, the usage prompt, and embedding/rerank inputs to avoid upstream JSON parsing failures.
-- **Settings recovery (#47):** access the optional `remote.session` service when needed, restoring Local Models settings and directory actions even when host services register late or are replaced.
-- **Dependency security (#49):** upgrade to Transformers.js 4.3.1, lock sharp 0.35.5, and remove all previous audit exceptions. Production auditing rejects every high/critical advisory.
-- **Upgrade:** no database migration or reindexing. Retain cached weights and revalidate health in Settings after the runtime upgrade. Previously poisoned sessions need separate repair; existing DSH profiles should also verify that every installed sharp version is at least 0.35.5.
-
-[Read the v0.5.2 release notes](./docs/releases/v0.5.2.md) · [Read the changelog](./CHANGELOG.md)
-
----
-
-## v0.5.1 highlights
-
-- **Search exclusions (#39):** HTTP `filter` and `knowledge_search` support `excludeDocIds` and `titleExcludes` alongside inclusion filters. Exclusions apply before candidate and TopK limits.
-- **Directory compatibility (#42):** restore cache Browse/Open and MinerU directory selection on DSH 0.2, retain legacy interfaces, and preserve cancellation and manual entry.
-- **Upgrade:** no database migration, reindexing or document relocation is required when upgrading from 0.5.0. No dependencies are added.
-
-[Read the v0.5.1 release notes](./docs/releases/v0.5.1.md) · [Read the changelog](./CHANGELOG.md)
-
----
-
-## v0.5.0 highlights
-
-- **Structured evidence chain:** preserve parser page references, block ranges, tables and formula structure through chunking, indexing, retrieval context and anchored evidence reads. Rechunking can reuse saved parse artifacts instead of parsing the source again.
-- **Optional managed MinerU (experimental):** preflight an isolated Python environment, verify model files, configure Hugging Face/Python package sources, and inspect deployment state. A candidate becomes usable only after a real PDF parse probe succeeds. Existing cloud APIs and external self-hosted services remain available.
-- **Recoverable processing:** share ingestion and rebuild paths, expose queue/progress state, and keep the previous usable index generation when replacement fails.
-- **Verification boundary:** unit tests, retrieval benchmarks, package checks and worker smoke pass locally. The Windows/Linux managed MinerU install matrix and live-browser settings acceptance are still pending, so managed MinerU remains experimental; no OCR accuracy or cross-platform stability certification is claimed.
-
-This release adds structured evidence and processing capabilities. Upgrade compatibility with existing data is subject to the release candidate's separate migration/upgrade checks. Managed MinerU does not download models by default; users must explicitly preflight and confirm installation into an isolated environment.
-
-[Read the v0.5.0 release notes](./docs/releases/v0.5.0.md) · [Read the changelog](./CHANGELOG.md)
-
----
-
-## v0.4.1 highlights
-
-- **A failed MinerU import is no longer a dead end** (issue #30). When MinerU extraction failed and the local fallback failed too, the document was left as a placeholder row holding the raw PDF but no text and no chunks, and rebuilding it only reported `has no source text to reindex` — with no way out from the panel or the API. Import, single-document rebuild and crash recovery now share one extraction chain, so a rebuild retries MinerU. A double failure reports both reasons instead of writing MinerU's real reason only to the log.
-- **Five deferred audit items closed**: `rawTextLimit` is clamped, an unknown knowledge base answers 404 from the statistics route, chunking no longer emits empty chunks, `context.ts` is no longer bundled twice, and the stress script is inside the typecheck. The retrieval benchmark also runs against a throwaway `DSH_HOME` instead of the developer's real profile.
-- This is a patch release. The main 0.4.0 changes — directory source identity, truthful reporting, the delete-cascade guard, the local model lifecycle — are in the section below and in the v0.4.0 release notes.
-
-0.4.1 needs no database migration, no forced reindex and no model redownload. The one behaviour change a client can notice is that the statistics route now answers 404 for an unknown knowledge base instead of a zero-filled 200.
-
-[Read the v0.4.1 GitHub Release](https://github.com/Soren-ABT/dsh-knowledge/releases/tag/v0.4.1) · [Read the changelog](./CHANGELOG.md) · [v0.4.1 release notes](./docs/releases/v0.4.1.md)
-
----
-
-## v0.4.0 highlights
-
-- A directory source is identified by its base plus its canonical real path, so re-importing the same directory synchronizes the original tree in place instead of building a second root.
-- The first import, a repeat import, a single-file reindex, and the base-wide background reindex now share one sync engine. Each item reports created / updated / unchanged / deleted / failed; unchanged is never a failure, and a partly failed sync returns `partial` while keeping the work that succeeded.
-- Files in a directory are identified by directory source plus relative path. A tree that old behaviour already duplicated is reported as `ambiguous_source` and is never guessed, merged, or auto-deleted.
-- A single-file reindex re-reads the file from disk instead of replaying the stored snapshot. `sourcePath` is exposed read-only to the administrative API and never appears in model-facing search results.
-- Deleting a non-empty directory requires an explicit `recursive` confirmation and offers a `delete-impact` preview listing the directories, files, chunks, and raw snapshots that would be removed.
-- Includes the local model lifecycle and retrieval-status fixes from #16–#18 and the profile installation recovery documentation from #22.
-
-The upgrade requires no database migration, automatic reindex, legacy directory cleanup, or model redownload and does not change existing fields or call signatures. The sync report, `sourcePath`, the delete-impact preview, and the `recursive` argument are additive. The one deliberate tightening is that a non-empty directory can no longer be deleted silently.
-
-[Read the v0.4.0 GitHub Release](https://github.com/Soren-ABT/dsh-knowledge/releases/tag/v0.4.0) · [Read the changelog](./CHANGELOG.md)
-
----
-
-## How it works
-
-1. **Ingest**: accept a file, directory, URL, or text note and retain source metadata plus recoverable original content.
-2. **Parse**: extract text by format; route scans and abnormal PDFs through local OCR when needed, or use MinerU when configured.
-3. **Chunk**: produce stable, indexed chunks from headings, document structure, and token budgets.
-4. **Embed**: build retrieval data through a remote API, Ollama, a local model, or lexical-only mode.
-5. **Recall**: run BM25 and vector lanes as configured, with RRF fusion in hybrid mode.
-6. **Compose evidence**: optionally rerank and apply MMR, then build an ordered, token-bounded context window.
-7. **Continue reading**: use `chunkIndex` or an anchor ID to read nearby context or the source document.
-
----
-
-## Technical design: from a query to continuable evidence
-
-dsh-knowledge is designed to produce an explainable, degradable evidence chain, not merely a list of Top K strings. The main explicit-search path is:
-
-```text
-current query
-  └─ Query Planner: primary query + optional variants
-       ├─ SQLite FTS5 / BM25 lexical recall
-       └─ embedding / cosine vector recall
-            └─ weighted RRF fusion
-                 └─ optional MMR deduplication
-                      └─ optional remote/local cross-encoder rerank
-                           └─ Context Composer
-                                ├─ ordered, budgeted model-visible evidence
-                                └─ anchorChunkId / chunkIndex continuation
-```
-
-### Recall, fusion, and ranking
-
-| Stage | Implementation | Design purpose |
-|---|---|---|
-| Query Planner | The primary query always comes from the current message; multi-query variants are recalled independently and fused afterwards | Preserve current-turn intent while covering paraphrased questions |
-| Lexical recall | SQLite FTS5 trigram index with BM25 ranking; query processing recognizes CJK bigrams and Latin words | Remain searchable without embeddings, downloaded weights, or a remote service |
-| Vector recall | Embed the query, run cosine retrieval, and validate vector dimensions | Recover semantic matches with little keyword overlap |
-| RRF fusion | `score(d) = Σᵢ wᵢ / (60 + rankᵢ(d))`; `rrfVectorWeight` controls the vector lane | Fuse ranks without pretending raw BM25 and cosine scores share a scale |
-| MMR | Trade relevance against similarity to already selected candidates | Reduce semantic repetition within Top K |
-| Rerank | Apply a remote API or local cross-encoder to a bounded pool; a multi-query request reranks only once at the end | Keep cost and latency tied to the candidate pool rather than query-variant count |
-| Threshold | Apply only to comparable vector or rerank relevance scores | Avoid filtering BM25/RRF ranks with an unrelated numeric scale |
-
-Ties retain the original recall order. A reranker must return exactly one finite score in `[0, 1]` for every retained candidate. Missing, out-of-range, mismatched, or protocol-invalid results are degradation events, never successful reranks.
-
-### Context Composer: connect context at query time
-
-Chunking produces stable index units; Context Composer decides what the model actually sees. It does not permanently copy neighboring text into every chunk or embed bridge text twice. After a hit, it batch-loads adjacent ranges and composes them around the anchor:
-
-- Evidence order is always `before → anchor → after`, within the same heading path by default.
-- The anchor has priority. When it exceeds the budget, the composer crops around the query and prefers sentence boundaries.
-- An exact suffix/prefix overlap of at least 24 characters is removed between adjacent excerpts, preventing overlap from being read twice.
-- `SearchHit.text` remains the complete canonical anchor; `ContextWindow` records only the window selected for this query.
-- Every result carries a stable `anchorChunkId` and `chunkIndex`. The model can continue around the same location instead of guessing a new document position.
-
-| Consumer | Fixed budget |
-|---|---|
-| Rerank pair | Up to 128 tokens for the query, 352 for evidence, and 480 total |
-| Explicit `knowledge_search` | Target 768 tokens per hit; 8192 tokens maximum model-visible output per call |
-| Proactive-retrieval background | Up to 180 tokens per hit and 640 tokens total |
-| Anchored continuation | 1600 tokens by default, configurable from 128 to 4096 |
+Omitting the base arguments searches the enabled scope. Passing `baseIds: []` returns no hits. DSH asks for confirmation before permanent deletion.
 
 <details>
-<summary>Why proactive retrieval does not inject Top K on every turn</summary>
+<summary>Browse all 15 model tools by task</summary>
 
-Proactive retrieval uses current-turn-first planning. The current message is bounded to 200 characters. Only when it is at most 40 characters and contains a deictic expression such as “that,” “above,” “continue,” or “step N,” or lacks enough topic terms, may the planner use up to the two latest user messages to form a second history-enhanced query. Both queries run lexical recall independently and are fused through RRF; history never replaces the current question.
-
-The entire pre-first-token path shares a four-second wall-clock deadline. Service-level reranking is explicitly skipped and the number of local-reranker calls is always zero. A configured remote reranker may run once with no retry. Cancellation exits immediately; a timeout or provider failure retains lexical order and stops injection without receiving a fresh timeout budget.
-
-Previously delivered chunks are removed before relevance gates and per-base seat allocation. A same-topic turn can add at most one fresh item within five minutes; a new topic can add at most three. Each base's `autoRetrieveWeight` limits its seats. Numeric IDs and compound model/version/error identifiers use a strict channel: the final text visible to the model must contain the complete identifier with correct boundaries or nothing is injected.
-
-Injected material is explicitly labelled as untrusted reference evidence and cannot override the current user's instructions, permissions, or tool rules. Deduplication and throttling state is committed only after the background is actually folded into the model context.
+| Task | Tools |
+| --- | --- |
+| Browse bases, documents, and statistics | `knowledge_list_bases`, `knowledge_list_documents`, `knowledge_stats` |
+| Search, read on, and inspect evidence | `knowledge_search`, `knowledge_get_document`, `knowledge_read_document`, `knowledge_read_evidence` |
+| Add sources and refresh URLs | `knowledge_add_document`, `knowledge_import_url`, `knowledge_refresh_url` |
+| Rebuild a document or base index | `knowledge_reindex_document`, `knowledge_reindex_base` |
+| Create a base or delete material | `knowledge_create_base`, `knowledge_delete_document`, `knowledge_delete_base` |
 
 </details>
 
----
+## Running and maintaining the plugin
 
-## Engineering reliability
-
-| Risk | Handling | Caller-visible outcome |
-|---|---|---|
-| Empty or stale base/document filters | Only `undefined` means unrestricted; an empty set matches zero documents in both SQLite lanes | A filtering mistake cannot silently search the whole library |
-| Remote-rerank timeout or malformed output | Shared deadline, strict result-index and score validation, structured `rerank` status | Return the original recall order and do not apply a rerank threshold |
-| Local embedding or rerank hangs/crashes | Independent child processes, versioned strict IPC, hard-timeout termination, one clean embedding recovery, and separate lifecycles | Recover or degrade the affected operation without restarting DSH or the other local-model lane |
-| Incomplete or incompatible local weights | Record each weights file's expected byte size during download and compare it on disk; **quarantine and remove** a cache that fails to load so the next attempt re-downloads. Cancelling a download stops only an in-flight transfer and **never** deletes a complete, validated model | A truncated file is no longer treated as downloaded and left failing forever; search never downloads implicitly or treats “an ONNX file exists” as readiness |
-| Repeated local-rerank failures | Total queue cap of 16; open a five-minute circuit after three consecutive timeout/crash/runtime/invalid-response failures, with one half-open probe | Prevent a broken model from repeatedly consuming process and latency budgets |
-| Partial replacement rebuild or directory rescan | Replace the committed source only after the new raw source, parse, and index succeed; retain per-file results | One failed item does not destroy the old version or hide successful siblings |
-| Missing release files or platform drift | Node 22.19/24/26 quality gates, Windows/Linux/macOS native tests, Windows/Linux tarball install-and-boot smoke, and manually triggered real local-model smoke | Both source builds and the published npm shape are continuously checked |
-
-These constraints share one principle: fail closed on scope, fail soft on ranking enhancement, and preserve the committed version of user data. Degradation is exposed through structured state or UI feedback instead of being presented as success.
-
----
-
-## Architecture
-
-One bundle mounts three plugin rows. Local embeddings, local reranking, and OCR inference run in separate replaceable child processes. Synchronous mupdf page rendering remains in the host, bounded by page geometry and raster budgets.
-
-| Component | Platform | Responsibility |
-|---|---|---|
-| `knowledge` (`ctx.knowledge`) | host | Storage, chunking, embedding/parser orchestration, retrieval, OCR scheduling, and `/knowledge/*` HTTP APIs |
-| `tool-knowledge` | host | Registration and execution of the 14 model-facing tools |
-| `ui-knowledge` | client | Sidebar entry, workspace management panel, and same-origin API calls |
-| `embed-process` | child process | Local transformers.js embedding inference; strict IPC, staging/readiness probing, and recoverable native-model lifecycle |
-| `ocr-process` | child process | PaddleOCR, OpenCV, and Tesseract recognition; serialized inference, timeout termination, and observed process exit |
-| `rerank-process.mjs` | child process | Local cross-encoder reranking, hard-timeout isolation, and process-level recovery |
-
-The `knowledge` storage domain contains `bases`, `documents`, and global configuration. Chunks and optional embeddings live in the plugin-owned SQLite store. Original file bytes live in the adjacent `knowledge-raw` directory.
-
----
-
-## Position in the DSH knowledge and RAG ecosystem
-
-dsh-knowledge is an integrated document knowledge base; it does not claim that every workload is better served by it than by a focused plugin. The comparison below explains design boundaries. It was reviewed on **2026-09-04** from each project's public README on its default branch. “Not documented in the README” does not prove that a capability is impossible, and the table may become stale as those projects evolve.
-
-<details>
-<summary>Compare adjacent DSH knowledge and RAG projects</summary>
-
-| Project | Public positioning and primary design | Boundary relative to dsh-knowledge |
-|---|---|---|
-| [dsh-knowledge-base](https://github.com/htcqp802/dsh-knowledge-base) | General document library with multi-format import, a folder UI, FTS5 trigram, and BM25 | dsh-knowledge additionally covers vector/RRF/MMR/rerank, proactive evidence, ContextWindow, local OCR, and model management; the other project is lighter |
-| [Mindspace Local RAG](https://github.com/Spirtxiaoqi7/mindspace-dsh-local-rag) | A technically substantial local hybrid RAG with BM25+, vectors, RRF, parent/child chunks, source follow-up, document revisions, and compaction summaries | Mindspace deliberately keeps retrieval model-directed and currently avoids reranking; its revision/rollback and summary governance are more specialized. dsh-knowledge emphasizes the complete management UI, complex-format OCR, local cross-encoder, and optional proactive retrieval |
-| [dsh-plugin-rag](https://github.com/mervyn-teo/dsh-plugin-rag) | Listens to DSH session events and incrementally maintains cross-session semantic memory in a local JSON vector index | Its primary object is the live session surface rather than user documents. dsh-knowledge owns source ingestion, parsing, rebuilds, citations, and anchored document reading; the two serve different memory layers |
-| [dsh-ragflow](https://github.com/staff-os/dsh-ragflow) | Connects a DSH tool to existing RAGFlow datasets through a clean provider/seam/tool/config split | RAGFlow owns ingestion and parsing, and the plugin documents itself as retrieval-only. dsh-knowledge completes ingestion through evidence delivery without requiring another knowledge-base service |
-| [dsh-plugin-kb4rag](https://github.com/yyang8891/dsh-plugin-kb4rag) | Paper-oriented Python offline extraction/build, Ollama embeddings, and Node Float32Array Top K | Its runtime retrieval is deliberately simple and dependency-light. dsh-knowledge adds runtime ingestion/rebuild, hybrid recall, OCR, a management UI, and multi-level evidence continuation |
-| [dsh-rag-kb](https://github.com/AlowEnsoul/dsh-rag-kb) | Ollama vector retrieval, multiple bases, JSON persistence, and a draggable floating UI | dsh-knowledge uses SQLite/FTS5 and a multi-stage ranking pipeline, then adds source transactions, local-model health, complex-PDF OCR, and release validation |
-
-</details>
-
-Among the projects reviewed above, no single public README documents the same complete combination of:
-
-- lifecycle management for files, directories, URLs, and text, with recoverable raw sources and safe rebuilds;
-- local complex-document parsing, scanned-PDF OCR, remote MinerU, and per-base processing policy;
-- BM25, vectors, weighted RRF, MMR, multi-query, and local/remote reranking in one retrieval chain;
-- query-time ContextWindow composition, strict token budgets, proactive evidence, and anchored continuation;
-- isolated embedding/OCR/rerank execution units, model readiness and self-tests, structured degradation, and cross-platform tarball verification.
-
-The primary differentiator is therefore not another vector-search implementation. It is the engineering between a source entering the system and the model receiving citable, continuable evidence, delivered as one DSH-native bundle with defined failure behavior.
-
----
-
-## Compatibility
-
-- **DSH**: developed and verified against [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) commit `b150a55` (2026.8.21). Include your DSH commit when reporting compatibility problems with a newer version.
-- **Node.js**: `^22.19.0 || >=24.0.0`.
-- **Host dependency**: DSH must provide `zod` matching the declared `^4.4.3` peer dependency. Source development also uses the pinned DSH compatibility anchor to align Zod types.
-- **Platforms**: Windows, Linux x64/arm64, and macOS on Apple Silicon support the complete feature set.
-- **Intel Mac**: onnxruntime does not provide a darwin-x64 binary, so local embeddings and OCR are unavailable. Use an OpenAI-compatible remote provider or Ollama instead.
-- **Legacy Office formats**: `.doc`, `.ppt`, and `.xls` parsing depends on the platform-native binaries from `@firecrawl/anydoc`.
-- **First-use network access**: local embedding and OCR models must be downloaded once. Lexical retrieval and remote providers do not require local weights.
-
----
-
-## Configuration
-
-Deployment defaults live in the `knowledge` row of `cordis.patch.yml`. The management panel can persist runtime overrides, and most retrieval and document settings can also be overridden per base.
-
-The base settings panel switches between **This base** and **Global defaults** and exposes the search mode. Vector mode keeps the similarity threshold visible with reranking off. **Effective now** shows saved settings and updates after a successful save. Recall Test uses the selected base's effective configuration; conversation calls to `knowledge_search` without `baseId` use the global defaults.
-
-Global embedding model changes first check every base that inherits the changed settings. Populated bases with an embedding model must switch through **Rebuild Base**; lexical-only bases backfill vectors in the background after source and idle checks. If any affected base cannot switch, the entire global update is rejected and the previous configuration is preserved. Per-base model overrides keep precedence.
-
-<details>
-<summary>View every configuration field</summary>
-
-| Field | Default | Notes |
-|---|---:|---|
-| `embeddingProvider` | `none` | `openai`, `ollama`, `local`, or `none` |
-| `embeddingBaseUrl` | `''` | Embedding API root; an empty Ollama URL falls back to its standard local endpoint |
-| `embeddingModel` | `''` | Remote model name or local Hugging Face repository ID |
-| `embeddingApiKey` | `''` | Can also be supplied through `KNOWLEDGE_API_KEY` |
-| `rerankModel` / `rerankBaseUrl` / `rerankApiKey` | `''` | Remote or `local:` reranking; an empty model disables it |
-| `localRerankTimeoutMs` | `60000` | Total local rerank budget, including queue time; range 10,000–300,000 ms |
-| `smartChunk` | `true` | Heading/paragraph-aware chunking; off uses only the separator |
-| `chunkSeparator` | `\n\n` | Separator used when `smartChunk` is off |
-| `chunkSize` | `800` | Target token budget per chunk |
-| `chunkOverlap` | `100` | Overlap token budget between adjacent chunks |
-| `topK` | `4` | Default result count; accepted range 1–50 |
-| `searchMode` | `auto` | `auto`, `hybrid`, `vector`, or `lexical` |
-| `similarityThreshold` | `0` | Minimum result score, from 0 to 1 |
-| `mmrDiversity` | `0` | MMR diversity; `0` disables it |
-| `rrfVectorWeight` | `1` | Vector-lane weight in hybrid RRF fusion |
-| `embeddingBatchSize` | `32` | Texts per batch, editable in base settings; use 1 for CPU/limited memory. Both ordinary and semantic local calls cap batches at 8 and reduce them down to 1 on explicit allocation failures. When a remote provider rejects the input count, both chunking modes halve the actual batch and reuse the smaller size for subsequent batches |
-| `siblingChunks` | `1` | Adjacent chunks per side, range 0–3; `0` still produces an anchor-only window |
-| `semanticChunk` | `false` | Merge semantically similar adjacent paragraphs |
-| `semanticChunkThreshold` | `0.75` | Cosine threshold for semantic chunking |
-| `chunkTokenLimit` | `0` | Hard per-chunk token ceiling; `0` disables it |
-| `conflictStrategy` | `rename` | Same-name import behavior: `keep`, `replace`, or `rename` |
-| `urlRefreshHours` | `0` | Hours since the last successful URL check. Checks start about five minutes after startup and repeat an hour after each sweep finishes. Saved per-base overrides apply at the next sweep. Set to `0` to disable. |
-| `imageCaptionProvider` | `off` | `off`, `openai`, or `ollama` |
-| `imageCaptionModel` | `''` | Vision model ID used for figure descriptions |
-| `imageCaptionBaseUrl` | `''` | Figure-captioning API root |
-| `imageCaptionApiKey` | `''` | Key for an OpenAI-compatible vision endpoint |
-| `hfEndpoint` | `''` | Hugging Face download endpoint or mirror |
-| `mineruPythonIndexUrl` | `https://pypi.org/simple` | Python package index used only by managed MinerU's isolated environment |
-| `documentProcessorProvider` | `builtin` | `builtin`, cloud `mineru`, or self-hosted MinerU 4 V1 `mineru-local` (managed Basic is experimental) |
-| `mineruApiKey` | `''` | Required for MinerU mode |
-| `mineruApiHost` | `''` | Empty uses `https://mineru.net` |
-| `resumeInterruptedOnStartup` | `true` | Resume interrupted imports; automatic parse recovery stops after 3 attempts and retains sources for manual rebuild |
-| `autoRetrieve` | `true` | Search user messages proactively and inject relevant background |
-| `injectUsagePrompt` | `true` | List available base names per request; can be disabled in per-base advanced settings without disabling tools or auto-retrieval |
-| `autoRetrieveWeight` | `3` | Per-base proactive seat cap, range 0–5; `0` excludes the base |
-| `localModelCacheDir` | `''` | Empty uses `<DSH_HOME>/cache/dsh-knowledge/local-models` |
-| `localWorkerIdleTimeoutMs` | `60000` | Idle time before releasing local embedding sessions; `0` keeps them hot. Settings offer 1 minute, 15 minutes, and resident presets. Runtime status independently shows unloaded/loading/loaded/error and load duration |
-| `chunkStorePath` | `''` | Empty uses `<DSH_HOME>/storages/knowledge-chunks.sqlite` |
-
-Text indexing skips standalone rules such as `---`, `***` and `___` and preserves literal markers in code examples. Smart chunking joins paragraphs shorter than 40 UTF-16 code units to a neighbour in the same section when the chunk budget permits. Semantic chunking uses its similarity threshold. A document containing only recognized markup keeps its source and has zero indexed chunks. Use **Reindex** on an existing document to remove old fragments. Chunks with changed boundaries may need new embeddings.
-
-`knowledge:usage` now supplies only base names; behavioral guidance stays in `knowledge_search`. Set `injectUsagePrompt: false` in deployment/global configuration or override it per base. Auto-retrieval messages use the producer-owned `dsh-knowledge` source accepted by DSH v4. Desktop panels dynamically avoid native window controls using Window Controls Overlay geometry and CSS titlebar environment variables, moving the close button, knowledge toggle, and toasts into the safe area together.
-
-Empty per-base fields inherit the global configuration. `localModelCacheDir`, `localWorkerIdleTimeoutMs`, and `chunkStorePath` are process-wide. API keys are stored as plain text on the local machine, so protect the profile data directory.
-
-</details>
-
----
-
-## Retrieval evaluation
-
-Two dependency-free scripts can evaluate retrieval and RAG context against your own base:
-
-```bash
-# Hit@k, Recall@k, and MRR
-node scripts/eval-retrieval.mjs --file scripts/eval-questions.example.json --base <baseId> --mode hybrid
-
-# Hit@k, sentence-level Context Recall (RAGAS-style approximation, no LLM), and MRR
-node scripts/eval-rag.mjs --file scripts/eval-rag.example.json --base <baseId> --topK 5
-```
-
-Copy an example JSON file and replace its questions, expected document-title fragments, and reference answers. The fixed synthetic fixtures in this repository are regression gates, not an accuracy guarantee for every private corpus, language, or model configuration.
-
----
-
-## Development and verification
-
-Source development expects the public DeepSeek Harness monorepo as a sibling checkout because `devDependencies` use `link:../dsh/...`:
-
-```bash
-pnpm install --config.auto-install-peers=false
-pnpm run check
-pnpm run build
-```
-
-- `pnpm test`: chunking, retrieval, configuration, storage, and service tests.
-- `pnpm run typecheck`: run `tsc --noEmit`.
-- `pnpm run build`: build host ESM entries, the browser client bundle, and declarations.
-- `npm run release:check -- --expected-version <version>`: run the complete release gate.
-
----
-
-## Known limitations
-
-- Model selectors are editable suggestion comboboxes rather than live provider model lists; custom IDs can be entered manually.
-- Embeddings run in batches inside the import flow. The first local-model download blocks that import, while the management panel displays progress.
-- Cloud `mineru` requires an API key. `mineru-local` uses a separate endpoint and optional service token, with no automatic cloud fallback. Self-hosted does not necessarily mean offline: documents go to the configured service and its upload storage.
-- The development branch adds structured evidence, page/block provenance, reusable parsing artifacts, and separate reparse/rechunk actions. Existing documents are not automatically rebuilt; real inference quality still requires validation. See the [self-hosted MinerU guide](docs/mineru-self-hosted.md).
-- The text entry is intended for lightweight notes and is not a rich-text editor.
-- Intel Macs cannot run the onnxruntime-based local embedding and OCR paths.
-
----
-
-## Security
-
-Report vulnerabilities through GitHub's private reporting flow as described in [SECURITY.md](./SECURITY.md). Do not place exploit details, credentials, private documents, or unredacted logs in a public issue.
-
-Use [GitHub Issues](https://github.com/Soren-ABT/dsh-knowledge/issues) for ordinary bugs and usage questions.
-
----
-
-## License
-
-[AGPL-3.0](LICENSE). PDF page rendering depends on [mupdf](https://mupdf.com/) under AGPL-3.0, so the project uses AGPL-3.0 to keep distribution licensing consistent. It also matches the license of the design reference [Cherry Studio](https://github.com/CherryHQ/cherry-studio), but this is an independent implementation containing none of Cherry Studio's source.
-
-Thanks to [dsh-interconnect](https://github.com/deepseek-ai/deepseek-harness), [dsh-deeptutor](https://github.com/TecFancy/dsh-deeptutor), [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin), and the community contributors who submit code and issue reports.
+- Packed-install CI starts the plugin on Windows and Ubuntu with DSH `0.2.2-rc.3`, `0.2.2-rc.4`, and `0.2.2-rc.5`. On Intel Macs, use keyword search or a remote model.
+- Back up DSH storage-domain metadata, the SQLite chunk database, `knowledge-raw` originals, and the `knowledge-artifacts` processing outputs together.
+- [Changelog](./CHANGELOG.md) · [Retrieval benchmarks](./benchmarks/README.md) · [Contributing](./CONTRIBUTING.md) · [Security reporting](./SECURITY.md) · [AGPL-3.0 license](./LICENSE)
