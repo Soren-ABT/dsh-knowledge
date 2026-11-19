@@ -62,6 +62,7 @@
     "README.md",
     "README.en.md",
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "SECURITY.md",
     "LICENSE",
     "docs/releases",
@@ -142,6 +143,6 @@
     "esbuild": "^0.28.2",
     "typescript": "^5.9.0",
     "vitest": "^4.1.8",
-    "zod": "^4.4.3"
+    "zod": "4.6.6"
   }
 }
