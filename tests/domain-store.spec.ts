@@ -1649,6 +1649,55 @@ describe('local-path import source tracking', () => {
     }
   })
 
+  it('reuses one chunk count pass for durable startup and keeps completed empty documents completed', async () => {
+    const dir = await tempDir()
+    vi.stubEnv('DSH_HOME', dir)
+    const domain = fakeDomain()
+    const counts = vi.spyOn(ChunkDatabase.prototype, 'chunkCountsByDoc')
+    const coverage = vi.spyOn(ChunkDatabase.prototype, 'docChunkStatus')
+    let service: KnowledgeService | undefined
+    try {
+      service = await mount(dir, domain)
+      await service.setConfig({ resumeInterruptedOnStartup: false })
+      const base = await service.createBase({ name: 'Startup recovery' })
+      const imported = await service.addTextDocument({ baseId: base.id, title: 'Indexed', content: 'Already indexed content' })
+      const store = storeOf(service)
+      const indexed = store.getDocument(imported.id)!
+      expect(indexed.chunkCount).toBeGreaterThan(0)
+      await store.putDocument({ ...indexed, chunkCount: 0 })
+
+      const interrupted: KnowledgeDocument = {
+        id: 'interrupted', baseId: base.id, title: 'Interrupted import', sourceType: 'text',
+        rawText: 'Recoverable text', charCount: 16, chunkCount: 0, incomplete: true, createdAt: 1, updatedAt: 1,
+      }
+      await store.putDocument(interrupted)
+      await store.putDocument({
+        ...interrupted, id: 'empty', title: 'Completed empty import',
+        rawText: '', charCount: 0, chunkCount: 1, incomplete: false,
+      })
+
+      await closeStore(service)
+      service = undefined
+      counts.mockClear()
+      coverage.mockClear()
+      const reopened = await mount(dir, domain)
+      service = reopened
+      await vi.waitFor(() => {
+        expect(storeOf(reopened).getDocument('interrupted')?.errorCode).toBe('interrupted')
+      })
+      expect(storeOf(reopened).getDocument(indexed.id)?.chunkCount).toBe(indexed.chunkCount)
+      expect(storeOf(reopened).getDocument('empty')).toMatchObject({ chunkCount: 0, incomplete: false })
+      expect(storeOf(reopened).getDocument('empty')?.errorCode).toBeUndefined()
+      expect(counts).toHaveBeenCalledTimes(1)
+      expect(coverage).not.toHaveBeenCalled()
+    } finally {
+      counts.mockRestore()
+      coverage.mockRestore()
+      if (service !== undefined) await closeStore(service)
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('keeps an uploaded Markdown file containing only rules completed across a restart', async () => {
     const dir = await tempDir()
     vi.stubEnv('DSH_HOME', dir)

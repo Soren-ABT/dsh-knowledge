@@ -386,13 +386,13 @@ export class KnowledgeService extends Service {
     }
     // Resume documents a previous process left mid-embedding: their chunks are
     // partially persisted, so re-running the embed with hash reuse completes
-    // them without re-embedding the batches that already landed. (openStore
-    // already ran the removal half of the recovery; this second pass is
-    // idempotent and only harvests the resume list.) The `resumeInterruptedOnStartup`
-    // config gates the automatic re-spend: off marks them failed instead
-    // (Cherry's posture — a deliberate app quit must not re-spend the
-    // embedding API; the user reindexes manually).
-    const resume = store.recoverInterruptedImports(Date.now()).then(async ({ resume: resumeIds }) => {
+    // them without re-embedding the batches that already landed. Reuse the
+    // durable store's recovery result, or recover here when opening could not
+    // finish recovery or the service is using an in-memory store.
+    // The resumeInterruptedOnStartup setting controls whether to reindex or
+    // mark these documents interrupted for a manual retry.
+    const recovery = store.startupRecovery ?? store.recoverInterruptedImports(Date.now())
+    const resume = Promise.resolve(recovery).then(async ({ resume: resumeIds }) => {
       if (resumeIds.length === 0) return
       if (!this.getConfig().resumeInterruptedOnStartup) {
         const reason = 'import was interrupted by a shutdown; reindex to resume'
