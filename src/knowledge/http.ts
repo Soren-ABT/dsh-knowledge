@@ -9,6 +9,7 @@
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { ConflictError, DirectorySourceError, NotFoundError, StorageUnavailableError, type KnowledgeService } from './index.js'
+import { mimeTypeForFileName } from './parse.js'
 import type { ConfigOverrides } from './domain.js'
 import { EvidenceRequestError } from './evidence.js'
 import { DeploymentError } from './mineru-deployment-plan.js'
@@ -66,7 +67,7 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
     if (isRawDownload(value)) {
       const { bytes, fileName, mimeType, inline } = value
       res.writeHead(200, {
-        'content-type': mimeType ?? 'application/octet-stream',
+        'content-type': mimeType ?? mimeTypeForFileName(fileName) ?? 'application/octet-stream',
         'content-disposition': inline === true
           ? `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`
           : `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,

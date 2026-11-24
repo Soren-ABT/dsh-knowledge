@@ -85,6 +85,12 @@ export interface Config {
    * "use the knowledge base" instruction or a knowledge_search call.
    */
   autoRetrieve: boolean
+  /**
+   * Ask the model to cite the injected source labels (default true). Off keeps
+   * the evidence and the untrusted-content boundary, but drops the "cite the
+   * source labels" instruction from the injected header.
+   */
+  autoRetrieveCitation?: boolean
   /** Include the short available-base list in the system prompt. */
   injectUsagePrompt?: boolean
   /**
@@ -146,6 +152,7 @@ export const Config: Schema<Config> = Schema.object({
   imageCaptionApiKey: Schema.string().default(''),
   resumeInterruptedOnStartup: Schema.boolean().default(true),
   autoRetrieve: Schema.boolean().default(true),
+  autoRetrieveCitation: Schema.boolean().default(true),
   injectUsagePrompt: Schema.boolean().default(true),
   autoRetrieveWeight: Schema.number().default(3),
   localWorkerIdleTimeoutMs: Schema.number().default(60000),
@@ -206,6 +213,7 @@ export function resolveConfig(config: Config, overrides: ConfigOverrides): Knowl
     imageCaptionApiKey: overrides.imageCaptionApiKey ?? config.imageCaptionApiKey,
     resumeInterruptedOnStartup: overrides.resumeInterruptedOnStartup ?? config.resumeInterruptedOnStartup,
     autoRetrieve: overrides.autoRetrieve ?? config.autoRetrieve,
+    autoRetrieveCitation: overrides.autoRetrieveCitation ?? config.autoRetrieveCitation ?? true,
     injectUsagePrompt: overrides.injectUsagePrompt ?? config.injectUsagePrompt ?? true,
     autoRetrieveWeight: clampInt(overrides.autoRetrieveWeight ?? config.autoRetrieveWeight, 0, 5, 3),
     localWorkerIdleTimeoutMs: clampInt(overrides.localWorkerIdleTimeoutMs ?? config.localWorkerIdleTimeoutMs, 0, 24 * 3600 * 1000, 60000),
@@ -264,6 +272,7 @@ export function resolveConfigFor(config: Config, overrides: ConfigOverrides, bas
     imageCaptionApiKey: baseConfig.imageCaptionApiKey ?? resolved.imageCaptionApiKey,
     resumeInterruptedOnStartup: baseConfig.resumeInterruptedOnStartup ?? resolved.resumeInterruptedOnStartup,
     autoRetrieve: baseConfig.autoRetrieve ?? resolved.autoRetrieve,
+    autoRetrieveCitation: resolved.autoRetrieveCitation,
     injectUsagePrompt: baseConfig.injectUsagePrompt ?? resolved.injectUsagePrompt,
     autoRetrieveWeight: clampInt(baseConfig.autoRetrieveWeight ?? resolved.autoRetrieveWeight, 0, 5, 3),
   }

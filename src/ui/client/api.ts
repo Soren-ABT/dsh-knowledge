@@ -254,6 +254,8 @@ export interface KnowledgeConfig {
   structuredChunking?: boolean
   resumeInterruptedOnStartup: boolean
   autoRetrieve: boolean
+  /** Ask the model to cite auto-retrieve source labels (default true). */
+  autoRetrieveCitation?: boolean
   injectUsagePrompt?: boolean
   autoRetrieveWeight: number
   /** Local-model worker idle timeout in ms (0 = never release; keeps the

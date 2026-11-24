@@ -50,7 +50,7 @@ import { disposeLocalRerankProcess, setLocalRerankIdleTimeoutMs } from './local-
 import { downloadOcrModels, disposeOcrWorker, getOcrModelStatus, removeOcrModels, type OcrModelStatus } from './ocr.js'
 import { fetchUrlDocument } from './url-document.js'
 import { knowledgeRoute } from './http.js'
-import { SUPPORTED_DOCUMENT_EXTENSIONS, extensionOf } from './parse.js'
+import { SUPPORTED_DOCUMENT_EXTENSIONS, extensionOf, mimeTypeForFileName } from './parse.js'
 import { searchTextOf } from './retrieval.js'
 import { hashEmbeddingText, resolveChunkStorePath } from './chunkdb.js'
 import { completedChunkState, hasCompletedEmptyIndex, openStore, StorageUnavailableError } from './store.js'
@@ -1020,6 +1020,11 @@ export class KnowledgeService extends Service {
     if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(request.fileName))) {
       throw new Error(`Unsupported knowledge file type: ${request.fileName}`)
     }
+    // Directory imports (and some upload clients) omit the MIME; derive it from
+    // the extension so raw previews do not fall back to octet-stream.
+    const mimeType = request.mimeType !== undefined && request.mimeType.trim() !== ''
+      ? request.mimeType
+      : mimeTypeForFileName(request.fileName)
     // Cherry Studio parity: publish the row FIRST (with "parsing" status) and
     // return immediately; the parse+embed runs on a per-base worker pool
     // (concurrency 5) and the row flips processing → completed/failed as it
@@ -1080,7 +1085,7 @@ export class KnowledgeService extends Service {
         title: resolvedTitle,
         sourceType: 'file',
         fileName: resolvedFileName,
-        ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
+        ...(mimeType !== undefined ? { mimeType } : {}),
         ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
         charCount: 0,
         chunkCount: 0,
@@ -1144,7 +1149,7 @@ export class KnowledgeService extends Service {
           baseId: request.baseId,
           documentId: docId,
           fileName,
-          ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
+          ...(mimeType !== undefined ? { mimeType } : {}),
           bytes,
           signal: taskController.signal,
         })
@@ -1157,7 +1162,7 @@ export class KnowledgeService extends Service {
           title,
           sourceType: 'file',
           fileName,
-          ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
+          ...(mimeType !== undefined ? { mimeType } : {}),
           ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
           placeholderId: docId,
           rawFilePath,
@@ -2424,20 +2429,23 @@ export class KnowledgeService extends Service {
   private async ingestPathFile(baseId: string, sourcePath: string, fileName: string, parentDirectoryId?: string): Promise<KnowledgeDocument> {
     const store = this.requireStore()
     const buffer = await readFile(sourcePath)
+    const mimeType = mimeTypeForFileName(fileName)
     const documentId = crypto.randomUUID()
     const rawFilePath = await store.raw?.write(baseId, documentId, safeRawExtension(fileName), buffer)
     const controller = new AbortController()
     try {
       if (store.getBase(baseId) === undefined) throw new NotFoundError('knowledge base no longer exists')
       await store.putDocument({ id: documentId, baseId, title: fileName, fileName, sourceType: 'file',
+        ...(mimeType !== undefined ? { mimeType } : {}),
         sourcePath, rawFilePath, parentDirectoryId, charCount: 0, chunkCount: 0, createdAt: Date.now(), incomplete: true })
       this.indexing.set(documentId, { baseId, title: fileName, phase: 'parsing', total: 0, progress: 0, controller })
-      const processed = await this.extractDocumentText({ baseId, documentId, bytes: buffer, fileName, signal: controller.signal })
+      const processed = await this.extractDocumentText({ baseId, documentId, bytes: buffer, fileName, ...(mimeType !== undefined ? { mimeType } : {}), signal: controller.signal })
       return await this.ingestDocument({
         baseId,
         title: fileName,
         sourceType: 'file',
         fileName,
+        ...(mimeType !== undefined ? { mimeType } : {}),
         parentDirectoryId,
         placeholderId: documentId,
         processed,
@@ -3205,7 +3213,7 @@ export class KnowledgeService extends Service {
     if (doc === undefined || doc.rawFilePath === undefined) return undefined
     const bytes = await store.raw?.read(doc.rawFilePath)
     if (bytes === null || bytes === undefined) return undefined
-    return { bytes, fileName: doc.fileName ?? doc.title, mimeType: doc.mimeType }
+    return { bytes, fileName: doc.fileName ?? doc.title, mimeType: doc.mimeType ?? mimeTypeForFileName(doc.fileName ?? doc.title) }
   }
 
   /** Read one document's source text as a `[charStart, charEnd)` slice (kb_read read mode). */
