@@ -59,6 +59,7 @@ describe('resolveConfig', () => {
       documentProcessingTimeoutMs: 1_800_000,
       structuredChunking: true,
       injectUsagePrompt: true,
+      autoRetrieveCitation: true,
     })
   })
   it('applies runtime overrides', () => {
@@ -76,6 +77,14 @@ describe('resolveConfig', () => {
     expect(global.autoRetrieve).toBe(true)
     expect(resolveConfigFor(base, { injectUsagePrompt: false }, { injectUsagePrompt: true }).injectUsagePrompt).toBe(true)
     expect(() => configOverridesSchema.parse({ injectUsagePrompt: 'false' })).toThrow()
+  })
+  it('persists and resolves the citation switch independently of auto-retrieval', () => {
+    expect(configOverridesSchema.parse({ autoRetrieveCitation: false })).toEqual({ autoRetrieveCitation: false })
+    expect(resolveConfig(base, {}).autoRetrieveCitation).toBe(true)
+    const global = resolveConfig(base, { autoRetrieveCitation: false })
+    expect(global.autoRetrieveCitation).toBe(false)
+    expect(global.autoRetrieve).toBe(true)
+    expect(() => configOverridesSchema.parse({ autoRetrieveCitation: 'false' })).toThrow()
   })
   it('keeps the managed MinerU package index global and defaults to public PyPI', () => {
     expect(resolveConfig(base, {}).mineruPythonIndexUrl).toBe('https://pypi.org/simple')

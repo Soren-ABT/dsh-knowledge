@@ -27,6 +27,40 @@ export function extensionOf(fileName: string): string {
   return idx >= 0 ? fileName.slice(idx + 1).toLowerCase() : ''
 }
 
+/** Content-Type by file name. Directory imports historically omitted the
+ *  document MIME, so both the raw-file route and the service derive it here
+ *  instead of serving every PDF as application/octet-stream. */
+const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  doc: 'application/msword',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  ppt: 'application/vnd.ms-powerpoint',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xls: 'application/vnd.ms-excel',
+  epub: 'application/epub+zip',
+  html: 'text/html',
+  htm: 'text/html',
+  csv: 'text/csv',
+  json: 'application/json',
+  txt: 'text/plain',
+  log: 'text/plain',
+  md: 'text/markdown',
+  markdown: 'text/markdown',
+  mdx: 'text/markdown',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+}
+
+/** Content-Type for a file name, or undefined for an unknown extension. */
+export function mimeTypeForFileName(fileName: string): string | undefined {
+  return MIME_BY_EXTENSION[extensionOf(fileName)]
+}
+
 /** Return the parsed text of a document buffer, dispatching on extension. */
 export async function parseDocumentBuffer(
   buffer: Uint8Array,

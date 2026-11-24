@@ -352,6 +352,8 @@ export interface KnowledgeConfig {
   readonly resumeInterruptedOnStartup: boolean
   /** Proactive auto-retrieval on every user message. */
   readonly autoRetrieve: boolean
+  /** Ask the model to cite the auto-retrieve source labels (default true). */
+  readonly autoRetrieveCitation?: boolean
   /** Include the available-base list in the system prompt (default true). */
   readonly injectUsagePrompt?: boolean
   /** Auto-retrieve seat cap per base (0–5, 0 = excluded; see BaseConfig). */
