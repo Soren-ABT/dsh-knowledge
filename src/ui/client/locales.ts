@@ -139,6 +139,10 @@ export type KnowledgeKey =
   | 'modelIdleWarm'
   | 'modelIdleResident'
   | 'directoryRescan'
+  | 'directoryScanProgress'
+  | 'pdfFormatUnknown'
+  | 'directoryScanReconnecting'
+  | 'directoryScanUnconfirmed'
   | 'directoryBind'
   | 'directoryUnboundHint'
   | 'directorySyncInterval'
@@ -535,6 +539,10 @@ export const zh: Record<KnowledgeKey, string> = {
   modelIdleWarm: '保温（15 分钟）',
   modelIdleResident: '常驻（持续占用内存）',
   directoryRescan: '重新扫描目录',
+  directoryScanProgress: '已扫描条目',
+  pdfFormatUnknown: '无法识别 PDF 格式，可下载原文件查看。',
+  directoryScanReconnecting: '正在重新连接以查询扫描进度',
+  directoryScanUnconfirmed: '未找到本次扫描的完成记录，请查看来源状态后重试',
   directoryBind: '绑定磁盘目录',
   directoryUnboundHint: '上传的是文件副本；绑定服务端绝对路径后可同步新增、修改和删除。',
   directorySyncInterval: '自动同步',
@@ -937,6 +945,10 @@ export const en: Record<KnowledgeKey, string> = {
   modelIdleWarm: 'Keep warm (15 minutes)',
   modelIdleResident: 'Resident (keeps memory allocated)',
   directoryRescan: 'Rescan directory',
+  directoryScanProgress: 'Entries scanned',
+  pdfFormatUnknown: 'The PDF format could not be recognized. Download the original file to inspect it.',
+  directoryScanReconnecting: 'Reconnecting to check scan progress',
+  directoryScanUnconfirmed: 'No completion record for this scan. Check the source before retrying.',
   directoryBind: 'Bind disk directory',
   directoryUnboundHint: 'Uploads are file copies. Bind an absolute server path to sync additions, edits and deletions.',
   directorySyncInterval: 'Auto sync',

@@ -67,7 +67,7 @@ async function handleRequest(service: KnowledgeService, req: IncomingMessage, re
     if (isRawDownload(value)) {
       const { bytes, fileName, mimeType, inline } = value
       res.writeHead(200, {
-        'content-type': mimeType ?? mimeTypeForFileName(fileName) ?? 'application/octet-stream',
+        'content-type': mimeTypeForFileName(fileName, mimeType) ?? 'application/octet-stream',
         'content-disposition': inline === true
           ? `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`
           : `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
@@ -514,6 +514,15 @@ async function route(
           throw new InvalidRequestError('intervalMinutes must be 0, 5, 15 or 60')
         }
         return service.setDirectorySyncInterval(documentId, body.intervalMinutes)
+      }
+      if (segments[2] === 'rescan') {
+        if (method === 'GET') return service.getDirectoryRescan(documentId)
+        if (method === 'POST') {
+          if (body.runId !== undefined && (typeof body.runId !== 'string' || body.runId.length === 0 || body.runId.length > 128)) {
+            throw new InvalidRequestError('runId must be a non-empty string of at most 128 characters')
+          }
+          return service.startDirectoryRescan(documentId, body.runId as string | undefined)
+        }
       }
       if (segments[2] === 'delete-impact' && method === 'GET') return service.getDeleteImpact(documentId)
       if (segments[2] === 'refresh' && method === 'POST') return service.refreshUrlDocument(documentId)

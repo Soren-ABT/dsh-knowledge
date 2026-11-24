@@ -106,6 +106,7 @@ const documentSchema = z.object({
   sourcePath: z.string().optional(),
   syncIntervalMinutes: z.union([z.literal(0), z.literal(5), z.literal(15), z.literal(60)]).optional(),
   lastDirectorySync: z.object({
+      runId: z.string().optional(),
     startedAt: z.number(), finishedAt: z.number(),
     status: z.enum(['synced', 'unchanged', 'partial', 'failed']),
     created: z.number().int().gte(0), updated: z.number().int().gte(0),

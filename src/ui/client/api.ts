@@ -7,6 +7,8 @@
 
 import type { DocumentProcessingInfo, DocumentSourceSpan, MineruTier, ParsedAsset, ParsedBlock, ProcessingProgress, ProcessorCapabilities } from '../../knowledge/processing-types.js'
 import type { MineruDeploymentPlan, MineruDeploymentStatus, MineruPythonDiscovery, MineruPythonEnvironment } from '../../knowledge/mineru-deployment-types.js'
+import type { DirectoryScanProgress, DirectoryScanSnapshot } from '../../knowledge/types.js'
+export type { DirectoryScanProgress, DirectoryScanSnapshot }
 export type { MineruDeploymentPlan, MineruDeploymentStatus, MineruPythonDiscovery, MineruPythonEnvironment }
 export type { DocumentProcessingInfo, DocumentSourceSpan, MineruTier, ParsedAsset, ParsedBlock, ProcessingProgress, ProcessorCapabilities }
 
@@ -111,6 +113,7 @@ export interface DirectorySyncResult {
 }
 
 export interface DirectorySyncRun {
+  runId?: string
   startedAt: number
   finishedAt: number
   status: DirectorySyncResult['status'] | 'failed'
@@ -137,6 +140,7 @@ export interface DeleteImpact {
 }
 
 export interface DocumentSummary {
+  directoryScan?: DirectoryScanProgress
   syncIntervalMinutes?: number
   lastDirectorySync?: DirectorySyncRun
   id: string
@@ -729,6 +733,14 @@ export class KnowledgeApi {
 
   setDirectorySyncInterval(sourceId: string, intervalMinutes: number): Promise<{ intervalMinutes: number }> {
     return this.call('PUT', `/documents/${encodeURIComponent(sourceId)}/sync-settings`, { intervalMinutes })
+  }
+
+  startDirectoryRescan(sourceId: string, runId: string): Promise<DirectoryScanSnapshot> {
+    return this.call('POST', `/documents/${encodeURIComponent(sourceId)}/rescan`, { runId })
+  }
+
+  getDirectoryRescan(sourceId: string): Promise<DirectoryScanSnapshot> {
+    return this.call('GET', `/documents/${encodeURIComponent(sourceId)}/rescan`)
   }
 
   cancelProcessing(documentId: string): Promise<{ cancelled: boolean }> {

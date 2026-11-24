@@ -56,9 +56,12 @@ const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
   svg: 'image/svg+xml',
 }
 
-/** Content-Type for a file name, or undefined for an unknown extension. */
-export function mimeTypeForFileName(fileName: string): string | undefined {
-  return MIME_BY_EXTENSION[extensionOf(fileName)]
+/** Keep a specific declared type. Browsers also send octet-stream for files whose type they cannot determine. */
+export function mimeTypeForFileName(fileName: string, declared?: string): string | undefined {
+  const type = declared?.split(';', 1)[0]?.trim().toLowerCase()
+  if (type && type !== 'application/octet-stream') return declared
+  const extension = extensionOf(fileName)
+  return Object.hasOwn(MIME_BY_EXTENSION, extension) ? MIME_BY_EXTENSION[extension] : type || undefined
 }
 
 /** Return the parsed text of a document buffer, dispatching on extension. */

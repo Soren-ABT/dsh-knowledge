@@ -107,6 +107,9 @@ describe('raw file MIME (issue #85)', () => {
     expect(mimeTypeForFileName('notes.md')).toBe('text/markdown')
     expect(mimeTypeForFileName('report.docx')).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     expect(mimeTypeForFileName('archive.unknown')).toBeUndefined()
+    expect(mimeTypeForFileName('scan.pdf', 'Application/Octet-Stream; charset=binary')).toBe('application/pdf')
+    expect(mimeTypeForFileName('scan.pdf', 'text/plain')).toBe('text/plain')
+    expect(mimeTypeForFileName('archive.unknown', 'application/octet-stream')).toBe('application/octet-stream')
   })
 
   it('publishes a MIME type for directory-imported files', async () => {
@@ -132,10 +135,19 @@ describe('raw file MIME (issue #85)', () => {
     expect(Buffer.from(raw!.bytes).subarray(0, 4).toString()).toBe('%PDF')
   })
 
-  it('derives the response content type when an older record has no MIME', async () => {
+  it('recognizes PDFs uploaded with the generic MIME used by the panel', async () => {
+    const service = await mountService()
+    const base = await service.createBase({ name: 'uploaded PDFs' })
+    const { id } = await service.addFileDocument({ baseId: base.id, fileName: 'handbook.PDF',
+      mimeType: 'application/octet-stream', contentBase64: makeTestPdf('user guide').toString('base64') })
+    await service.waitForIdle()
+    expect((await service.getRawFile(id))?.mimeType).toBe('application/pdf')
+  })
+
+  it.each([undefined, '', 'application/octet-stream'])('derives the preview MIME for legacy metadata %s', async mimeType => {
     const service = {
       whenReady: async () => {},
-      getRawFile: async () => ({ bytes: new Uint8Array([1, 2, 3]), fileName: 'scan.pdf' }),
+      getRawFile: async () => ({ bytes: new Uint8Array([1, 2, 3]), fileName: 'scan.pdf', mimeType }),
     } as unknown as KnowledgeService
     const route = knowledgeRoute(service)
     if (route.kind !== 'prefix') throw new Error('expected a prefix route')

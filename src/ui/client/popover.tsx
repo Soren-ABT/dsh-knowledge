@@ -11,6 +11,7 @@ import type { ReactNode } from 'react'
 import { placePopover, placeSubmenu } from './popover-placement.js'
 import type { ViewportPosition } from './popover-placement.js'
 import { style } from './theme.js'
+import { listenForEscape } from './panel-escape.js'
 
 const MENU_WIDTH = 220
 
@@ -37,6 +38,7 @@ export function PopoverMenu(props: {
   // every menu action silently dies).
   const menuRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<ViewportPosition | null>(null)
+  useEffect(() => listenForEscape(menuRef.current, () => setOpen(false)), [open])
 
   useEffect(() => {
     if (!open) return
@@ -97,6 +99,7 @@ export function PopoverMenu(props: {
       {open && pos !== null && createPortal(
         <div
           ref={menuRef}
+          data-kb-popup=""
           style={{
             ...style.menu,
             position: 'fixed',
@@ -217,25 +220,21 @@ export function ContextMenu(props: {
   onClose: () => void
 }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => listenForEscape(ref.current, props.onClose), [props.onClose])
   useEffect(() => {
     const onDown = (event: MouseEvent): void => {
       if (ref.current !== null && !ref.current.contains(event.target as Node)) props.onClose()
     }
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') props.onClose()
-    }
     const onScroll = (): void => props.onClose()
     document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
     window.addEventListener('scroll', onScroll, true)
     return () => {
       document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
       window.removeEventListener('scroll', onScroll, true)
     }
   }, [props.onClose])
   return (
-    <div ref={ref} style={{ ...style.menu, position: 'fixed', left: props.x, top: props.y, zIndex: 300 }}>
+    <div ref={ref} data-kb-popup="" style={{ ...style.menu, position: 'fixed', left: props.x, top: props.y, zIndex: 300 }}>
       <MenuItems entries={props.entries} onCloseAll={props.onClose} />
     </div>
   )

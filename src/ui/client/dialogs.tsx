@@ -5,12 +5,13 @@
  * @module dsh-knowledge/client/dialogs
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { SearchMode } from './api.js'
 import { C, style } from './theme.js'
 import { IconCheck, IconX } from './icons.js'
 import type { Translate } from './locales.js'
+import { listenForEscape } from './panel-escape.js'
 
 // ── toasts ───────────────────────────────────────────────────────────────────
 
@@ -51,9 +52,12 @@ export function Modal(props: {
   children: ReactNode
   width?: number
 }): JSX.Element {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => listenForEscape(ref.current, props.onClose), [props.onClose])
   return (
     <div style={style.modalBackdrop} onClick={props.onClose}>
       <div
+        ref={ref} role="dialog" aria-modal="true" aria-label={props.title}
         style={{ ...style.modal, ...(props.width !== undefined ? { width: props.width } : {}) }}
         onClick={(e) => e.stopPropagation()}
       >

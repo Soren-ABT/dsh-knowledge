@@ -6,6 +6,6 @@
  * use without pulling in @types/react-dom.
  */
 declare module 'react-dom' {
-  import type { ReactNode } from 'react'
-  export function createPortal(children: ReactNode, container: Element | DocumentFragment): ReactNode
+  import type { ReactNode, ReactPortal } from 'react'
+  export function createPortal(children: ReactNode, container: Element | DocumentFragment): ReactPortal
 }

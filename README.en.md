@@ -27,11 +27,11 @@ Bring project manuals, papers, and team wikis into DSH. In chat, you can search 
 | What you want to do | How it works |
 | --- | --- |
 | Keep sources together | Import files, directories, text notes, HTML pages, or raw Markdown URLs. Group bases by project and preview the original document, its chunks, and processing progress in the panel. |
-| Keep a library current | Bind a directory to a path DSH can access and sync additions, edits, and deletions manually or on a schedule. Refresh a web page or Markdown URL in place while retaining its document ID, folder, and custom title. |
+| Keep a library current | Bind a directory to a path DSH can access and sync additions, edits, and deletions manually or on a schedule. Rescans run in the background and show the entry count and most recent path. Reopen the same base to see progress or its last sync result. Refresh a web page or Markdown URL in place while retaining its document ID, folder, and custom title. |
 | Read scans and complex PDFs | Use local OCR for scanned PDFs. For tables, equations, or multi-column layouts, choose cloud or self-hosted MinerU. Results with structured source information can point back to a page and region. [MinerU setup](./docs/mineru-self-hosted.md) |
 | Find an exact term or a related idea | Use keywords for identifiers and terminology, vectors for paraphrases, or hybrid search to combine both. Filter by document, title, source, or update time and optionally rerank the results. |
 | Check a citation | Each hit includes the document title and chunk position. Read the surrounding passage or follow a citation to its source block when structured parsing is available. Recall Test shows scores and timing and lets you copy a citation. |
-| Choose what reaches the model | Enable the bases available to chat. Automatic retrieval can supply evidence before an answer and carry the topic into a follow-up. An explicit search can target one base or a subset of the enabled bases. |
+| Choose what reaches the model | Enable the bases available to chat. Automatic retrieval can supply evidence before an answer and carry the topic into a follow-up. Under Global defaults → Advanced Settings, you can turn off the request to cite auto-retrieved sources. The evidence keeps its source labels and untrusted-content notice. Explicit searches can target selected bases and include citations. |
 
 ## Install and try it
 
@@ -58,6 +58,8 @@ To try a locally packed release candidate, run `dsh plugin --profile <profile> a
 1. Open **Knowledge** at the bottom of the sidebar. Create a base and import a document you know. Supported formats include PDF, Word, PowerPoint, Excel, EPUB, Markdown, HTML, CSV, JSON, and plain text.
 2. Enter a phrase from the document in **Recall Test**. Inspect the matching passage and its neighbors. Keyword search works immediately.
 3. Enable the base and ask a question that calls for a source, such as “What is the return period in the manual? Cite the clause and check the exceptions that follow.”
+
+Press Esc to dismiss the current menu or dialog. Press Esc in the main Knowledge panel to return to DSH.
 
 ## Retrieval and model settings
 
