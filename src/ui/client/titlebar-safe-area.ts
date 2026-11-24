@@ -28,8 +28,10 @@ function shellInset(): number {
   }
   const nav = globalThis.navigator
   const desktop = globalThis.window as (Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown }) | undefined
-  if (!/\bElectron\//i.test(nav?.userAgent ?? '') && desktop?.__TAURI_INTERNALS__ === undefined && desktop?.__TAURI__ === undefined) return 0
-  const platform = `${nav?.platform ?? ''} ${nav?.userAgent ?? ''}`
+  const hostPlatform = root?.dataset.platform
+  if (!hostPlatform && !/\bElectron\//i.test(nav?.userAgent ?? '')
+      && desktop?.__TAURI_INTERNALS__ === undefined && desktop?.__TAURI__ === undefined) return 0
+  const platform = hostPlatform || `${nav?.platform ?? ''} ${nav?.userAgent ?? ''}`
   if (/Mac|darwin/i.test(platform)) return 38
   if (/Win/i.test(platform)) return 40
   return 0
@@ -62,7 +64,7 @@ export function subscribeTitlebarInset(listener: () => void): () => void {
   globalThis.document?.addEventListener('fullscreenchange', listener)
   const root = globalThis.document?.documentElement
   const observer = root !== undefined && typeof MutationObserver !== 'undefined' ? new MutationObserver(listener) : undefined
-  if (root !== undefined) observer?.observe(root, { attributes: true, attributeFilter: ['style', 'class', 'data-fullscreen'] })
+  if (root !== undefined) observer?.observe(root, { attributes: true, attributeFilter: ['style', 'class', 'data-platform', 'data-fullscreen'] })
   return () => {
     controls?.removeEventListener('geometrychange', listener)
     globalThis.window?.removeEventListener('resize', listener)

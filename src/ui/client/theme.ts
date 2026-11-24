@@ -36,6 +36,7 @@ export const PANEL_CSS = `
 @keyframes kb-fade-in { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
 .kb-spinner { animation: kb-spin 0.9s linear infinite }
 .kb-panel-in { animation: kb-fade-in 0.18s ease-out }
+.kb-panel-in, .kb-panel-header, .kb-panel-in [role="dialog"], [data-kb-popup] { -webkit-app-region: no-drag; app-region: no-drag }
 /* Theme-adaptive interaction fills. DSH's own layer tokens are pure white in
    the light theme and its interactive-bg-hover is only ~6% alpha, so hovers
    built on them are nearly invisible. Derive hover/active fills from the
@@ -377,7 +378,7 @@ export const style = {
   sidePanelScrim: {
     // Less transparent scrim so the drawer clearly separates from the
     // panel behind it (nothing reads through).
-    position: 'absolute', inset: 0, zIndex: 30, background: 'rgba(0,0,0,0.58)',
+    position: 'absolute', inset: 'var(--kb-titlebar-inset, 0px) 0 0', zIndex: 30, background: 'rgba(0,0,0,0.58)',
     display: 'flex', justifyContent: 'flex-end',
   } as CSSProperties,
   sidePanel: {

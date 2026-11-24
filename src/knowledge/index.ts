@@ -50,7 +50,7 @@ import { disposeLocalRerankProcess, setLocalRerankIdleTimeoutMs } from './local-
 import { downloadOcrModels, disposeOcrWorker, getOcrModelStatus, removeOcrModels, type OcrModelStatus } from './ocr.js'
 import { fetchUrlDocument } from './url-document.js'
 import { knowledgeRoute } from './http.js'
-import { SUPPORTED_DOCUMENT_EXTENSIONS, extensionOf } from './parse.js'
+import { SUPPORTED_DOCUMENT_EXTENSIONS, extensionOf, mimeTypeForFileName } from './parse.js'
 import { searchTextOf } from './retrieval.js'
 import { hashEmbeddingText, resolveChunkStorePath } from './chunkdb.js'
 import { completedChunkState, hasCompletedEmptyIndex, openStore, StorageUnavailableError } from './store.js'
@@ -82,6 +82,8 @@ import type {
   DocumentSummary,
   DirectoryImportResult,
   DirectorySyncItem,
+  DirectoryScanProgress,
+  DirectoryScanSnapshot,
   DirectorySyncResult,
   DirectorySyncRun,
   EmbeddingProvider,
@@ -215,6 +217,12 @@ interface BackgroundJob {
   done: boolean
 }
 
+interface DirectoryScan {
+  readonly runId: string
+  readonly items: DirectorySyncItem[]
+  readonly result: Promise<ReindexDocumentResult>
+}
+
 interface IndexingFailure {
   readonly baseId: string
   readonly title: string
@@ -279,7 +287,7 @@ export class KnowledgeService extends Service {
   private readonly baseWriteChains = new Map<string, Promise<unknown>>()
   private readonly localEmbeddingBatchLimits = new Map<string, number>()
   private readonly directorySyncChains = new Map<string, Promise<unknown>>()
-  private readonly directoryScans = new Map<string, Promise<ReindexDocumentResult>>()
+  private readonly directoryScans = new Map<string, DirectoryScan>()
   private readonly shutdown = new AbortController()
   /** Manual and scheduled refreshes of the same snapshot share one writer. */
   private readonly urlTasks = new Map<string, Promise<UrlTaskResult>>()
@@ -386,13 +394,13 @@ export class KnowledgeService extends Service {
     }
     // Resume documents a previous process left mid-embedding: their chunks are
     // partially persisted, so re-running the embed with hash reuse completes
-    // them without re-embedding the batches that already landed. (openStore
-    // already ran the removal half of the recovery; this second pass is
-    // idempotent and only harvests the resume list.) The `resumeInterruptedOnStartup`
-    // config gates the automatic re-spend: off marks them failed instead
-    // (Cherry's posture — a deliberate app quit must not re-spend the
-    // embedding API; the user reindexes manually).
-    const resume = store.recoverInterruptedImports(Date.now()).then(async ({ resume: resumeIds }) => {
+    // them without re-embedding the batches that already landed. Reuse the
+    // durable store's recovery result, or recover here when opening could not
+    // finish recovery or the service is using an in-memory store.
+    // The resumeInterruptedOnStartup setting controls whether to reindex or
+    // mark these documents interrupted for a manual retry.
+    const recovery = store.startupRecovery ?? store.recoverInterruptedImports(Date.now())
+    const resume = Promise.resolve(recovery).then(async ({ resume: resumeIds }) => {
       if (resumeIds.length === 0) return
       if (!this.getConfig().resumeInterruptedOnStartup) {
         const reason = 'import was interrupted by a shutdown; reindex to resume'
@@ -1020,6 +1028,9 @@ export class KnowledgeService extends Service {
     if (!SUPPORTED_DOCUMENT_EXTENSION_SET.has(extensionOf(request.fileName))) {
       throw new Error(`Unsupported knowledge file type: ${request.fileName}`)
     }
+    // Directory imports (and some upload clients) omit the MIME; derive it from
+    // the extension so raw previews do not fall back to octet-stream.
+    const mimeType = mimeTypeForFileName(request.fileName, request.mimeType)
     // Cherry Studio parity: publish the row FIRST (with "parsing" status) and
     // return immediately; the parse+embed runs on a per-base worker pool
     // (concurrency 5) and the row flips processing → completed/failed as it
@@ -1080,7 +1091,7 @@ export class KnowledgeService extends Service {
         title: resolvedTitle,
         sourceType: 'file',
         fileName: resolvedFileName,
-        ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
+        ...(mimeType !== undefined ? { mimeType } : {}),
         ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
         charCount: 0,
         chunkCount: 0,
@@ -1144,7 +1155,7 @@ export class KnowledgeService extends Service {
           baseId: request.baseId,
           documentId: docId,
           fileName,
-          ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
+          ...(mimeType !== undefined ? { mimeType } : {}),
           bytes,
           signal: taskController.signal,
         })
@@ -1157,7 +1168,7 @@ export class KnowledgeService extends Service {
           title,
           sourceType: 'file',
           fileName,
-          ...(request.mimeType !== undefined ? { mimeType: request.mimeType } : {}),
+          ...(mimeType !== undefined ? { mimeType } : {}),
           ...(request.parentDirectoryId !== undefined ? { parentDirectoryId: request.parentDirectoryId } : {}),
           placeholderId: docId,
           rawFilePath,
@@ -1796,7 +1807,7 @@ export class KnowledgeService extends Service {
       // everything else is re-chunked/re-embedded. Legacy containers without
       // a source path fall back to re-indexing the existing children only.
       if (document.sourcePath !== undefined && options.mode === undefined) {
-        return await this.rescanDirectory(document)
+        return this.rescanDirectory(document).result
       }
       // One bad leaf must not abort the rest of the subtree (Cherry's
       // reindex-subtree job keeps going; failing leaves are surfaced, not
@@ -2103,19 +2114,45 @@ export class KnowledgeService extends Service {
 
   /** Reindexing a tracked directory is the same operation as re-importing its
    * source: one source identity, one diff engine, and one truthful result. */
-  private async rescanDirectory(document: KnowledgeDocument): Promise<ReindexDocumentResult> {
+  private rescanDirectory(document: KnowledgeDocument, runId: string = crypto.randomUUID()): DirectoryScan {
     const pending = this.directoryScans.get(document.id)
     if (pending !== undefined) return pending
-    const run = this.withDirectorySyncLock(document.baseId, async () => {
+    const items: DirectorySyncItem[] = []
+    const result = this.withDirectorySyncLock(document.baseId, async () => {
       const source = this.requireStore().getDocument(document.id)
       if (source === undefined) throw new NotFoundError('directory source no longer exists')
-      const sync = await this.syncDirectorySource(source, source.sourcePath!, 'synced')
+      const sync = await this.syncDirectorySource(source, source.sourcePath!, 'synced', items, runId)
       const current = this.requireStore().getDocument(source.id) ?? source
       return { ...current, sync }
     })
-    this.directoryScans.set(document.id, run)
-    try { return await run }
-    finally { if (this.directoryScans.get(document.id) === run) this.directoryScans.delete(document.id) }
+    const scan = { runId, items, result }
+    this.directoryScans.set(document.id, scan)
+    const clear = (): void => { this.directoryScans.delete(document.id) }
+    void result.then(clear, clear)
+    return scan
+  }
+
+  private activeDirectoryScan(doc: KnowledgeDocument): DirectoryScanProgress | undefined {
+    const scan = this.directoryScans.get(doc.id)
+    if (scan === undefined) return undefined
+    return { runId: scan.runId, sourceId: doc.id, title: doc.title, processed: scan.items.length, lastPath: scan.items.at(-1)?.relativePath }
+  }
+
+  getDirectoryRescan(sourceId: string): DirectoryScanSnapshot {
+    const doc = this.requireStore().getDocument(sourceId)
+    return doc === undefined ? {} : { active: this.activeDirectoryScan(doc), last: doc.lastDirectorySync }
+  }
+
+  startDirectoryRescan(sourceId: string, runId?: string): DirectoryScanSnapshot {
+    const doc = this.requireStore().getDocument(sourceId)
+    if (doc === undefined) throw new NotFoundError('directory source not found')
+    if (doc.sourceType !== 'directory' || doc.sourcePath === undefined) {
+      throw new DirectorySourceError('invalid_sync_source', 'rescan requires a directory bound to a server path')
+    }
+    if (!this.directoryScans.has(sourceId) && (runId === undefined || runId !== doc.lastDirectorySync?.runId)) {
+      this.runBackground('directory rescan', this.rescanDirectory(doc, runId).result)
+    }
+    return this.getDirectoryRescan(sourceId)
   }
 
   /** Separate from the short metadata write lock: a scan itself performs writes. */
@@ -2156,14 +2193,16 @@ export class KnowledgeService extends Service {
     root: KnowledgeDocument,
     sourcePath: string,
     mode: 'created' | 'synced',
+    items: DirectorySyncItem[] = [],
+    runId?: string,
   ): Promise<DirectorySyncResult> {
     const startedAt = Date.now()
     const record = async (run: DirectorySyncRun): Promise<void> => {
       const current = this.requireStore().getDocument(root.id)
-      if (current !== undefined) await this.requireStore().putDocument({ ...current, lastDirectorySync: run })
+      if (current !== undefined) await this.requireStore().putDocument({ ...current, lastDirectorySync: { ...run, ...(runId === undefined ? {} : { runId }) } })
     }
     try {
-      const result = await this.performDirectorySync(root, sourcePath, mode)
+      const result = await this.performDirectorySync(root, sourcePath, mode, items)
       const { items: _items, sourceId: _sourceId, ...summary } = result
       const firstFailure = result.items.find(item => item.action === 'failed')
       await record({ ...summary, startedAt, finishedAt: Date.now(),
@@ -2178,7 +2217,7 @@ export class KnowledgeService extends Service {
     }
   }
 
-  private async performDirectorySync(root: KnowledgeDocument, sourcePath: string, mode: 'created' | 'synced'): Promise<DirectorySyncResult> {
+  private async performDirectorySync(root: KnowledgeDocument, sourcePath: string, mode: 'created' | 'synced', items: DirectorySyncItem[]): Promise<DirectorySyncResult> {
     const store = this.requireStore()
     if (root.sourceType !== 'directory') throw new Error('directory sync requires a directory source')
     const canonicalSource = await this.canonicalDirectoryPath(sourcePath)
@@ -2196,7 +2235,6 @@ export class KnowledgeService extends Service {
       children.push(document)
       childrenByParent.set(document.parentDirectoryId, children)
     }
-    const items: DirectorySyncItem[] = []
     this.indexing.set(root.id, { baseId: root.baseId, title: root.title, phase: 'parsing', total: 0, progress: 0 })
     try {
       const boundRoot = await this.bindDocumentSourcePath(root, canonicalSource)
@@ -2424,20 +2462,23 @@ export class KnowledgeService extends Service {
   private async ingestPathFile(baseId: string, sourcePath: string, fileName: string, parentDirectoryId?: string): Promise<KnowledgeDocument> {
     const store = this.requireStore()
     const buffer = await readFile(sourcePath)
+    const mimeType = mimeTypeForFileName(fileName)
     const documentId = crypto.randomUUID()
     const rawFilePath = await store.raw?.write(baseId, documentId, safeRawExtension(fileName), buffer)
     const controller = new AbortController()
     try {
       if (store.getBase(baseId) === undefined) throw new NotFoundError('knowledge base no longer exists')
       await store.putDocument({ id: documentId, baseId, title: fileName, fileName, sourceType: 'file',
+        ...(mimeType !== undefined ? { mimeType } : {}),
         sourcePath, rawFilePath, parentDirectoryId, charCount: 0, chunkCount: 0, createdAt: Date.now(), incomplete: true })
       this.indexing.set(documentId, { baseId, title: fileName, phase: 'parsing', total: 0, progress: 0, controller })
-      const processed = await this.extractDocumentText({ baseId, documentId, bytes: buffer, fileName, signal: controller.signal })
+      const processed = await this.extractDocumentText({ baseId, documentId, bytes: buffer, fileName, ...(mimeType !== undefined ? { mimeType } : {}), signal: controller.signal })
       return await this.ingestDocument({
         baseId,
         title: fileName,
         sourceType: 'file',
         fileName,
+        ...(mimeType !== undefined ? { mimeType } : {}),
         parentDirectoryId,
         placeholderId: documentId,
         processed,
@@ -2733,6 +2774,7 @@ export class KnowledgeService extends Service {
       }
     }
     return allDocs.map(doc => {
+      const directoryScan = this.activeDirectoryScan(doc)
       const embedded = withChunks.has(doc.id) && !missingEmbedding.has(doc.id)
       const active = this.indexing.get(doc.id)
       let status: 'pending' | 'processing' | 'completed' | 'failed' = 'pending'
@@ -2752,6 +2794,7 @@ export class KnowledgeService extends Service {
         ...(doc.sourcePath !== undefined ? { sourcePath: doc.sourcePath } : {}),
         ...(doc.syncIntervalMinutes !== undefined ? { syncIntervalMinutes: doc.syncIntervalMinutes } : {}),
         ...(doc.lastDirectorySync !== undefined ? { lastDirectorySync: doc.lastDirectorySync } : {}),
+        ...(directoryScan !== undefined ? { directoryScan } : {}),
         ...(doc.processing !== undefined ? { processing: doc.processing } : {}),
         charCount: doc.charCount,
         tokenCount: doc.tokenCount,
@@ -3205,7 +3248,8 @@ export class KnowledgeService extends Service {
     if (doc === undefined || doc.rawFilePath === undefined) return undefined
     const bytes = await store.raw?.read(doc.rawFilePath)
     if (bytes === null || bytes === undefined) return undefined
-    return { bytes, fileName: doc.fileName ?? doc.title, mimeType: doc.mimeType }
+    const fileName = doc.fileName ?? doc.title
+    return { bytes, fileName, mimeType: mimeTypeForFileName(fileName, doc.mimeType) }
   }
 
   /** Read one document's source text as a `[charStart, charEnd)` slice (kb_read read mode). */

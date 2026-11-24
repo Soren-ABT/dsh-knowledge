@@ -90,6 +90,15 @@ describe('native titlebar safe area (#35)', () => {
     expect(getTitlebarInset()).toBe(0)
   })
 
+  it('uses the RC5 preload platform when the desktop has a browser user agent', () => {
+    const page = desktop('MacIntel')
+    vi.stubGlobal('navigator', { platform: 'MacIntel', userAgent: 'Mozilla/5.0 Chrome/130 Safari/537.36' })
+    page.documentElement.dataset.platform = 'darwin'
+    expect(getTitlebarInset()).toBe(38)
+    page.documentElement.dataset.platform = 'win32'
+    expect(getTitlebarInset()).toBe(40)
+  })
+
   it('recognizes shell platform from the user agent and Tauri bridge', () => {
     desktop('MacIntel')
     vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0) Electron/40.0' })

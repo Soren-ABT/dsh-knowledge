@@ -139,6 +139,10 @@ export type KnowledgeKey =
   | 'modelIdleWarm'
   | 'modelIdleResident'
   | 'directoryRescan'
+  | 'directoryScanProgress'
+  | 'pdfFormatUnknown'
+  | 'directoryScanReconnecting'
+  | 'directoryScanUnconfirmed'
   | 'directoryBind'
   | 'directoryUnboundHint'
   | 'directorySyncInterval'
@@ -206,6 +210,8 @@ export type KnowledgeKey =
   | 'resumeInterrupted'
   | 'autoRetrieve'
   | 'autoRetrieveHint'
+  | 'autoRetrieveCitation'
+  | 'autoRetrieveCitationHint'
   | 'injectUsagePrompt'
   | 'injectUsagePromptHint'
   | 'autoRetrieveWeight'
@@ -533,6 +539,10 @@ export const zh: Record<KnowledgeKey, string> = {
   modelIdleWarm: '保温（15 分钟）',
   modelIdleResident: '常驻（持续占用内存）',
   directoryRescan: '重新扫描目录',
+  directoryScanProgress: '已扫描条目',
+  pdfFormatUnknown: '无法识别 PDF 格式，可下载原文件查看。',
+  directoryScanReconnecting: '正在重新连接以查询扫描进度',
+  directoryScanUnconfirmed: '未找到本次扫描的完成记录，请查看来源状态后重试',
   directoryBind: '绑定磁盘目录',
   directoryUnboundHint: '上传的是文件副本；绑定服务端绝对路径后可同步新增、修改和删除。',
   directorySyncInterval: '自动同步',
@@ -603,6 +613,8 @@ export const zh: Record<KnowledgeKey, string> = {
   injectUsagePrompt: '可用知识库提示',
   injectUsagePromptHint: '每次请求仅提示库名；关闭不影响知识库工具或自动检索',
   autoRetrieveHint: '开启后，模型回答事实性问题时自动使用知识库内容，无需显式提到“知识库”；关闭后仅按需调用（knowledge_search 工具 + 显式请求）',
+  autoRetrieveCitation: '自动检索时要求引用来源标签',
+  autoRetrieveCitationHint: '关闭后仍会注入参考资料和“不可信内容”边界，只是不再要求模型输出 [source: …] 标签；引用信息仍保留在注入内容里',
   autoRetrieveWeight: '自动检索权重（每库可注入的分块数，0 = 不参与）',
   autoRetrieveWeightHint: '每个库在一次自动检索注入中最多贡献该数量的分块（0–5，默认 3）；权重高可让该库内容占更多上下文，0 则完全排除该库',
   localWorkerIdleTimeoutMs: '本地模型 worker 空闲超时（毫秒，0 = 模型常驻）',
@@ -933,6 +945,10 @@ export const en: Record<KnowledgeKey, string> = {
   modelIdleWarm: 'Keep warm (15 minutes)',
   modelIdleResident: 'Resident (keeps memory allocated)',
   directoryRescan: 'Rescan directory',
+  directoryScanProgress: 'Entries scanned',
+  pdfFormatUnknown: 'The PDF format could not be recognized. Download the original file to inspect it.',
+  directoryScanReconnecting: 'Reconnecting to check scan progress',
+  directoryScanUnconfirmed: 'No completion record for this scan. Check the source before retrying.',
   directoryBind: 'Bind disk directory',
   directoryUnboundHint: 'Uploads are file copies. Bind an absolute server path to sync additions, edits and deletions.',
   directorySyncInterval: 'Auto sync',
@@ -1003,6 +1019,8 @@ export const en: Record<KnowledgeKey, string> = {
   injectUsagePrompt: 'Available knowledge-base prompt',
   injectUsagePromptHint: 'Lists base names on each request; turning it off keeps tools and auto-retrieval available',
   autoRetrieveHint: 'When on, the model automatically uses knowledge-base content for factual questions without an explicit "knowledge base" mention; when off, only on-demand calls (knowledge_search tool + explicit requests)',
+  autoRetrieveCitation: 'Ask the model to cite auto-retrieve source labels',
+  autoRetrieveCitationHint: 'Off keeps the injected evidence and the untrusted-content boundary, but drops the instruction to print [source: …] labels; the labels remain in the injected text',
   autoRetrieveWeight: 'Auto-retrieve weight (chunks this base may contribute, 0 = excluded)',
   autoRetrieveWeightHint: 'A base contributes at most this many chunks per auto-retrieve injection (0–5, default 3); higher lets its content take more context, 0 excludes it entirely',
   localWorkerIdleTimeoutMs: 'Local-model worker idle timeout (ms, 0 = keep models hot)',

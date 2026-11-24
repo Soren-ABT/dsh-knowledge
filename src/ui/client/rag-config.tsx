@@ -818,6 +818,16 @@ export function RagConfigPanel(props: PanelProps): JSX.Element {
                   onChange={(e) => patch({ autoRetrieve: e.target.checked })}
                 />
               </FieldRow>
+              {scope === 'global' && (
+                <FieldRow label={t('autoRetrieveCitation')} hint={t('autoRetrieveCitationHint')}>
+                  <input
+                    type="checkbox"
+                    aria-label={t('autoRetrieveCitation')}
+                    checked={values.autoRetrieveCitation !== false}
+                    onChange={(e) => patch({ autoRetrieveCitation: e.target.checked })}
+                  />
+                </FieldRow>
+              )}
               <FieldRow label={t('autoRetrieveWeight')} hint={t('autoRetrieveWeightHint')}>
                 <input
                   style={{ ...style.input, width: 100 }}

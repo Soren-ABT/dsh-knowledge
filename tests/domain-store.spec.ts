@@ -1163,6 +1163,67 @@ describe('local-path import source tracking', () => {
     } finally { release(); await closeStore(service); await rm(dir, { recursive: true, force: true }) }
   })
 
+  it('reconnects to the same directory scan after a long HTTP request disconnects (#84)', async () => {
+    const dir = await tempDir()
+    const source = join(dir, 'wiki')
+    await mkdir(source)
+    const domain = fakeDomain()
+    let service = await mount(dir, domain)
+    const route = knowledgeRoute(service)
+    if (route.kind !== 'prefix') throw new Error('expected knowledge route')
+    const server = createServer((req, res) => { void route.handler(req, res) })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('missing address')
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    try {
+      const base = await service.createBase({ name: 'reconnect' })
+      const { sourceId } = await service.importDirectoryTree(base.id, source)
+      await writeFile(join(source, 'a.md'), 'first example')
+      await writeFile(join(source, 'b.md'), 'second example')
+      const store = storeOf(service)
+      const put = store.putDocument.bind(store)
+      let paused = false
+      vi.spyOn(store, 'putDocument').mockImplementation(async doc => {
+        if (doc.fileName === 'b.md' && doc.incomplete) { paused = true; await gate }
+        return put(doc)
+      })
+      const url = `http://127.0.0.1:${address.port}/knowledge/documents/${sourceId}`
+      const runId = crypto.randomUUID()
+      const start = () => fetch(url + '/rescan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ runId }) })
+      const started = await start()
+      expect(started.status).toBe(200)
+      expect((await started.json()).value.active).toMatchObject({ runId, sourceId })
+      await vi.waitFor(() => expect(paused).toBe(true))
+      const controller = new AbortController()
+      const legacyReceived = new Promise<void>(resolve => server.once('request', () => resolve()))
+      const legacy = fetch(url + '/reindex', { method: 'POST', signal: controller.signal }).then(() => 'finished', () => 'disconnected')
+      await legacyReceived
+      const status = async () => (await (await fetch(url + '/rescan')).json()).value
+      expect((await status()).active).toMatchObject({ runId, lastPath: 'a.md' })
+      controller.abort()
+      expect(await legacy).toBe('disconnected')
+      expect((await (await start()).json()).value.active.runId).toBe(runId)
+      expect(service.listDocuments(base.id).find(doc => doc.id === sourceId)?.directoryScan?.runId).toBe(runId)
+      release()
+      await vi.waitFor(async () => expect((await status()).last).toMatchObject({ runId, status: 'synced', created: 2, failed: 0 }))
+      const replay = (await (await start()).json()).value
+      expect(replay.active).toBeUndefined()
+      expect(replay.last.runId).toBe(runId)
+      expect(service.listDocuments(base.id)).toHaveLength(3)
+      await closeStore(service)
+      service = await mount(dir, domain)
+      expect(service.getDirectoryRescan(sourceId).last?.runId).toBe(runId)
+    } finally {
+      release()
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      await closeStore(service)
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('serializes initial imports and coalesces simultaneous rescans of one source', async () => {
     const dir = await tempDir()
     const source = join(dir, 'wiki')
@@ -1645,6 +1706,55 @@ describe('local-path import source tracking', () => {
         await closeStore(service)
       }
     } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reuses one chunk count pass for durable startup and keeps completed empty documents completed', async () => {
+    const dir = await tempDir()
+    vi.stubEnv('DSH_HOME', dir)
+    const domain = fakeDomain()
+    const counts = vi.spyOn(ChunkDatabase.prototype, 'chunkCountsByDoc')
+    const coverage = vi.spyOn(ChunkDatabase.prototype, 'docChunkStatus')
+    let service: KnowledgeService | undefined
+    try {
+      service = await mount(dir, domain)
+      await service.setConfig({ resumeInterruptedOnStartup: false })
+      const base = await service.createBase({ name: 'Startup recovery' })
+      const imported = await service.addTextDocument({ baseId: base.id, title: 'Indexed', content: 'Already indexed content' })
+      const store = storeOf(service)
+      const indexed = store.getDocument(imported.id)!
+      expect(indexed.chunkCount).toBeGreaterThan(0)
+      await store.putDocument({ ...indexed, chunkCount: 0 })
+
+      const interrupted: KnowledgeDocument = {
+        id: 'interrupted', baseId: base.id, title: 'Interrupted import', sourceType: 'text',
+        rawText: 'Recoverable text', charCount: 16, chunkCount: 0, incomplete: true, createdAt: 1, updatedAt: 1,
+      }
+      await store.putDocument(interrupted)
+      await store.putDocument({
+        ...interrupted, id: 'empty', title: 'Completed empty import',
+        rawText: '', charCount: 0, chunkCount: 1, incomplete: false,
+      })
+
+      await closeStore(service)
+      service = undefined
+      counts.mockClear()
+      coverage.mockClear()
+      const reopened = await mount(dir, domain)
+      service = reopened
+      await vi.waitFor(() => {
+        expect(storeOf(reopened).getDocument('interrupted')?.errorCode).toBe('interrupted')
+      })
+      expect(storeOf(reopened).getDocument(indexed.id)?.chunkCount).toBe(indexed.chunkCount)
+      expect(storeOf(reopened).getDocument('empty')).toMatchObject({ chunkCount: 0, incomplete: false })
+      expect(storeOf(reopened).getDocument('empty')?.errorCode).toBeUndefined()
+      expect(counts).toHaveBeenCalledTimes(1)
+      expect(coverage).not.toHaveBeenCalled()
+    } finally {
+      counts.mockRestore()
+      coverage.mockRestore()
+      if (service !== undefined) await closeStore(service)
       await rm(dir, { recursive: true, force: true })
     }
   })

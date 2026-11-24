@@ -1,16 +1,17 @@
-import type { BaseSourceInfo } from './api.js'
+import { useEffect, useState } from 'react'
+import type { BaseSourceInfo, DirectoryScanProgress, DirectoryScanSnapshot, KnowledgeApi } from './api.js'
 import type { Translate } from './locales.js'
 import { C, style } from './theme.js'
 
-export function DirectorySyncControls({ source, busy, t, onScan, onBind, onInterval }: {
-  source: BaseSourceInfo; busy: boolean; t: Translate
+export function DirectorySyncControls({ source, busy, scanning, t, onScan, onBind, onInterval }: {
+  source: BaseSourceInfo; busy: boolean; scanning: boolean; t: Translate
   onScan: () => void; onBind: () => void; onInterval: (minutes: number) => void
 }): JSX.Element {
   const bound = source.sourcePath !== undefined
   const last = source.lastDirectorySync
   return (
     <span style={{ display: 'inline-flex', flex: '1 1 100%', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-      <button type="button" style={style.button} disabled={busy || !bound} onClick={onScan}>{t('directoryRescan')}</button>
+      <button type="button" style={style.button} disabled={busy || scanning || !bound} onClick={onScan}>{t('directoryRescan')}</button>
       <button type="button" style={style.button} disabled={busy} onClick={onBind}>{t(bound ? 'sourcePathEdit' : 'directoryBind')}</button>
       {bound ? (
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -29,5 +30,46 @@ export function DirectorySyncControls({ source, busy, t, onScan, onBind, onInter
         </span>
       )}
     </span>
+  )
+}
+
+export function DirectoryScanStatus({ initial, api, t, onFinish }: {
+  initial: DirectoryScanProgress
+  api: KnowledgeApi
+  t: Translate
+  onFinish: (scan: DirectoryScanProgress, snapshot: DirectoryScanSnapshot) => void
+}): JSX.Element {
+  const [progress, setProgress] = useState(initial)
+  const [reconnecting, setReconnecting] = useState(false)
+  useEffect(() => {
+    let disposed = false
+    let timer: number | undefined
+    const poll = async (): Promise<void> => {
+      let delay = 800
+      try {
+        const snapshot = await api.getDirectoryRescan(initial.sourceId)
+        if (disposed) return
+        if (snapshot.active?.runId !== initial.runId) {
+          onFinish(initial, snapshot)
+          return
+        }
+        setProgress(snapshot.active)
+        setReconnecting(false)
+      } catch {
+        if (disposed) return
+        setReconnecting(true)
+        delay = 2000
+      }
+      timer = window.setTimeout(() => { void poll() }, delay)
+    }
+    void poll()
+    return () => { disposed = true; window.clearTimeout(timer) }
+  }, [api, initial, onFinish])
+  return (
+    <div role="status" style={{ fontSize: 12, color: C.muted, overflowWrap: 'anywhere' }}>
+      {progress.title} · {t('directoryScanProgress')} {progress.processed}
+      {progress.lastPath ? ` · ${progress.lastPath}` : ''}
+      {reconnecting ? ` · ${t('directoryScanReconnecting')}` : ''}
+    </div>
   )
 }

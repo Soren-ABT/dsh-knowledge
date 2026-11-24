@@ -106,6 +106,7 @@ const documentSchema = z.object({
   sourcePath: z.string().optional(),
   syncIntervalMinutes: z.union([z.literal(0), z.literal(5), z.literal(15), z.literal(60)]).optional(),
   lastDirectorySync: z.object({
+      runId: z.string().optional(),
     startedAt: z.number(), finishedAt: z.number(),
     status: z.enum(['synced', 'unchanged', 'partial', 'failed']),
     created: z.number().int().gte(0), updated: z.number().int().gte(0),
@@ -168,6 +169,7 @@ export const configOverridesSchema = z.object({
   imageCaptionApiKey: z.string().optional(),
   resumeInterruptedOnStartup: z.boolean().optional(),
   autoRetrieve: z.boolean().optional(),
+  autoRetrieveCitation: z.boolean().optional(),
   injectUsagePrompt: z.boolean().optional(),
   autoRetrieveWeight: z.number().int().gte(0).lte(5).optional(),
   localModelCacheDir: z.string().optional(),
@@ -216,6 +218,7 @@ export interface ConfigOverrides {
   imageCaptionApiKey?: string
   resumeInterruptedOnStartup?: boolean
   autoRetrieve?: boolean
+  autoRetrieveCitation?: boolean
   injectUsagePrompt?: boolean
   autoRetrieveWeight?: number
   localModelCacheDir?: string

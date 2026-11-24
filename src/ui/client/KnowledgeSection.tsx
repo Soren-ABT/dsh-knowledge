@@ -8,7 +8,8 @@
  * @module dsh-knowledge/client/KnowledgeSection
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import type { CSSProperties, DragEvent } from 'react'
 import { serializeContextWindow } from '../../knowledge/context.js'
 import { KnowledgeApi } from './api.js'
@@ -20,7 +21,10 @@ import type {
   BaseSummary,
   ChunkView,
   DeleteImpact,
+  DirectoryScanProgress,
+  DirectoryScanSnapshot,
   DirectorySyncResult,
+  DirectorySyncRun,
   DocumentSummary,
   KnowledgeConfig,
   LocalModelStatus,
@@ -72,10 +76,11 @@ import type { RestoreEmbeddingConfig, Toast } from './dialogs.js'
 import { ContextMenu, PopoverMenu } from './popover.js'
 import type { MenuEntry } from './popover.js'
 import { RagConfigPanel } from './rag-config.js'
-import { DirectorySyncControls } from './DirectorySyncControls.js'
+import { DirectoryScanStatus, DirectorySyncControls } from './DirectorySyncControls.js'
 import { ModelRuntimeStatus } from './ModelRuntimeStatus.js'
 import type { Translate } from './locales.js'
 import type { KnowledgePanelStore } from './panel-store.js'
+import { listenForEscape } from './panel-escape.js'
 
 export type { Translate } from './locales.js'
 
@@ -135,7 +140,9 @@ export function KnowledgePanel(props: {
 }): JSX.Element | null {
   const open = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot)
   if (!open) return null
-  return <PanelBody api={props.api} t={props.t} onClose={() => props.store.close()} />
+  // Electron composes native drag rectangles in DOM order. A body portal
+  // places the panel after the host frame's drag rows and stacking contexts.
+  return createPortal(<PanelBody api={props.api} t={props.t} onClose={() => props.store.close()} />, document.body)
 }
 
 type DialogState =
@@ -166,11 +173,31 @@ interface RecallEntry {
 function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void }): JSX.Element {
   const titlebarInset = useSyncExternalStore(subscribeTitlebarInset, getTitlebarInset, () => 0)
   const { api, t, onClose } = props
+  const panelRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const panel = panelRef.current!
+    const doc = panel.ownerDocument
+    const opener = doc.activeElement
+    panel.focus({ preventScroll: true })
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected
+          && (doc.activeElement === doc.body || panel.contains(doc.activeElement))) {
+        opener.focus({ preventScroll: true })
+      }
+    }
+  }, [])
+  useEffect(() => listenForEscape(panelRef.current, onClose), [onClose])
   const [bases, setBases] = useState<BaseSummary[]>([])
   const [groups, setGroups] = useState<string[]>([])
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([])
   const [filter, setFilter] = useState('')
   const [selectedBaseId, setSelectedBaseId] = useState<string | null>(null)
+  const selectedBaseRef = useRef<string | null>(null)
+  const [directoryScans, setDirectoryScans] = useState<DirectoryScanProgress[]>([])
+  const watchScan = useCallback((scan: DirectoryScanProgress): void => {
+    setDirectoryScans(current => current.some(item => item.sourceId === scan.sourceId && item.runId === scan.runId)
+      ? current : [...current.filter(item => item.sourceId !== scan.sourceId), scan])
+  }, [])
   const [ragOpen, setRagOpen] = useState(false)
   const [recallOpen, setRecallOpen] = useState(false)
   const [documents, setDocuments] = useState<DocumentSummary[]>([])
@@ -314,10 +341,6 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     return () => { cancelled = true }
   }, [api])
 
-  const refreshStats = useCallback(async (baseId: string | null): Promise<void> => {
-    setStats(await api.stats(baseId ?? undefined))
-  }, [api])
-
   // Monotonic guard for base/document navigation: a slow response from a
   // previous selection must never overwrite the current one (rapid A→B
   // switching used to end up showing A's documents under B's selection).
@@ -325,6 +348,8 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
 
   const selectBase = useCallback(async (id: string): Promise<void> => {
     const seq = ++navSeq.current
+    selectedBaseRef.current = id
+    setDirectoryScans([])
     setSelectedBaseId(id)
     setSelectedDocId(null)
     setCurrentDirectoryId(null)
@@ -341,9 +366,10 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       const [docs, stats] = await Promise.all([api.listDocuments(id), api.stats(id)])
       if (seq !== navSeq.current) return
       setDocuments(docs)
+      for (const doc of docs) if (doc.directoryScan) watchScan(doc.directoryScan)
       setStats(stats)
     })
-  }, [api, run])
+  }, [api, run, watchScan])
 
   const openDocument = useCallback(async (id: string, mode: 'preview' | 'chunks'): Promise<void> => {
     const seq = ++navSeq.current
@@ -393,18 +419,20 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     setDocLimit(100)
   }, [currentDirectoryId, documents])
 
-  const reloadDocuments = useCallback(async (): Promise<void> => {
-    if (selectedBaseId === null) return
-    const next = await api.listDocuments(selectedBaseId)
+  const reloadDocuments = useCallback(async (kickPoll = true): Promise<void> => {
+    if (selectedBaseId === null || selectedBaseRef.current !== selectedBaseId) return
+    const [next, nextStats] = await Promise.all([api.listDocuments(selectedBaseId), api.stats(selectedBaseId)])
+    if (selectedBaseRef.current !== selectedBaseId) return
     setDocuments(next)
-    await refreshStats(selectedBaseId)
+    setStats(nextStats)
+    for (const doc of next) if (doc.directoryScan) watchScan(doc.directoryScan)
     await refreshBases()
     // Cherry's data-driven polling: rows carry live status + progress from
     // listDocuments itself, so the poll only watches for state FLIPS (a
     // placeholder appearing, or processing rows settling). Kick the poll when
     // this refresh observed processing rows; it stops itself once idle.
-    if (next.some(doc => doc.status === 'processing')) setPollKick(kick => kick + 1)
-  }, [api, refreshBases, refreshStats, selectedBaseId])
+    if (kickPoll && selectedBaseRef.current === selectedBaseId && next.some(doc => doc.status === 'processing')) setPollKick(kick => kick + 1)
+  }, [api, refreshBases, watchScan, selectedBaseId])
 
   // Cherry's conditional polling: 800ms while anything is importing/embedding
   // (detects state flips and refreshes the list), STOPS when idle — a new
@@ -433,9 +461,9 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
             return entry === undefined ? doc : { ...doc, indexingPhase: entry.phase, indexingProgress: entry.progress, processingProgress: entry.processingProgress }
           }))
         }
-        if (!disposed && changed) void reloadDocuments()
+        if (!disposed && changed) await reloadDocuments(false)
       } catch {
-        // polling is best-effort
+        anyActive = activeIdsRef.current.size > 0
       }
       // Continue only while active; otherwise stop and wait for the next
       // reloadDocuments kick (no more idle-timeout polling — the list is
@@ -518,6 +546,8 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       await api.deleteBase(base.id)
       notify('success', `${t('delete')}: ${base.name}`)
       if (selectedBaseId === base.id) {
+        selectedBaseRef.current = null
+        setDirectoryScans([])
         setSelectedBaseId(null)
         setDocuments([])
         setChunks([])
@@ -572,7 +602,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
    *  has nothing to create, so presenting only the created count told the user
    *  "0 documents" for a sync that confirmed every file — and a sync with per-file
    *  failures presented the successes as an overall success. */
-  const notifySync = useCallback((label: string, sync: DirectorySyncResult): void => {
+  const notifySync = useCallback((label: string, sync: DirectorySyncResult | DirectorySyncRun): void => {
     const parts: string[] = []
     if (sync.created > 0) parts.push(`${t('syncCreated')} ${sync.created}`)
     if (sync.updated > 0) parts.push(`${t('syncUpdated')} ${sync.updated}`)
@@ -580,9 +610,13 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     if (sync.unchanged > 0) parts.push(`${t('syncUnchanged')} ${sync.unchanged}`)
     if (sync.failed > 0) parts.push(`${t('syncFailed')} ${sync.failed}`)
     const summary = parts.join(' · ')
-    if (sync.failed > 0) {
-      const first = sync.items.find(item => item.action === 'failed' && item.error !== undefined)
-      notify('warning', `${label} · ${summary}${first?.error !== undefined ? ` — ${first.relativePath}: ${first.error.message}` : ''}`)
+    if (sync.failed > 0 || sync.status === 'failed') {
+      let reason: string | undefined
+      if ('items' in sync) {
+        const first = sync.items.find(item => item.action === 'failed' && item.error !== undefined)
+        if (first?.error) reason = `${first.relativePath}: ${first.error.message}`
+      } else reason = sync.error
+      notify(sync.status === 'failed' ? 'error' : 'warning', `${label} · ${summary}${reason ? ` — ${reason}` : ''}`)
       return
     }
     if (sync.created + sync.updated + sync.deleted === 0) {
@@ -591,6 +625,36 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
     }
     notify('success', `${label} · ${summary}`)
   }, [notify, t])
+
+  const finishScan = useCallback((scan: DirectoryScanProgress, snapshot: DirectoryScanSnapshot): void => {
+    if (selectedBaseRef.current !== selectedBaseId) return
+    setDirectoryScans(current => current.filter(item => item.runId !== scan.runId || item.sourceId !== scan.sourceId))
+    if (snapshot.active) watchScan(snapshot.active)
+    if (snapshot.last?.runId === scan.runId) notifySync(scan.title, snapshot.last)
+    else if (!snapshot.active) notify('warning', `${scan.title} · ${t('directoryScanUnconfirmed')}`)
+    void run(() => reloadDocuments())
+  }, [selectedBaseId, watchScan, notifySync, notify, t, run, reloadDocuments])
+
+  const requestDirectoryRescan = useCallback(async (doc: DocumentSummary): Promise<void> => {
+    const runId = globalThis.crypto.randomUUID?.() ?? Array.from(globalThis.crypto.getRandomValues(new Uint32Array(4))).join('-')
+    const scan = { runId, sourceId: doc.id, title: doc.title, processed: 0 }
+    let snapshot: DirectoryScanSnapshot
+    try {
+      snapshot = await api.startDirectoryRescan(doc.id, runId)
+    } catch (startError) {
+      // A lost acknowledgement can arrive after the host accepted the scan.
+      // Reconcile through GET; repeating POST could enqueue a second pass.
+      try { snapshot = await api.getDirectoryRescan(doc.id) }
+      catch {
+        if (selectedBaseRef.current === doc.baseId) watchScan(scan)
+        return
+      }
+      if (!snapshot.active && snapshot.last?.runId !== runId) throw startError
+    }
+    if (selectedBaseRef.current !== doc.baseId) return
+    if (snapshot.active) watchScan(snapshot.active)
+    else finishScan(scan, snapshot)
+  }, [api, watchScan, finishScan])
 
   const addPath = useCallback((path: string): void => {
     if (selectedBaseId === null) return
@@ -764,6 +828,9 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       void runFileImport(files, resolution).finally(() => setPendingResolution(null)).catch(reportImportFailure)
     }
   }, [pendingConflict, pendingResolution, runFileImport])
+
+  const conflictRef = useRef<HTMLDivElement>(null)
+  useEffect(() => listenForEscape(conflictRef.current, () => resolveConflict('cancel')), [resolveConflict])
 
   // ── drag & drop upload (Cherry Studio drops files onto the knowledge list) ──
 
@@ -970,6 +1037,10 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   }, [t])
 
   const reindexDoc = useCallback(async (doc: DocumentSummary, mode?: 'reparse' | 'rechunk'): Promise<void> => {
+    if (doc.sourceType === 'directory' && doc.sourcePath !== undefined && mode === undefined) {
+      await run(() => requestDirectoryRescan(doc))
+      return
+    }
     // Optimistic: mark the folder and its WHOLE subtree (all nesting levels)
     // as processing immediately — a fast reindex would otherwise finish
     // before any poll observes it, leaving deep folders/files on 'ready'.
@@ -993,7 +1064,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       for (const id of optimisticIds) next.delete(id)
       return next
     })
-  }, [api, run, reloadDocuments, notify, notifySync, t, collectSubtreeIds])
+  }, [api, run, reloadDocuments, notify, notifySync, t, collectSubtreeIds, requestDirectoryRescan])
 
   const refreshUrlDoc = useCallback(async (doc: DocumentSummary): Promise<void> => {
     await run(async () => {
@@ -1044,11 +1115,25 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       notify('warning', t('bulkReindexNone'))
       return
     }
-    const optimisticIds = reindexable.flatMap(doc => collectSubtreeIds(doc.id))
+    const rootIds = new Set(outermostSelectedIds(reindexable.map(doc => doc.id)))
+    const roots = reindexable.filter(doc => rootIds.has(doc.id))
+    const bound = roots.filter(doc => doc.sourceType === 'directory' && doc.sourcePath !== undefined)
+    const queuedIds = new Set(bound.map(doc => doc.id))
+    const ordinary = roots.filter(doc => !queuedIds.has(doc.id))
+    const optimisticIds = ordinary.flatMap(doc => collectSubtreeIds(doc.id))
     setOptimisticProcessing(prev => new Set([...prev, ...optimisticIds]))
     setPollKick(kick => kick + 1)
     await run(async () => {
-      const result = await api.reindexDocuments(reindexable.map(doc => doc.id))
+      for (const doc of bound) {
+        try { await requestDirectoryRescan(doc) }
+        catch (error) { notify('error', `${doc.title} · ${error instanceof Error ? error.message : String(error)}`) }
+      }
+      if (ordinary.length === 0) {
+        if (skipped > 0) notify('info', `${t('bulkReindexSkipped')} ${skipped}`)
+        setCheckedDocIds(new Set())
+        return
+      }
+      const result = await api.reindexDocuments(ordinary.map(doc => doc.id))
       const totalSkipped = skipped + (result.skipped ?? 0)
       const failed = result.failed ?? 0
       const summary = `${t('reindexDone')} ${result.reindexed}${totalSkipped > 0 ? ` · ${t('bulkReindexSkipped')} ${totalSkipped}` : ''}${failed > 0 ? ` · ${t('syncFailed')} ${failed}` : ''}`
@@ -1067,7 +1152,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       for (const id of optimisticIds) next.delete(id)
       return next
     })
-  }, [api, run, reloadDocuments, notify, checkedDocs, t, collectSubtreeIds])
+  }, [api, run, reloadDocuments, notify, checkedDocs, t, collectSubtreeIds, outermostSelectedIds, requestDirectoryRescan])
 
   const bulkDelete = useCallback(async (recursive = false): Promise<void> => {
     await run(async () => {
@@ -1176,13 +1261,14 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
         .then(([nextDocuments, nextStats, nextBases]) => {
           if (disposed) return
           setDocuments(nextDocuments)
+          for (const doc of nextDocuments) if (doc.directoryScan) watchScan(doc.directoryScan)
           setStats(nextStats)
           setBases(nextBases)
           if (nextDocuments.some(doc => doc.indexingPhase !== undefined || doc.status === 'processing')) setPollKick(kick => kick + 1)
         }).catch(() => {}).finally(() => { inFlight = false })
     }, 15_000)
     return () => { disposed = true; window.clearInterval(timer) }
-  }, [api, hasScheduledSources, selectedBaseId])
+  }, [api, hasScheduledSources, selectedBaseId, watchScan])
 
   const setSyncInterval = (sourceId: string, minutes: number): void => {
     void run(async () => {
@@ -1368,9 +1454,10 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
   }
 
   return (
-    <div style={{ ...style.panel, '--kb-titlebar-inset': `${titlebarInset}px` } as CSSProperties} className="kb-panel-in">
-      <div className="kb-titlebar-band" style={style.titlebarBand} aria-hidden="true" />
-      <div style={style.header}>
+    <div ref={panelRef} role="dialog" aria-modal="true" aria-label={t('nav')} tabIndex={-1}
+      style={{ ...style.panel, '--kb-titlebar-inset': `${titlebarInset}px` } as CSSProperties} className="kb-panel-in">
+      <div className="kb-titlebar-band" style={style.titlebarBand} data-window-drag="" aria-hidden="true" />
+      <div className="kb-panel-header" style={style.header}>
         <div style={style.headerLeft}>
           <IconBook size={20} color={C.accent} />
           <span style={style.headerTitle}>{t('nav')}</span>
@@ -1525,7 +1612,7 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                       <span style={style.baseSourceGlyph}>{baseSourceGlyph(source.kind)}</span>
                       <span style={style.baseSourceText} title={source.text}>{source.text}</span>
                       {source.kind === 'directory' && (
-                        <DirectorySyncControls source={source} busy={busy} t={t} onScan={() => scanSource(source.sourceId)}
+                        <DirectorySyncControls source={source} busy={busy} scanning={directoryScans.some(scan => scan.sourceId === source.sourceId)} t={t} onScan={() => scanSource(source.sourceId)}
                           onBind={() => promptForSourcePath(source)} onInterval={minutes => setSyncInterval(source.sourceId, minutes)} />
                       )}
                       {source.kind !== 'directory' && source.sourcePath !== undefined && (
@@ -1543,6 +1630,10 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
                   ))}
                 </div>
               )}
+
+              {directoryScans.map(scan => (
+                <DirectoryScanStatus key={scan.sourceId + '/' + scan.runId} initial={scan} api={api} t={t} onFinish={finishScan} />
+              ))}
 
               {selectedBaseLocalModel !== null && localModelStatus !== null && (localModelStatus.status === 'ready' || localModelStatus.runtimeState === 'loading' || localModelStatus.runtimeState === 'error') && (
                 <ModelRuntimeStatus model={localModelStatus} t={t} />
@@ -2079,7 +2170,8 @@ function PanelBody(props: { api: KnowledgeApi; t: Translate; onClose: () => void
       )}
       {pendingConflict !== null && (
         <div style={style.modalBackdrop} onClick={() => pendingResolution === null && resolveConflict('cancel')}>
-          <div style={style.modal} onClick={(e) => e.stopPropagation()}>
+          <div ref={conflictRef} role="dialog" aria-modal="true" aria-label={t('conflictDialogTitle')}
+            style={style.modal} onClick={(e) => e.stopPropagation()}>
             <div style={style.modalHeader}>
               <strong style={{ fontSize: 14 }}>{t('conflictDialogTitle')}</strong>
             </div>
@@ -2218,6 +2310,8 @@ function RecallPanel(props: {
   const { t } = props
   const [historyOpen, setHistoryOpen] = useState(false)
   const hasHistory = props.history.length > 0
+  const historyRef = useRef<HTMLDivElement>(null)
+  useEffect(() => listenForEscape(historyRef.current, () => setHistoryOpen(false)), [hasHistory, historyOpen])
   const canSearch = props.searchQuery.trim().length > 0 && !props.busy
   const topScore = props.hits.length > 0 ? Math.max(...props.hits.map(hit => hit.score)) : 0
 
@@ -2246,7 +2340,7 @@ function RecallPanel(props: {
         <button className="kb-primary" style={style.primary} disabled={!canSearch} onClick={() => props.onSearch(props.searchQuery)}>⚡{t('searchButton')}</button>
 
         {hasHistory && historyOpen && (
-          <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 40, maxHeight: 220, overflowY: 'auto', background: C.overlay, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: '0 10px 32px rgba(0,0,0,0.18)', padding: 4 }}>
+          <div ref={historyRef} data-kb-popup="" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 40, maxHeight: 220, overflowY: 'auto', background: C.overlay, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: '0 10px 32px rgba(0,0,0,0.18)', padding: 4 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 8px' }}>
               <span style={{ fontSize: 11, color: C.muted }}>{t('recallHistory')}</span>
               <button style={{ border: 'none', background: 'transparent', color: C.danger, cursor: 'pointer', fontSize: 11 }} onClick={props.onClearHistory}>{t('recallHistoryClear')}</button>
@@ -2355,9 +2449,12 @@ function SidePanel(props: {
   onResizeWidth?: (event: React.MouseEvent) => void
 }): JSX.Element {
   const resizable = props.onResizeWidth !== undefined
+  const sideRef = useRef<HTMLDivElement>(null)
+  useEffect(() => listenForEscape(sideRef.current, props.onClose), [props.onClose])
   return (
     <div style={style.sidePanelScrim} onClick={props.onClose}>
       <div
+        ref={sideRef} role="dialog" aria-modal="true" aria-label={props.title}
         style={{ ...style.sidePanel, width: props.width ?? 460, flexDirection: 'row' }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -2404,6 +2501,8 @@ function KnowledgeToggle(props: {
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const scopeRef = useRef<HTMLDivElement>(null)
+  useEffect(() => listenForEscape(scopeRef.current, () => setOpen(false)), [open])
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent): void => {
@@ -2458,7 +2557,7 @@ function KnowledgeToggle(props: {
         </button>
       )}
       {open && (
-        <div style={{
+        <div ref={scopeRef} data-kb-popup="" style={{
           position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 300, minWidth: 220, maxHeight: 280,
           overflowY: 'auto', background: C.overlay, border: `1px solid ${C.border}`, borderRadius: 10,
           boxShadow: '0 10px 32px rgba(0,0,0,0.18)', padding: 6,
@@ -2541,12 +2640,20 @@ function DocumentDetailPanel(props: {
     void fetch(`/knowledge/documents/${doc.id}/raw`, { signal: AbortSignal.timeout(30_000) })
       .then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const blob = await response.blob()
+        let blob = await response.blob()
+        if (disposed) return
         // Cherry caps the in-panel viewer at 100 MB and falls back to the
         // system app; here the fallback is a download of the same bytes.
         if (blob.size > PDF_PREVIEW_MAX_BYTES) {
           setPdfPreviewError(t('pdfTooLarge'))
           return
+        }
+        if (blob.type.split(';', 1)[0]?.trim().toLowerCase() !== 'application/pdf') {
+          // Older hosts can still serve a PDF as generic bytes. Give only a
+          // recognizable PDF to the embedded viewer under an explicit PDF type.
+          const header = await blob.slice(0, 1024).text()
+          if (!header.includes('%PDF-')) throw new Error(t('pdfFormatUnknown'))
+          blob = blob.slice(0, blob.size, 'application/pdf')
         }
         if (disposed) return
         objectUrl = URL.createObjectURL(blob)

@@ -332,7 +332,7 @@ export async function buildAutoRetrieveMessage(
     )
     if (chosen.length === 0 || signal?.aborted) return undefined
 
-    const rendered = renderAutoRetrieveBackground(chosen, nameOf, relevanceQuery, identifiers)
+    const rendered = renderAutoRetrieveBackground(chosen, nameOf, relevanceQuery, identifiers, knowledge.getConfig().autoRetrieveCitation !== false)
     if (rendered === undefined || signal?.aborted) return undefined
 
     let committed = false

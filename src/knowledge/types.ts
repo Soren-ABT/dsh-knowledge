@@ -144,6 +144,7 @@ export interface DirectorySyncResult {
 
 /** Persist only the last run's summary; itemized outcomes remain in the response. */
 export interface DirectorySyncRun {
+  readonly runId?: string
   readonly startedAt: number
   readonly finishedAt: number
   readonly status: DirectorySyncResult['status'] | 'failed'
@@ -153,6 +154,20 @@ export interface DirectorySyncRun {
   readonly deleted: number
   readonly failed: number
   readonly error?: string
+}
+
+/** A rescan can be observed from another panel without keeping its original HTTP request open. */
+export interface DirectoryScanProgress {
+  readonly runId: string
+  readonly sourceId: string
+  readonly title: string
+  readonly processed: number
+  readonly lastPath?: string
+}
+
+export interface DirectoryScanSnapshot {
+  readonly active?: DirectoryScanProgress
+  readonly last?: DirectorySyncRun
 }
 
 /** Additive result returned by the explicit directory-tree import endpoint. */
@@ -352,6 +367,8 @@ export interface KnowledgeConfig {
   readonly resumeInterruptedOnStartup: boolean
   /** Proactive auto-retrieval on every user message. */
   readonly autoRetrieve: boolean
+  /** Ask the model to cite the auto-retrieve source labels (default true). */
+  readonly autoRetrieveCitation?: boolean
   /** Include the available-base list in the system prompt (default true). */
   readonly injectUsagePrompt?: boolean
   /** Auto-retrieve seat cap per base (0–5, 0 = excluded; see BaseConfig). */
@@ -438,6 +455,7 @@ export interface SearchHit {
 
 /** Summary of one document, for listing UIs. */
 export interface DocumentSummary {
+  readonly directoryScan?: DirectoryScanProgress
   readonly syncIntervalMinutes?: number
   readonly lastDirectorySync?: DirectorySyncRun
   readonly processing?: DocumentProcessingInfo

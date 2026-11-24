@@ -137,7 +137,14 @@ export class RawFileStorage implements RawFileStore {
   }
 }
 
+interface InterruptedImportRecovery {
+  removed: number
+  resume: string[]
+}
+
 export interface Store {
+  /** Recovery completed while opening the durable store, reused by the service. */
+  readonly startupRecovery?: InterruptedImportRecovery
   listBases(): KnowledgeBase[]
   getBase(id: string): KnowledgeBase | undefined
   putBase(base: KnowledgeBase): Promise<void>
@@ -194,7 +201,7 @@ export interface Store {
    *   mid-embedding, chunks partial) or a persisted raw source file (crash
    *   before/during parse) — re-indexed by the service after startup.
    */
-  recoverInterruptedImports(startedAt: number): Promise<{ removed: number; resume: string[] }>
+  recoverInterruptedImports(startedAt: number): Promise<InterruptedImportRecovery>
   /** Remove raw source copies no document references (orphans from failed/duplicate imports). */
   reconcileOrphanRaws(): Promise<number>
   /** Remove chunk rows whose document no longer exists — the mirror of
@@ -288,15 +295,19 @@ export async function openStore(
     // material store): `<chunkStoreDir>/knowledge-raw`.
     const raw = new RawFileStorage(join(dirname(chunkStorePath), 'knowledge-raw'))
     const store = new DomainStore(domain, chunkDb, raw)
+    let recovery: InterruptedImportRecovery | undefined
     try {
       await store.recoverDocumentGenerations()
       // Startup self-healing: drop documents a crashed import left behind
       // (pure placeholders with no recoverable text), then reconcile stale
       // chunkCount metadata. Resume candidates (rawText present, chunks
       // partial) are re-indexed by the service after openStore returns.
-      const recovery = await store.recoverInterruptedImports(Date.now())
+      const counts = store.chunkCountsByDoc(store.listBases().map(base => base.id))
+      recovery = await store.recoverInterruptedImports(Date.now(), counts)
       if (recovery.removed > 0) console.warn(`dsh-knowledge: removed ${recovery.removed} incomplete import(s) left by an interrupted run`)
-      await store.reconcileChunkCounts()
+      // Recovery only removes chunks for documents it deletes, so the retained
+      // documents still have the same counts.
+      await store.reconcileChunkCounts(counts)
       const orphaned = await store.reconcileOrphanRaws()
       if (orphaned > 0) console.warn(`dsh-knowledge: removed ${orphaned} orphaned raw source file(s) no document referenced`)
       const orphanChunks = await store.reconcileOrphanChunks()
@@ -306,6 +317,17 @@ export async function openStore(
       // continue destructive cleanup while metadata reconciliation is pending.
       if (!isMetadataWriteFailure(error)) throw error
       console.warn(`dsh-knowledge: startup metadata repair deferred: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (recovery !== undefined) {
+      // A completed empty document with a stale positive count can look
+      // interrupted until reconciliation restores its zero count.
+      store.startupRecovery = {
+        removed: recovery.removed,
+        resume: recovery.resume.filter(id => {
+          const doc = store.getDocument(id)
+          return doc !== undefined && !hasCompletedEmptyIndex(doc)
+        }),
+      }
     }
     return store
   } catch (error) {
@@ -325,6 +347,7 @@ export async function openStore(
 }
 
 class DomainStore implements Store {
+  startupRecovery?: InterruptedImportRecovery
   private readonly metadata = new MetadataWriter()
   private documentWriteChain: Promise<void> = Promise.resolve()
   constructor(
@@ -526,11 +549,10 @@ class DomainStore implements Store {
     return this.chunkDb.chunkCountsByDoc(baseIds)
   }
 
-  async recoverInterruptedImports(startedAt: number): Promise<{ removed: number; resume: string[] }> {
-    const withChunks = new Set<string>()
-    for (const base of this.listBases()) {
-      for (const docId of this.chunkDb.docChunkStatus(base.id).withChunks) withChunks.add(docId)
-    }
+  async recoverInterruptedImports(
+    startedAt: number,
+    counts = this.chunkCountsByDoc(this.listBases().map(base => base.id)),
+  ): Promise<InterruptedImportRecovery> {
     let removed = 0
     const resume: string[] = []
     for (const [id, doc] of [...this.documents.entries()]) {
@@ -561,7 +583,7 @@ class DomainStore implements Store {
         if (doc.rawText !== undefined || doc.rawFilePath !== undefined) resume.push(id)
         continue
       }
-      if (withChunks.has(id) || hasCompletedEmptyIndex(doc)) continue
+      if (counts.has(id) || hasCompletedEmptyIndex(doc)) continue
       // No chunks at all and no incomplete marker: a placeholder whose source
       // was never persisted (crash before the raw write or before rawText
       // landed) is unrecoverable; one that already holds rawText or a raw
@@ -584,8 +606,7 @@ class DomainStore implements Store {
    * drifted from the chunk store (historical stale metadata). Also the first
    * domain write after a legacy-format upgrade, which trims the JSON unit file.
    */
-  async reconcileChunkCounts(): Promise<void> {
-    const actual = this.chunkCountsByDoc(this.listBases().map(base => base.id))
+  async reconcileChunkCounts(actual: ReadonlyMap<string, number>): Promise<void> {
     for (const [id, doc] of [...this.documents.entries()]) {
       if ((doc.chunkCount ?? 0) !== (actual.get(id) ?? 0)) {
         await this.metadata.run(() => this.documents.put(id, { ...doc, chunkCount: actual.get(id) ?? 0 }))
