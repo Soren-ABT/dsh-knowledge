@@ -7,6 +7,7 @@ import { parsedTextDocument } from '../src/knowledge/parsed-document.js'
 import { ProcessingQueue } from '../src/knowledge/processing-queue.js'
 import { composeDocumentEvidence } from '../src/knowledge/evidence.js'
 import type { KnowledgeDocument } from '../src/knowledge/types.js'
+import { toolOutput } from '../src/tool-knowledge/tool-schemas.js'
 
 const dirs: string[] = []
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }) })
@@ -72,5 +73,34 @@ describe('processing lifecycle', () => {
     }
     expect(combined).toBe(text)
     expect(() => composeDocumentEvidence(doc, parsed, { blockId: 'missing' })).toThrow('not found')
+  })
+
+  it('omits undefined optional keys from saved processing info, evidence, and toolOutput', async () => {
+    const repository = new ArtifactRepository()
+    const saved = await repository.save('base', 'document', output())
+    expect(Object.hasOwn(saved, 'processorVersion')).toBe(false)
+    expect(Object.hasOwn(saved, 'pageCount')).toBe(false)
+    expect(Object.hasOwn(saved, 'processedPages')).toBe(false)
+
+    const parsed = output().document
+    const docWithoutProcessing: KnowledgeDocument = {
+      id: 'document',
+      baseId: 'base',
+      title: 'Legacy',
+      sourceType: 'file',
+      charCount: parsed.text.length,
+      chunkCount: 1,
+      createdAt: 1,
+    }
+    const evidence = composeDocumentEvidence(docWithoutProcessing, parsed)
+    expect(Object.hasOwn(evidence, 'processing')).toBe(false)
+
+    const source = { nested: { keep: 1, drop: undefined }, items: [{ ok: true, missing: undefined }] }
+    const cleaned = toolOutput(source)
+    expect(cleaned).toEqual({ nested: { keep: 1 }, items: [{ ok: true }] })
+    expect(Object.hasOwn(cleaned.nested, 'drop')).toBe(false)
+    expect(Object.hasOwn(cleaned.items[0], 'missing')).toBe(false)
+    cleaned.nested.keep = 2
+    expect(source.nested.keep).toBe(1)
   })
 })

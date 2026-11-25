@@ -1886,11 +1886,12 @@ export class KnowledgeService extends Service {
       // reference the previous raw copy until the complete replacement commits.
       await store.putDocument({ ...document, incomplete: true, updatedAt: Date.now() })
       generationStarted = true
-      const candidate: KnowledgeDocument = { ...document, rawText: rebuilt.text,
+      const { processing: _staleProcessing, ...documentWithoutProcessing } = document
+      const candidate: KnowledgeDocument = { ...documentWithoutProcessing, rawText: rebuilt.text,
         ...(rebuilt.title !== undefined ? { title: rebuilt.title } : {}),
         ...(rebuilt.urlCheckedAt !== undefined ? { urlCheckedAt: rebuilt.urlCheckedAt } : {}),
         ...(rebuilt.rawFilePath !== undefined ? { rawFilePath: rebuilt.rawFilePath } : {}),
-        processing: rebuilt.processed?.processing,
+        ...(rebuilt.processed?.processing !== undefined ? { processing: rebuilt.processed.processing } : {}),
       }
       const pieces = this.processingChunks(rebuilt.processed, config)
       await store.stageDocumentGeneration(candidate, [])

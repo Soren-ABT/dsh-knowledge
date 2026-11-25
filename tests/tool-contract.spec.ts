@@ -446,4 +446,66 @@ describe('model-facing knowledge tool contracts', () => {
     expect(rendered).toContain('charStart=')
     expect(rendered).toContain('charEnd=')
   })
+
+  it('returns lossless JSON from knowledge_get_document and knowledge_read_evidence after builtin file import and reindex', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-tool-lossless-'))
+    const filePath = join(dir, 'lossless-json-regression.md')
+    await writeFile(filePath, 'alpha section||needle lossless evidence||omega section', 'utf8')
+    await harness.knowledge.importFileFromPath(harness.primaryBase.id, filePath)
+    await harness.knowledge.waitForIdle()
+    const fileDoc = harness.knowledge.listDocuments(harness.primaryBase.id).find(doc => doc.title === 'lossless-json-regression.md')
+    expect(fileDoc).toBeDefined()
+    onTestFinished(async () => {
+      if (fileDoc) await harness.knowledge.deleteDocument(fileDoc.id).catch(() => {})
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+    })
+
+    const chunks = harness.knowledge.listChunks(fileDoc!.id)
+    expect(chunks.length).toBeGreaterThanOrEqual(2)
+
+    const page = valueOf<{ processing?: Record<string, unknown> }>(await execute(harness.ctx, 'knowledge_get_document', {
+      documentId: fileDoc!.id,
+      chunkOffset: 0,
+      chunkLimit: 2,
+    }))
+    expect(page.processing?.provider).toBe('builtin')
+    expect(Object.values(page.processing ?? {})).not.toContain(undefined)
+
+    const context = valueOf<{ processing?: Record<string, unknown> }>(await execute(harness.ctx, 'knowledge_get_document', {
+      documentId: fileDoc!.id,
+      anchorChunkId: chunks[1].id,
+      before: 1,
+      after: 1,
+    }))
+    expect(context.processing?.provider).toBe('builtin')
+    expect(Object.values(context.processing ?? {})).not.toContain(undefined)
+
+    const evidence = valueOf<{ processing?: Record<string, unknown>; blocks: unknown[] }>(await execute(harness.ctx, 'knowledge_read_evidence', {
+      documentId: fileDoc!.id,
+      maxTokens: 256,
+    }))
+    expect(evidence.processing?.provider).toBe('builtin')
+    expect(evidence.blocks.length).toBeGreaterThan(0)
+
+    await writeFile(filePath, 'alpha updated||needle lossless evidence v2||omega updated', 'utf8')
+    valueOf(await execute(harness.ctx, 'knowledge_reindex_document', {
+      baseId: harness.primaryBase.id,
+      documentId: fileDoc!.id,
+      mode: 'reparse',
+    }))
+    const afterReindexChunks = harness.knowledge.listChunks(fileDoc!.id)
+    const afterReindexContext = valueOf<{ processing?: Record<string, unknown> }>(await execute(harness.ctx, 'knowledge_get_document', {
+      documentId: fileDoc!.id,
+      anchorChunkId: afterReindexChunks[1].id,
+      before: 1,
+      after: 1,
+    }))
+    expect(afterReindexContext.processing?.revision).not.toBe(page.processing?.revision)
+    expect(Object.values(afterReindexContext.processing ?? {})).not.toContain(undefined)
+    const afterReindexEvidence = valueOf<{ processing?: Record<string, unknown> }>(await execute(harness.ctx, 'knowledge_read_evidence', {
+      documentId: fileDoc!.id,
+      maxTokens: 256,
+    }))
+    expect(afterReindexEvidence.processing?.revision).toBe(afterReindexContext.processing?.revision)
+  })
 })

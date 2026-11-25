@@ -76,10 +76,13 @@ export class ArtifactRepository {
     if (Buffer.byteLength(parsed) > MAX_MANIFEST_BYTES) throw new Error('parsed document exceeds artifact limit')
     const info: DocumentProcessingInfo = {
       revision, artifactId: key, sourceHash: output.document.sourceHash,
-      provider: output.document.provider, processorVersion: output.document.processorVersion,
+      provider: output.document.provider,
+      ...(output.document.processorVersion !== undefined ? { processorVersion: output.document.processorVersion } : {}),
       optionsFingerprint: output.document.optionsFingerprint, parsedAt: Date.now(),
-      completeness: output.document.completeness, pageCount: output.document.pageCount,
-      processedPages: output.document.processedPages, warnings: output.document.warnings,
+      completeness: output.document.completeness,
+      ...(output.document.pageCount !== undefined ? { pageCount: output.document.pageCount } : {}),
+      ...(output.document.processedPages !== undefined ? { processedPages: output.document.processedPages } : {}),
+      warnings: output.document.warnings,
     }
     const manifest: Manifest = { version: 1, baseId, documentId, info, documentHash: digest(parsed) }
     const assets = new Map(output.assets.map(asset => [component(asset.id), asset.bytes]))

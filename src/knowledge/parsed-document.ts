@@ -285,8 +285,9 @@ export async function normalizeMineruArchive(archive: Uint8Array, sourceBytes: U
     }
     if (!text.trim() && assetIds.length) text = mapped === 'equation' ? '[Equation image; text unavailable]' : '[Image; text unavailable]'
     if (!text.trim() && mapped === 'equation') warn('equation_text_unavailable', 'Some equations contain no searchable text.')
+    const bbox = sourceBox(block.bbox, warn)
     append({ id, type: mapped, text, pageIndex, ...(heading ? { heading } : {}),
-      ...(parentId ? { parentId } : {}), ...(assetIds.length ? { assetIds } : {}), bbox: sourceBox(block.bbox, warn) })
+      ...(parentId ? { parentId } : {}), ...(assetIds.length ? { assetIds } : {}), ...(bbox !== undefined ? { bbox } : {}) })
   }
   for (const rawPage of middle.pages) {
     if (options.signal) checkProcessingAbort(options.signal)
@@ -308,7 +309,7 @@ export async function normalizeMineruArchive(archive: Uint8Array, sourceBytes: U
   const version = producer && typeof producer.version === 'string' && producer.version.length <= 100 ? producer.version : options.processorVersion
   const result: ProcessingOutput = {
     document: { schemaVersion: 1, text: parts.join('\n\n'), sourceHash: processingHash(sourceBytes), provider: 'mineru-local',
-      processorVersion: version, optionsFingerprint: processingHash(JSON.stringify({ schema: 1, tier: options.tier, pageRange: 'all', output: 'zip' })),
+      ...(version !== undefined ? { processorVersion: version } : {}), optionsFingerprint: processingHash(JSON.stringify({ schema: 1, tier: options.tier, pageRange: 'all', output: 'zip' })),
       completeness: partial ? 'partial' : 'complete', ...(contiguous && !partial ? { pageCount: processedPages.length } : {}),
       processedPages, blocks, assets: assetInfo, warnings },
     assets: assetBytes, originalResult: archive,
