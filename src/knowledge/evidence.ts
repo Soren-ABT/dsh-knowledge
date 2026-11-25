@@ -52,7 +52,8 @@ export function composeDocumentEvidence(doc: KnowledgeDocument, parsed: ParsedDo
     if (from + low < block.text.length) { next = { blockId: block.id, blockOffset: from + low }; break }
   }
   const assetIds = new Set(blocks.flatMap(block => block.assetIds ?? []))
-  return { documentId: doc.id, title: doc.title, processing: doc.processing,
+  return { documentId: doc.id, title: doc.title,
+    ...(doc.processing !== undefined ? { processing: doc.processing } : {}),
     blocks, assets: parsed.assets.filter(asset => assetIds.has(asset.id)),
     estimatedTokens: used, truncated: next !== undefined, ...(next !== undefined ? { next } : {}) }
 }

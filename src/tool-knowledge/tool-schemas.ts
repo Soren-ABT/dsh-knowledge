@@ -3,9 +3,22 @@ const blockTypes = ['text', 'heading', 'table', 'equation', 'image', 'caption', 
 type MutableOutput<T> = T extends readonly (infer U)[] ? MutableOutput<U>[]
   : T extends object ? { -readonly [K in keyof T]: MutableOutput<T[K]> } : T
 
-/** Tool schemas use mutable JSON arrays; keep immutable service snapshots isolated. */
+function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(stripUndefined) as T
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value)) {
+      if (item !== undefined) out[key] = stripUndefined(item)
+    }
+    return out as T
+  }
+  return value
+}
+
+/** Tool schemas use mutable JSON arrays; keep immutable service snapshots isolated
+ *  and omit own `undefined` properties so outputs satisfy DSH's lossless JSON check. */
 export function toolOutput<T>(value: T): MutableOutput<T> {
-  return structuredClone(value) as MutableOutput<T>
+  return stripUndefined(structuredClone(value)) as MutableOutput<T>
 }
 
 const sourceBoxSchema = {
